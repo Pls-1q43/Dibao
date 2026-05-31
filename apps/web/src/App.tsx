@@ -1,5 +1,12 @@
-import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent, RefObject } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  ChangeEvent,
+  CSSProperties,
+  FormEvent,
+  MouseEvent,
+  RefObject,
+  SyntheticEvent
+} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dibaoVersion } from "@dibao/shared";
 import {
   defaultAppSettings,
@@ -7121,6 +7128,37 @@ function articleItemClassName(article: ArticleListItem, selectedArticleId: strin
   return status === "read" || status === "ignored" ? styles.articleItemRead : styles.articleItem;
 }
 
+const ArticleHtmlBody = memo(function ArticleHtmlBody(props: {
+  safeHtml: string | null;
+  fallback: string;
+}) {
+  if (props.safeHtml) {
+    return (
+      <div
+        className={styles.readerBody}
+        dangerouslySetInnerHTML={{ __html: props.safeHtml }}
+        onErrorCapture={handleReaderMediaError}
+      />
+    );
+  }
+
+  return (
+    <div className={styles.readerBody}>
+      <p>{props.fallback}</p>
+    </div>
+  );
+});
+
+function handleReaderMediaError(event: SyntheticEvent<HTMLDivElement>): void {
+  if (!(event.target instanceof HTMLImageElement)) {
+    return;
+  }
+
+  event.target.dataset.dibaoLoadState = "failed";
+  event.target.removeAttribute("src");
+  event.target.removeAttribute("srcset");
+}
+
 function ArticleDetailPanel(props: {
   actionError: string | null;
   article: ArticleDetail | null;
@@ -7216,16 +7254,10 @@ function ArticleDetailPanel(props: {
             />
           </header>
 
-          {safeHtml ? (
-            <div
-              className={styles.readerBody}
-              dangerouslySetInnerHTML={{ __html: safeHtml }}
-            />
-          ) : (
-            <div className={styles.readerBody}>
-              <p>{props.article.contentText ?? props.article.summary ?? t.reader.noContent}</p>
-            </div>
-          )}
+          <ArticleHtmlBody
+            fallback={props.article.contentText ?? props.article.summary ?? t.reader.noContent}
+            safeHtml={safeHtml}
+          />
           <ArticleActionControls
             actionError={null}
             article={props.article}

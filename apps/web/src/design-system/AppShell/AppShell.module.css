@@ -3101,6 +3101,10 @@
   margin: 0 auto var(--reader-paragraph-gap);
 }
 
+.readerBody img[data-dibao-load-state="failed"] {
+  display: none;
+}
+
 .readerBody blockquote {
   border-left: 2px solid var(--color-line-strong);
   padding-left: var(--space-4);
