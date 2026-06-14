@@ -1066,20 +1066,22 @@ describe("web i18n", () => {
           onUpdateFeed={() => Promise.resolve()}
           onUpdateFeedUrl={() => undefined}
           onUpdateFolder={() => Promise.resolve()}
+          onViewFeedArticles={() => undefined}
+          onViewFolderArticles={() => undefined}
           opmlSummary={null}
           refreshingFeedId={null}
         />
       </DibaoI18nProvider>
     );
 
-    expect(html).toContain("新建分组");
+    expect(html).toContain("订阅源管理");
+    expect(html).toContain("订阅源分组管理");
     expect(html).toContain("导入 OPML");
     expect(html).toContain("导出 OPML");
     expect(html).toContain("刷新全部");
     expect(html).toContain("添加订阅源");
     expect(html).toContain("订阅源健康");
-    expect(html).toContain("导入、导出与刷新");
-    expect(html).toContain("重命名");
+    expect(html).toContain("查看文章");
     expect(html).toContain("删除");
     expect(html).toContain("Design Feed");
     expect(html).toContain("Feed URL");

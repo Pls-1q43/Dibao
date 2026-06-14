@@ -514,6 +514,23 @@ export function App() {
     setIsSourceDrawerOpen(false);
   }
 
+  function handleViewSourceArticles(source: SourceSelection) {
+    resetArticleListForPendingQuery();
+    window.history.pushState(
+      { dibaoPage: "reader", dibaoSource: source.type },
+      "",
+      urlForAppPage(
+        { type: "reader", view: "latest" },
+        { sourceSelection: source, timeWindow: "all", unreadOnly: false }
+      )
+    );
+    setSourceSelection(source);
+    setUnreadOnly(false);
+    setTimeWindow("all");
+    setAppPage({ type: "reader", view: "latest" });
+    setIsSourceDrawerOpen(false);
+  }
+
   function handleArticleViewChange(view: ArticleView) {
     if (appPage.type !== "reader" || appPage.view !== view) {
       resetArticleListForPendingQuery();
@@ -2612,6 +2629,7 @@ export function App() {
         : urlForArticle(currentArticleView, articleId, {
             favoriteSort,
             readLaterSort,
+            sourceSelection,
             timeWindow,
             unreadOnly
           });
@@ -2626,6 +2644,7 @@ export function App() {
     window.history.pushState({ dibaoPage: page.type }, "", urlForAppPage(page, {
       favoriteSort,
       readLaterSort,
+      sourceSelection,
       timeWindow,
       unreadOnly
     }));
@@ -3184,6 +3203,10 @@ export function App() {
             onUpdateFeedUrl={setFeedUrl}
             onUpdateFeed={handleUpdateManagedFeed}
             onUpdateFolder={handleUpdateManagedFolder}
+            onViewFeedArticles={(feed) => handleViewSourceArticles({ type: "feed", feedId: feed.id })}
+            onViewFolderArticles={(folder) =>
+              handleViewSourceArticles({ type: "folder", folderId: folder.id })
+            }
             opmlSummary={opmlSummary}
             pluginToolbarActions={pluginActionsForSlot("feed.management.toolbar.end")}
             refreshingFeedId={refreshingFeedId}

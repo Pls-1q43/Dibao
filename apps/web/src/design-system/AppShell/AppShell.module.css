@@ -418,7 +418,7 @@
 .managementWorkspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--color-surface);
 }
@@ -467,13 +467,25 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  border-right: var(--border-default);
   background: var(--color-surface);
 }
 
 .feedManagementSection {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.folderManagementSection {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.folderManagementLayout {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -496,6 +508,14 @@
   margin: 0;
   font-size: var(--text-lg);
   line-height: 1.25;
+}
+
+.managementHeaderActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .managementDialogOverlay {
@@ -576,6 +596,8 @@
 
 .managementFolderRow {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: var(--space-2);
   border-bottom: var(--border-subtle);
   padding: var(--space-3) var(--space-4);
@@ -594,10 +616,11 @@
 .managementActions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 .managementHint {
+  grid-column: 1 / -1;
   margin: 0;
   color: var(--color-muted);
   font-size: var(--text-xs);
@@ -793,11 +816,58 @@
   min-height: 0;
 }
 
-.feedManagementGrid > .managementList,
-.feedManagementGrid > .managementEditor {
+.feedManagementListPane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.feedManagementListPane > .opmlSummary {
+  border-bottom: var(--border-default);
+}
+
+.feedListFilters {
+  display: grid;
+  gap: var(--space-2);
+  border-bottom: var(--border-default);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+}
+
+.feedListFilterHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.feedListFilterHeader h3,
+.feedListFilterHeader p {
+  margin: 0;
+}
+
+.feedListFilterHeader h3 {
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.feedListFilterHeader p {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.feedManagementListPane > .managementList,
+.feedManagementGrid > .managementEditor,
+.folderManagementLayout > .managementList {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+}
+
+.feedManagementListPane > .managementList {
+  flex: 1 1 auto;
 }
 
 .managementFeedItem,
@@ -3397,11 +3467,11 @@
     grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
   }
 
-  .managementWorkspace {
-    grid-template-columns: 280px minmax(0, 1fr);
+  .feedManagementGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .feedManagementGrid {
+  .feedListFilterHeader {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -3632,8 +3702,19 @@
     overflow-x: auto;
   }
 
+  .managementHeader {
+    flex-wrap: wrap;
+  }
+
+  .managementHeader > :first-child {
+    min-width: min(180px, 100%);
+    flex: 1 1 180px;
+  }
+
+  .managementHeaderActions,
   .opmlActions {
-    padding: 0 var(--space-3) var(--space-3);
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .settingsContent {
@@ -3647,13 +3728,17 @@
     padding: var(--space-3);
   }
 
-  .feedManagementSection {
+  .feedManagementSection,
+  .folderManagementSection,
+  .folderManagementLayout {
     display: block;
     overflow: visible;
   }
 
-  .feedManagementGrid > .managementList,
+  .feedManagementListPane,
+  .feedManagementListPane > .managementList,
   .feedManagementGrid > .managementEditor,
+  .folderManagementLayout > .managementList,
   .managementSection {
     overflow: visible;
   }
@@ -3661,6 +3746,10 @@
   .managementSection {
     border-right: 0;
     border-bottom: var(--border-default);
+  }
+
+  .managementFolderRow {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .managementActions {

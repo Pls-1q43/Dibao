@@ -846,6 +846,7 @@ export function sortExplanationForView(view: ArticleView, t: Dictionary): string
 export type UrlState = {
   favoriteSort?: FavoriteArticleSort;
   readLaterSort?: ReadLaterArticleSort;
+  sourceSelection?: SourceSelection;
   timeWindow?: ArticleTimeWindow;
   unreadOnly?: boolean;
 };
@@ -878,7 +879,7 @@ export function routeFromLocation(defaultView: ArticleView): AppRoute {
 export function readerFiltersForView(view: ArticleView): PersistedReaderFilters {
   const stored = readPersistedReaderFilters(view);
   return {
-    sourceSelection: stored.sourceSelection,
+    sourceSelection: urlSourceSelectionParam() ?? stored.sourceSelection,
     unreadOnly: urlBooleanParam("unread") || stored.unreadOnly,
     timeWindow: urlTimeWindowParam() ?? stored.timeWindow
   };
@@ -1021,6 +1022,12 @@ export function paramsForReaderView(view: ArticleView, state: UrlState): URLSear
   if (supportsUnreadOnly(view) && state.unreadOnly) {
     params.set("unread", "1");
   }
+  if (state.sourceSelection?.type === "feed") {
+    params.set("feedId", state.sourceSelection.feedId);
+  }
+  if (state.sourceSelection?.type === "folder") {
+    params.set("folderId", state.sourceSelection.folderId);
+  }
   return params;
 }
 
@@ -1129,6 +1136,22 @@ export function urlTimeWindowParam(): ArticleTimeWindow | null {
   }
   const params = new URLSearchParams(window.location.search);
   return parseArticleTimeWindowValue(params.get("time")) ?? (urlBooleanParam("today") ? "24h" : null);
+}
+
+export function urlSourceSelectionParam(): SourceSelection | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const feedId = params.get("feedId");
+  if (feedId && feedId.trim()) {
+    return { type: "feed", feedId };
+  }
+  const folderId = params.get("folderId");
+  if (folderId && folderId.trim()) {
+    return { type: "folder", folderId };
+  }
+  return null;
 }
 
 export function parseArticleTimeWindowValue(value: unknown): ArticleTimeWindow | null {
