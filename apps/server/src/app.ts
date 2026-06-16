@@ -324,6 +324,7 @@ type RecommendationClusterLabelBody = {
 
 type CursorPayload = {
   offset: number;
+  rankContext?: string;
 };
 
 type BuildServerOptions = {
@@ -1671,15 +1672,16 @@ export function buildServer(options: BuildServerOptions = {}) {
       return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
     }
 
+    const rankContext = parsed.input.rankContext ?? rankingService.getActiveRankContext();
     const result = articles.list({
       ...parsed.input,
-      rankContext: rankingService.getActiveRankContext()
+      rankContext
     });
 
     return {
       data: result.items.map(mapArticleListItem),
       page: {
-        nextCursor: encodeCursor(result.nextOffset)
+        nextCursor: encodeCursor(result.nextOffset, rankContext)
       },
       meta: {
         unreadCount: result.unreadCount
@@ -1693,15 +1695,16 @@ export function buildServer(options: BuildServerOptions = {}) {
       return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
     }
 
+    const rankContext = parsed.input.rankContext ?? rankingService.getActiveRankContext();
     const result = articles.search({
       ...parsed.input,
-      rankContext: rankingService.getActiveRankContext()
+      rankContext
     });
 
     return {
       data: result.items.map(mapArticleListItem),
       page: {
-        nextCursor: encodeCursor(result.nextOffset)
+        nextCursor: encodeCursor(result.nextOffset, rankContext)
       },
       meta: {
         unreadCount: result.unreadCount
@@ -3742,8 +3745,8 @@ function parseArticleQuery(
     };
   }
 
-  const offset = decodeCursor(query.cursor);
-  if (offset === null) {
+  const cursor = decodeCursor(query.cursor);
+  if (cursor === null) {
     return {
       ok: false,
       message: "cursor is invalid"
@@ -3795,7 +3798,8 @@ function parseArticleQuery(
   const input: ArticleListInput = {
     view: view ?? "latest",
     limit,
-    offset
+    offset: cursor?.offset,
+    ...(cursor?.rankContext !== undefined ? { rankContext: cursor.rankContext } : {})
   };
 
   if (query.feedId !== undefined) {
@@ -3894,8 +3898,8 @@ function parseSearchQuery(query: SearchQuery):
     };
   }
 
-  const offset = decodeCursor(query.cursor);
-  if (offset === null) {
+  const cursor = decodeCursor(query.cursor);
+  if (cursor === null) {
     return {
       ok: false,
       message: "cursor is invalid",
@@ -3910,7 +3914,8 @@ function parseSearchQuery(query: SearchQuery):
       state: state ?? "all",
       sort: sort ?? "relevance",
       limit,
-      offset,
+      offset: cursor?.offset,
+      ...(cursor?.rankContext !== undefined ? { rankContext: cursor.rankContext } : {}),
       ...(query.feedId !== undefined ? { feedId: query.feedId } : {}),
       ...(query.folderId !== undefined ? { folderId: query.folderId } : {}),
       ...(typeof from === "number" ? { from } : {}),
@@ -4697,15 +4702,20 @@ function parseLimit(value: string | undefined): number | undefined | null {
   return Math.min(parsed, 100);
 }
 
-function encodeCursor(offset: number | null): string | null {
+function encodeCursor(offset: number | null, rankContext?: string): string | null {
   if (offset === null) {
     return null;
   }
 
-  return Buffer.from(JSON.stringify({ offset } satisfies CursorPayload)).toString("base64url");
+  return Buffer.from(
+    JSON.stringify({
+      offset,
+      ...(rankContext ? { rankContext } : {})
+    } satisfies CursorPayload)
+  ).toString("base64url");
 }
 
-function decodeCursor(cursor: string | undefined): number | undefined | null {
+function decodeCursor(cursor: string | undefined): CursorPayload | undefined | null {
   if (cursor === undefined) {
     return undefined;
   }
@@ -4720,7 +4730,15 @@ function decodeCursor(cursor: string | undefined): number | undefined | null {
       return null;
     }
 
-    return offset;
+    const rankContext =
+      typeof payload.rankContext === "string" && payload.rankContext.trim().length > 0
+        ? payload.rankContext
+        : undefined;
+
+    return {
+      offset,
+      ...(rankContext !== undefined ? { rankContext } : {})
+    };
   } catch {
     return null;
   }
