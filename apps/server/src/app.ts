@@ -423,9 +423,20 @@ type RecommendationClusterDetailLevel = "summary" | "diagnostic";
 
 type CursorPayload = {
   offset: number;
+  rankContext?: string;
 };
 
-type EncodedCursorPayload = CursorPayload | { keyset: ArticleListCursor };
+type EncodedCursorPayload = CursorPayload | { keyset: ArticleListCursor; rankContext?: string };
+
+type DecodedOffsetCursor = {
+  offset: number;
+  rankContext?: string;
+};
+
+type DecodedArticleListCursor = {
+  cursor: ArticleListCursor;
+  rankContext?: string;
+};
 
 const ARTICLE_EXPLANATION_CACHE_TTL_MS = 60_000;
 const ARTICLE_EXPLANATION_CACHE_MAX_ENTRIES = 500;
@@ -2578,9 +2589,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const startedAt = performance.now();
+    const rankContext = parsed.input.rankContext ?? rankingService.getActiveRankContext();
     const result = articles.list({
       ...parsed.input,
-      rankContext: rankingService.getActiveRankContext()
+      rankContext
     });
     const responseMapStartedAt = performance.now();
     const data = result.items.map(mapArticleListItem);
@@ -2612,7 +2624,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     return {
       data,
       page: {
-        nextCursor: encodeCursor(result.nextCursor ?? result.nextOffset)
+        nextCursor: encodeCursor(result.nextCursor ?? result.nextOffset, rankContext)
       },
       meta: {
         unreadCount: result.unreadCount
@@ -2627,9 +2639,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const startedAt = performance.now();
+    const rankContext = parsed.input.rankContext ?? rankingService.getActiveRankContext();
     const result = articles.search({
       ...parsed.input,
-      rankContext: rankingService.getActiveRankContext()
+      rankContext
     });
     const responseMapStartedAt = performance.now();
     const data = result.items.map(mapArticleListItem);
@@ -2659,7 +2672,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     return {
       data,
       page: {
-        nextCursor: encodeCursor(result.nextOffset)
+        nextCursor: encodeCursor(result.nextOffset, rankContext)
       },
       meta: {
         unreadCount: result.unreadCount
@@ -5004,8 +5017,8 @@ function parseArticleQuery(
     };
   }
 
-  const cursor = decodeArticleListCursor(query.cursor);
-  if (cursor === null) {
+  const decodedCursor = decodeArticleListCursor(query.cursor);
+  if (decodedCursor === null) {
     return {
       ok: false,
       message: "cursor is invalid"
@@ -5057,8 +5070,10 @@ function parseArticleQuery(
   const input: ArticleListInput = {
     view: view ?? "latest",
     limit,
-    offset: cursor?.type === "offset" ? cursor.offset : undefined
+    offset: decodedCursor?.cursor.type === "offset" ? decodedCursor.cursor.offset : undefined,
+    ...(decodedCursor?.rankContext !== undefined ? { rankContext: decodedCursor.rankContext } : {})
   };
+  const cursor = decodedCursor?.cursor;
   if (cursor && cursor.type !== "offset") {
     input.cursor = cursor;
   }
@@ -5171,8 +5186,8 @@ function parseSearchQuery(query: SearchQuery):
     };
   }
 
-  const offset = decodeOffsetCursor(query.cursor);
-  if (offset === null) {
+  const decodedCursor = decodeOffsetCursor(query.cursor);
+  if (decodedCursor === null) {
     return {
       ok: false,
       message: "cursor is invalid",
@@ -5197,7 +5212,8 @@ function parseSearchQuery(query: SearchQuery):
       state: state ?? "all",
       sort: sort ?? "relevance",
       limit,
-      offset,
+      offset: decodedCursor?.offset,
+      ...(decodedCursor?.rankContext !== undefined ? { rankContext: decodedCursor.rankContext } : {}),
       ...(includeUnreadCount !== undefined ? { includeUnreadCount } : {}),
       ...(query.feedId !== undefined ? { feedId: query.feedId } : {}),
       ...(query.folderId !== undefined ? { folderId: query.folderId } : {}),
@@ -6075,17 +6091,19 @@ function parseLimit(value: string | undefined): number | undefined | null {
   return Math.min(parsed, 100);
 }
 
-function encodeCursor(cursor: number | ArticleListCursor | null): string | null {
+function encodeCursor(cursor: number | ArticleListCursor | null, rankContext?: string): string | null {
   if (cursor === null) {
     return null;
   }
 
   const payload: EncodedCursorPayload =
-    typeof cursor === "number" ? { offset: cursor } : { keyset: cursor };
+    typeof cursor === "number"
+      ? { offset: cursor, ...(rankContext ? { rankContext } : {}) }
+      : { keyset: cursor, ...(rankContext ? { rankContext } : {}) };
   return Buffer.from(JSON.stringify(payload)).toString("base64url");
 }
 
-function decodeOffsetCursor(cursor: string | undefined): number | undefined | null {
+function decodeOffsetCursor(cursor: string | undefined): DecodedOffsetCursor | undefined | null {
   if (cursor === undefined) {
     return undefined;
   }
@@ -6100,13 +6118,16 @@ function decodeOffsetCursor(cursor: string | undefined): number | undefined | nu
       return null;
     }
 
-    return offset;
+    return {
+      offset,
+      ...rankContextFromPayload(payload)
+    };
   } catch {
     return null;
   }
 }
 
-function decodeArticleListCursor(cursor: string | undefined): ArticleListCursor | undefined | null {
+function decodeArticleListCursor(cursor: string | undefined): DecodedArticleListCursor | undefined | null {
   if (cursor === undefined) {
     return undefined;
   }
@@ -6118,16 +6139,22 @@ function decodeArticleListCursor(cursor: string | undefined): ArticleListCursor 
     if ("offset" in payload) {
       const offset = payload.offset;
       return typeof offset === "number" && Number.isInteger(offset) && offset >= 0
-        ? { type: "offset", offset }
+        ? { cursor: { type: "offset", offset }, ...rankContextFromPayload(payload) }
         : null;
     }
     if ("keyset" in payload && isArticleListCursor(payload.keyset)) {
-      return payload.keyset;
+      return { cursor: payload.keyset, ...rankContextFromPayload(payload) };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+function rankContextFromPayload(payload: Partial<EncodedCursorPayload>): { rankContext?: string } {
+  return typeof payload.rankContext === "string" && payload.rankContext.trim().length > 0
+    ? { rankContext: payload.rankContext }
+    : {};
 }
 
 function isArticleListCursor(value: unknown): value is ArticleListCursor {

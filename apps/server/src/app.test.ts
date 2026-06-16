@@ -7437,6 +7437,83 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("keeps recommended keyset pagination on the cursor rank context", async () => {
+    const db = createFixtureDatabase();
+    const embeddings = new SqliteEmbeddingRepository(db);
+    embeddings.upsertProvider({
+      id: "provider_page",
+      type: "openai_compatible",
+      name: "Pagination Provider",
+      baseUrl: "https://api.example.com/v1",
+      model: "fixture",
+      dimension: 3,
+      enabled: true,
+      now: 1000
+    });
+    embeddings.createIndex({
+      id: "index_page",
+      providerId: "provider_page",
+      model: "fixture",
+      dimension: 3,
+      now: 1000
+    });
+    insertRankForContext(db, {
+      articleId: "article_recommended",
+      rankContext: "rec_v3:embedding:cocoon_5:schema_3",
+      embeddingIndexId: "index_page",
+      score: 0.9,
+      calculatedAt: 4000
+    });
+    insertRankForContext(db, {
+      articleId: "article_recent",
+      rankContext: "rec_v3:embedding:cocoon_5:schema_3",
+      embeddingIndexId: "index_page",
+      score: 0.4,
+      calculatedAt: 4000
+    });
+    insertRankForContext(db, {
+      articleId: "article_recommended",
+      rankContext: "rec_v3:embedding:cocoon_7:schema_3",
+      embeddingIndexId: "index_page",
+      score: 0.8,
+      calculatedAt: 5000
+    });
+    insertRankForContext(db, {
+      articleId: "article_recent",
+      rankContext: "rec_v3:embedding:cocoon_7:schema_3",
+      embeddingIndexId: "index_page",
+      score: 0.95,
+      calculatedAt: 5000
+    });
+    const settings = new SqliteAppSettingsRepository(db);
+    const app = buildServer({ db, logger: false });
+
+    try {
+      const first = await app.inject({
+        method: "GET",
+        url: "/api/articles?view=recommended&limit=1&includeUnreadCount=false"
+      });
+      expect(first.statusCode, first.body).toBe(200);
+      expect(first.json().data.map((article: { id: string }) => article.id)).toEqual([
+        "article_recommended"
+      ]);
+
+      settings.setJson("recommendation.settings", { cocoonLevel: 7 }, 5000);
+
+      const second = await app.inject({
+        method: "GET",
+        url: `/api/articles?view=recommended&limit=1&includeUnreadCount=false&cursor=${encodeURIComponent(first.json().page.nextCursor)}`
+      });
+      expect(second.statusCode, second.body).toBe(200);
+      expect(second.json().data.map((article: { id: string }) => article.id)).toEqual([
+        "article_recent"
+      ]);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("orders read later by active rank, base fallback, then saved time", async () => {
     const db = createArticleSortDatabase();
     const embeddings = new SqliteEmbeddingRepository(db);
