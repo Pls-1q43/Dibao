@@ -16,7 +16,7 @@ type HostResponseMessage = {
 type PluginInvokeMessage = {
   type: "plugin.invoke";
   id: string;
-  kind: "hook" | "task" | "api";
+  kind: "hook" | "task" | "api" | "fullContentExtractor";
   name: string;
   input?: unknown;
 };
@@ -37,6 +37,7 @@ type PluginHostConfig = {
 const hookHandlers = new Map<string, Array<(payload: unknown) => Promise<void> | void>>();
 const taskHandlers = new Map<string, (job: unknown) => Promise<void> | void>();
 const apiHandlers = new Map<string, (input: unknown) => Promise<unknown> | unknown>();
+const fullContentExtractorHandlers = new Map<string, (input: unknown) => Promise<unknown> | unknown>();
 const pendingHostCalls = new Map<string, {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -90,6 +91,12 @@ function createContext(config: PluginHostConfig): Record<string, unknown> {
         handlers.push(handler);
         hookHandlers.set(hook, handlers);
         send({ type: "plugin.register", kind: "hook", name: hook });
+      }
+    },
+    fullContent: {
+      register: (extractorId: string, handler: (input: unknown) => Promise<unknown> | unknown) => {
+        fullContentExtractorHandlers.set(extractorId, handler);
+        send({ type: "plugin.register", kind: "fullContentExtractor", name: extractorId });
       }
     },
     events: {
@@ -190,6 +197,18 @@ async function handlePluginInvoke(message: PluginInvokeMessage): Promise<void> {
       }
       await handler(message.input);
       send({ type: "plugin.response", id: message.id, ok: true });
+      return;
+    }
+    if (message.kind === "fullContentExtractor") {
+      const handler = fullContentExtractorHandlers.get(message.name);
+      if (!handler) {
+        throw Object.assign(new Error(`Plugin full content extractor is not registered: ${message.name}`), {
+          statusCode: 409,
+          code: "PLUGIN_EXTRACTOR_PAUSED"
+        });
+      }
+      const result = await handler(message.input);
+      send({ type: "plugin.response", id: message.id, ok: true, result });
       return;
     }
     const handler = apiHandlers.get(message.name);

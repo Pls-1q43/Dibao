@@ -38,6 +38,7 @@ export type DibaoPluginManifest = {
     actions?: DibaoPluginActionContribution[];
     hooks?: DibaoPluginEvent[];
     events?: DibaoPluginEvent[];
+    fullContentExtractors?: DibaoPluginFullContentExtractorContribution[];
     tasks?: DibaoPluginTaskContribution[];
     setupSteps?: DibaoPluginSetupStepContribution[];
   };
@@ -78,6 +79,12 @@ export type DibaoPluginActionContribution = {
   slot: DibaoPluginSlot | string;
   icon?: string;
   command: string;
+  order?: number;
+};
+
+export type DibaoPluginFullContentExtractorContribution = {
+  id: string;
+  title: string;
   order?: number;
 };
 
@@ -165,6 +172,7 @@ export const dibaoPluginBetaApis = [
   "database.defineTable",
   "ranking",
   "articles.snapshot",
+  "fullContent.extractor",
   "diagnostics"
 ] as const;
 
@@ -177,6 +185,14 @@ export type DibaoPluginContext = {
   now: () => Promise<number>;
   hooks: {
     on: (hook: DibaoPluginEvent, handler: (payload: unknown) => Promise<void> | void) => void;
+  };
+  fullContent: {
+    register: (
+      extractorId: string,
+      handler: (
+        input: DibaoFullContentExtractionInput
+      ) => Promise<DibaoFullContentExtractionResult | null> | DibaoFullContentExtractionResult | null
+    ) => void;
   };
   events: {
     catalog: () => Promise<DibaoPluginEvent[]>;
@@ -236,6 +252,19 @@ export type DibaoPluginContext = {
     openableSummary: (articleId: string) => Promise<unknown>;
     snapshot: (articleId: string, input?: { includeContent?: boolean }) => Promise<unknown>;
   };
+};
+
+export type DibaoFullContentExtractionInput = {
+  articleUrl: string;
+  html: string;
+  contentType: string;
+};
+
+export type DibaoFullContentExtractionResult = {
+  title?: string | null;
+  contentHtml: string;
+  contentText: string;
+  excerpt?: string | null;
 };
 
 export type DibaoPluginSecretMetadata = {
@@ -403,6 +432,26 @@ export function validatePluginPackage(pluginPackage: DibaoPluginPackage): DibaoP
     for (const event of events) {
       if (typeof event !== "string" || !dibaoPluginEvents.includes(event as DibaoPluginEvent)) {
         errors.push(`manifest.contributes.events contains unsupported event: ${String(event)}`);
+      }
+    }
+    const fullContentExtractors = Array.isArray(contributes?.fullContentExtractors)
+      ? contributes.fullContentExtractors
+      : [];
+    const fullContentExtractorIds = new Set<string>();
+    for (const extractor of fullContentExtractors) {
+      const record = extractor && typeof extractor === "object" && !Array.isArray(extractor)
+        ? extractor as Record<string, unknown>
+        : {};
+      const id = typeof record.id === "string" ? record.id.trim() : "";
+      const title = typeof record.title === "string" ? record.title.trim() : "";
+      if (!id || !title) {
+        errors.push("manifest.contributes.fullContentExtractors entries require id and title");
+      } else if (fullContentExtractorIds.has(id)) {
+        errors.push(`manifest.contributes.fullContentExtractors contains duplicate id: ${id}`);
+      }
+      fullContentExtractorIds.add(id);
+      if (record.order !== undefined && typeof record.order !== "number") {
+        errors.push(`manifest.contributes.fullContentExtractors order must be a number: ${id || "(missing id)"}`);
       }
     }
     const tasks = Array.isArray(contributes?.tasks) ? contributes.tasks : [];

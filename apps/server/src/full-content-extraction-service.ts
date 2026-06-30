@@ -17,9 +17,25 @@ export type FullContentExtractionResult = {
   error: string | null;
 };
 
+export type FullContentPluginExtractionInput = {
+  articleUrl: string;
+  html: string;
+  contentType: string;
+};
+
+export type FullContentPluginExtractionResult = {
+  title?: string | null;
+  contentHtml: string;
+  contentText: string;
+  excerpt?: string | null;
+};
+
 export type FullContentExtractionServiceOptions = {
   fetcher?: ControlledFetcher;
   minTextLength?: number;
+  pluginExtractor?: (
+    input: FullContentPluginExtractionInput
+  ) => Promise<FullContentPluginExtractionResult | null>;
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
 };
 
@@ -63,6 +79,23 @@ export class FullContentExtractionService {
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
       if (contentType && !contentType.includes("html") && !contentType.includes("xml")) {
         return skipped(normalized, `Article response is not HTML (${contentType})`);
+      }
+
+      const pluginExtracted = await this.options.pluginExtractor?.({
+        articleUrl: normalized,
+        html: rawHtml,
+        contentType
+      });
+      if (pluginExtracted && pluginExtracted.contentText.length >= this.minTextLength) {
+        return {
+          articleUrl: normalized,
+          status: "success",
+          title: pluginExtracted.title ?? null,
+          contentHtml: pluginExtracted.contentHtml,
+          contentText: pluginExtracted.contentText,
+          excerpt: pluginExtracted.excerpt ?? excerptFor(pluginExtracted.contentText),
+          error: null
+        };
       }
 
       const extracted = extractReadableContent(rawHtml);

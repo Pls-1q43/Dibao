@@ -521,8 +521,10 @@ export function buildServer(options: BuildServerOptions = {}) {
   const onFetchWarning = (warning: unknown) => {
     app.log.warn({ event: "outbound_fetch_private_target", warning });
   };
+  let pluginServiceForFullContent: PluginService | null = null;
   const fullContentExtractor = new FullContentExtractionService({
     fetcher: options.fullContentFetcher,
+    pluginExtractor: async (input) => pluginServiceForFullContent?.extractFullContent(input) ?? null,
     onFetchWarning
   });
   const embeddingAdapters = {
@@ -656,6 +658,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       app.log.info(record, "plugin.api.performance");
     }
   });
+  pluginServiceForFullContent = pluginService;
   if (!hasBlockingCoreMigration) {
     pluginService.reconcileOfficialPlugins();
   }

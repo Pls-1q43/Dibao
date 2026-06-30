@@ -34,6 +34,48 @@ describe("FullContentExtractionService", () => {
     expect(result.contentHtml).not.toContain("navigation noise");
   });
 
+  it("uses plugin extracted full content before the built-in extractor", async () => {
+    const service = new FullContentExtractionService({
+      minTextLength: 20,
+      pluginExtractor: async () => ({
+        title: "Plugin Title",
+        contentHtml: "<p>Plugin extracted article body with enough text.</p>",
+        contentText: "Plugin extracted article body with enough text."
+      }),
+      fetcher: async () =>
+        new Response("<html><body><article><p>Built in article body should not win.</p></article></body></html>", {
+          headers: { "content-type": "text/html" }
+        })
+    });
+
+    const result = await service.extract("https://example.com/article");
+
+    expect(result.status).toBe("success");
+    expect(result.title).toBe("Plugin Title");
+    expect(result.contentText).toContain("Plugin extracted article body");
+    expect(result.contentText).not.toContain("Built in article body");
+  });
+
+  it("falls back to built-in extraction when a plugin returns short content", async () => {
+    const service = new FullContentExtractionService({
+      minTextLength: 20,
+      pluginExtractor: async () => ({
+        contentHtml: "<p>short</p>",
+        contentText: "short"
+      }),
+      fetcher: async () =>
+        new Response(
+          "<html><body><article><p>Built in article body with enough text.</p></article></body></html>",
+          { headers: { "content-type": "text/html" } }
+        )
+    });
+
+    const result = await service.extract("https://example.com/article");
+
+    expect(result.status).toBe("success");
+    expect(result.contentText).toContain("Built in article body");
+  });
+
   it("fails or skips invalid, non-html, short, and 500 responses", async () => {
     const service = new FullContentExtractionService({
       minTextLength: 200,

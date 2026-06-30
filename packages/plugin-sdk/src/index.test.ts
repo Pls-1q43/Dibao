@@ -77,6 +77,7 @@ describe("plugin-sdk", () => {
   it("validates migrations and exposes 0.2 API stability constants", () => {
     expect(dibaoPluginStableApis).toContain("database.migrations");
     expect(dibaoPluginBetaApis).toContain("database.defineTable");
+    expect(dibaoPluginBetaApis).toContain("fullContent.extractor");
 
     expect(validatePluginPackage({
       manifest: {
@@ -121,6 +122,59 @@ describe("plugin-sdk", () => {
     })).toEqual({
       ok: false,
       errors: ["migration file is missing: migrations/missing.sql"]
+    });
+  });
+
+  it("validates full content extractor contributions", () => {
+    expect(validatePluginPackage({
+      manifest: {
+        manifestVersion: 1,
+        id: "com.example.extractor",
+        name: "Extractor",
+        version: "1.0.0",
+        publisher: "Example",
+        dibao: { minVersion: "0.2.0", maxVersion: "<0.3.0" },
+        entry: { server: "server/index.mjs" },
+        capabilities: [],
+        contributes: {
+          fullContentExtractors: [
+            {
+              id: "readable-selectors",
+              title: "Readable selectors",
+              order: 10
+            }
+          ]
+        }
+      },
+      files: {
+        "server/index.mjs": "export default { activate() {} };"
+      }
+    })).toEqual({ ok: true });
+
+    expect(validatePluginPackage({
+      manifest: {
+        manifestVersion: 1,
+        id: "com.example.bad-extractor",
+        name: "Bad Extractor",
+        version: "1.0.0",
+        publisher: "Example",
+        dibao: { minVersion: "0.2.0", maxVersion: "<0.3.0" },
+        entry: { server: "server/index.mjs" },
+        capabilities: [],
+        contributes: {
+          fullContentExtractors: [
+            { id: "readable-selectors", title: "Readable selectors" },
+            { id: "readable-selectors", title: "Duplicate readable selectors" }
+          ]
+        }
+      },
+      files: {}
+    })).toEqual({
+      ok: false,
+      errors: [
+        "entry file is missing: server/index.mjs",
+        "manifest.contributes.fullContentExtractors contains duplicate id: readable-selectors"
+      ]
     });
   });
 });
