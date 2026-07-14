@@ -166,6 +166,9 @@ describe("db package", () => {
         "plugin_deliveries",
         "plugin_delivery_attempts",
         "behavior_projection_cursors",
+        "user_representation_snapshots",
+        "recommendation_exposures",
+        "exploration_attempts",
         "jobs"
       ]) {
         expect(hasTableOrView(db, name), name).toBe(true);
@@ -242,7 +245,8 @@ describe("db package", () => {
         "022",
         "023",
         "024",
-        "025"
+        "025",
+        "026"
       ]);
       expect(hasColumn(db, "article_states", "liked_at")).toBe(true);
       expect(hasColumn(db, "article_states", "last_action_at")).toBe(true);
@@ -272,6 +276,9 @@ describe("db package", () => {
       expect(hasTableOrView(db, "plugin_deliveries")).toBe(true);
       expect(hasTableOrView(db, "plugin_delivery_attempts")).toBe(true);
       expect(hasTableOrView(db, "behavior_projection_cursors")).toBe(true);
+      expect(hasTableOrView(db, "user_representation_snapshots")).toBe(true);
+      expect(hasTableOrView(db, "recommendation_exposures")).toBe(true);
+      expect(hasTableOrView(db, "exploration_attempts")).toBe(true);
       expect(hasColumn(db, "jobs", "priority")).toBe(true);
 
       db.prepare(
@@ -811,7 +818,8 @@ describe("db package", () => {
         "022",
         "023",
         "024",
-        "025"
+        "025",
+        "026"
       ]);
 
       expect(getAppliedMigrations(db).find((migration) => migration.version === "004")?.checksum).toBe(checksum004);
@@ -831,6 +839,7 @@ describe("db package", () => {
       expect(hasTableOrView(db, "reader_command_events")).toBe(true);
       expect(hasColumn(db, "auth_credentials", "username")).toBe(true);
       expect(hasTableOrView(db, "behavior_projection_cursors")).toBe(true);
+      expect(hasTableOrView(db, "user_representation_snapshots")).toBe(true);
       expect(hasColumn(db, "jobs", "priority")).toBe(true);
     } finally {
       db.close();

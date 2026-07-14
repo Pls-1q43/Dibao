@@ -4950,7 +4950,10 @@ describe("server API vertical slice", () => {
             localLearningEnabled: true,
             localLearningShadowMode: false,
             explorationEnabled: true,
-            evaluationEnabled: false
+            evaluationEnabled: false,
+            crossSessionFatigueMode: "shadow",
+            recentHistoryMode: "shadow",
+            learnedExplorationMode: "shadow"
           },
           recommendationMaintenance: {
             maintenanceEnabled: true,

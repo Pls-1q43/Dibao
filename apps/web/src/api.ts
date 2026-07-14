@@ -215,6 +215,12 @@ export type BulkArticleActionResponse = {
   }>;
 };
 
+export type RecommendationExposureBatch = {
+  clientSessionId: string;
+  articleIds: string[];
+  exposedAt?: number;
+};
+
 export type RankExplanationReasonType =
   | "interest"
   | "source"
@@ -926,6 +932,17 @@ export type RecommendationStatus = {
   rankedArticles: {
     base: number;
     active: number;
+  };
+  memory?: {
+    snapshot: {
+      schemaVersion: number;
+      embeddingIndexId: string | null;
+      generatedAt: string | null;
+      sourceWatermark: number;
+    } | null;
+    crossSessionFatigueMode: "disabled" | "shadow" | "active";
+    recentHistoryMode: "disabled" | "shadow" | "active";
+    learnedExplorationMode: "disabled" | "shadow" | "active";
   };
   lastProfileUpdate: string | null;
   lastRankingUpdate: string | null;
@@ -2207,6 +2224,17 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         headers,
         keepalive: true
       });
+    },
+
+    async recordRecommendationExposures(
+      input: RecommendationExposureBatch
+    ): Promise<{ recorded: number; existing: number }> {
+      return (
+        await request<{ recorded: number; existing: number }>("/api/recommendation/exposures", {
+          method: "POST",
+          body: JSON.stringify(input)
+        })
+      ).data;
     },
 
     async importOpml(file: File): Promise<OpmlImportResponse> {

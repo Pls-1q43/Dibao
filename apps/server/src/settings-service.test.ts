@@ -88,7 +88,10 @@ describe("settings service", () => {
       },
       ranking: {
         localLearningEnabled: true,
-        localLearningShadowMode: false
+        localLearningShadowMode: false,
+        crossSessionFatigueMode: "shadow",
+        recentHistoryMode: "shadow",
+        learnedExplorationMode: "shadow"
       }
     });
 

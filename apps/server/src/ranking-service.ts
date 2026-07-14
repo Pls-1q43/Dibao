@@ -104,6 +104,9 @@ export type RankingSettingsSnapshot = {
   localLearningShadowMode: boolean;
   explorationEnabled: boolean;
   evaluationEnabled: boolean;
+  recentHistoryMode?: "disabled" | "shadow" | "active";
+  crossSessionFatigueMode?: "disabled" | "shadow" | "active";
+  learnedExplorationMode?: "disabled" | "shadow" | "active";
 };
 
 export type RecommendationRankingServiceOptions = {
@@ -159,6 +162,19 @@ type RecentIntentVector = {
   updatedAt: number;
 };
 
+type RecentBehaviorVector = {
+  polarity: "positive" | "negative";
+  vector: number[];
+  weight: number;
+  createdAt: number;
+};
+
+type ExposureFatigueCounts = {
+  feeds: Map<string, number>;
+  families: Map<string, number>;
+  duplicateGroups: Map<string, number>;
+};
+
 type DuplicateFeature = {
   groupId: string | null;
   groupSize: number;
@@ -195,6 +211,8 @@ type V2Score = {
   duplicatePenalty: number;
   diversityPenalty: number;
   explorationBonus: number;
+  recentHistoryScore: number;
+  fatiguePenalty: number;
   explorationEligible: boolean;
   explorationBucket: string | null;
   explorationReason: string | null;
@@ -381,6 +399,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const recentIntent = activeIndexId ? this.recentIntentVectorsFor(activeIndexId) : [];
+    const recentBehavior = activeIndexId ? this.recentBehaviorVectorsFor(activeIndexId) : [];
     if (timeBudgetExceeded()) {
       return timeBudgetPauseResult();
     }
@@ -397,6 +416,8 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const ftrlModel = this.ftrlModel();
+    const exposureFatigue = this.exposureFatigueFor(candidates, now);
+    const explorationBucketSamples = this.explorationBucketSamples();
     const duplicateStats = duplicateStatsFor(candidates, duplicateFeatures);
     const rerankWindowId = `${activeRankContext}:${now}`;
     const scored: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }> = [];
@@ -500,11 +521,12 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         continue;
       }
 
-      const score = calculateV2Score({
+      const baseV2Score = calculateV2Score({
         candidate,
         now,
         clusters,
         recentIntent,
+        recentBehavior,
         settings,
         baseScore: baseScore.score,
         duplicateCount: duplicateStats.get(candidate.articleId) ?? 1,
@@ -513,10 +535,17 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         source: sourceFeatures.get(candidate.feedId) ?? emptySourceFeature(),
         ftrlModel
       });
+      const score = applyExposureFatigue(
+        baseV2Score,
+        candidate,
+        duplicateFeatures.get(candidate.articleId) ?? emptyDuplicateFeature(),
+        exposureFatigue,
+        settings
+      );
       scored.push({ candidate, score });
     }
 
-    const reranked = rerankCanonicalWindow(scored, settings, MMR_WINDOW_LIMIT);
+    const reranked = rerankCanonicalWindow(scored, settings, MMR_WINDOW_LIMIT, explorationBucketSamples);
     const rankScores: UpsertArticleRankScoreInput[] = [];
     const explanations: UpsertArticleRankExplanationInput[] = [];
     for (const item of reranked) {
@@ -539,6 +568,8 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         duplicatePenalty: item.score.duplicatePenalty,
         diversityPenalty: item.score.diversityPenalty,
         explorationBonus: item.score.explorationBonus,
+        explorationBucketKey: item.score.wasExploration ? item.score.explorationBucket : null,
+        wasExploration: item.score.wasExploration,
         pendingEmbeddingScore: item.score.pendingEmbeddingScore,
         exposurePenalty: item.score.exposurePenalty,
         preRerankScore: item.score.preRerankScore,
@@ -1021,6 +1052,95 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     }));
   }
 
+  private recentBehaviorVectorsFor(embeddingIndexId: string): RecentBehaviorVector[] {
+    const db = this.options.db;
+    if (!db) {
+      return [];
+    }
+    const rows = db
+      .prepare(
+        `
+          select be.event_type as eventType, be.metadata_json as metadataJson, be.created_at as createdAt,
+            ae.vector_blob as vectorBlob
+          from behavior_events be
+          join article_embeddings ae on ae.article_id = be.article_id and ae.embedding_index_id = ?
+          where ae.vector_blob is not null
+            and (
+              be.event_type in ('favorite', 'like', 'read_later', 'read_complete', 'hide', 'not_interested')
+              or (be.event_type = 'read_progress' and coalesce(json_extract(be.metadata_json, '$.progress'), 0) >= 0.75)
+            )
+          order by be.created_at desc, be.id desc
+          limit 50
+        `
+      )
+      .all(embeddingIndexId) as Array<{
+      eventType: string;
+      metadataJson: string | null;
+      createdAt: number;
+      vectorBlob: Buffer;
+    }>;
+    return rows.map((row) => ({
+      polarity: row.eventType === "hide" || row.eventType === "not_interested" ? "negative" : "positive",
+      vector: fromVectorBlob(row.vectorBlob),
+      weight: recentBehaviorWeight(row.eventType, row.metadataJson),
+      createdAt: row.createdAt
+    }));
+  }
+
+  private exposureFatigueFor(
+    candidates: ArticleRankingCandidateRow[],
+    now: number
+  ): ExposureFatigueCounts {
+    const result: ExposureFatigueCounts = {
+      feeds: new Map(),
+      families: new Map(),
+      duplicateGroups: new Map()
+    };
+    const db = this.options.db;
+    if (!db || candidates.length === 0) {
+      return result;
+    }
+    const feedIds = uniqueStrings(candidates.map((candidate) => candidate.feedId));
+    const rows = db
+      .prepare(
+        `
+          select feed_id as feedId, interest_family_id as familyId, duplicate_group_id as duplicateGroupId, count(*) as count
+          from recommendation_exposures
+          where exposed_at >= ?
+            and (feed_id in (${feedIds.map(() => "?").join(", ")}) or interest_family_id is not null or duplicate_group_id is not null)
+          group by feed_id, interest_family_id, duplicate_group_id
+        `
+      )
+      .all(now - 7 * 86_400_000, ...feedIds) as Array<{
+      feedId: string | null;
+      familyId: string | null;
+      duplicateGroupId: string | null;
+      count: number;
+    }>;
+    for (const row of rows) {
+      if (row.feedId) result.feeds.set(row.feedId, (result.feeds.get(row.feedId) ?? 0) + row.count);
+      if (row.familyId) result.families.set(row.familyId, (result.families.get(row.familyId) ?? 0) + row.count);
+      if (row.duplicateGroupId) {
+        result.duplicateGroups.set(
+          row.duplicateGroupId,
+          (result.duplicateGroups.get(row.duplicateGroupId) ?? 0) + row.count
+        );
+      }
+    }
+    return result;
+  }
+
+  private explorationBucketSamples(): Map<string, number> {
+    const db = this.options.db;
+    if (!db) {
+      return new Map();
+    }
+    const rows = db
+      .prepare(`select bucket_key as bucketKey, alpha, beta from exploration_buckets`)
+      .all() as Array<{ bucketKey: string; alpha: number; beta: number }>;
+    return new Map(rows.map((row) => [row.bucketKey, sampleBeta(row.alpha, row.beta)]));
+  }
+
   private duplicateFeaturesFor(
     candidates: ArticleRankingCandidateRow[]
   ): Map<string, DuplicateFeature> {
@@ -1465,6 +1585,47 @@ function recentIntentMatchesFor(
   return { positive, negative };
 }
 
+function recentBehaviorMatchesFor(
+  candidate: ArticleRankingCandidateRow,
+  recentBehavior: RecentBehaviorVector[],
+  now: number
+): { positive: number; negative: number } {
+  if (!candidate.vectorBlob || recentBehavior.length === 0) {
+    return { positive: 0, negative: 0 };
+  }
+  const vector = fromVectorBlob(candidate.vectorBlob);
+  let positive = 0;
+  let negative = 0;
+  for (const behavior of recentBehavior) {
+    const ageHours = Math.max(0, (now - behavior.createdAt) / 3_600_000);
+    const value =
+      Math.max(0, cosineSimilarity(vector, behavior.vector)) *
+      behavior.weight *
+      Math.pow(0.5, ageHours / 24);
+    if (behavior.polarity === "positive") {
+      positive = Math.max(positive, value);
+    } else {
+      negative = Math.max(negative, value);
+    }
+  }
+  return { positive: clamp(positive, 0, 1), negative: clamp(negative, 0, 1) };
+}
+
+function recentBehaviorWeight(eventType: string, metadataJson: string | null): number {
+  if (eventType === "like" || eventType === "favorite") return 1;
+  if (eventType === "read_later" || eventType === "read_complete") return 0.85;
+  if (eventType === "hide" || eventType === "not_interested") return 1;
+  if (eventType === "read_progress") {
+    try {
+      const metadata = JSON.parse(metadataJson ?? "{}") as { progress?: unknown };
+      return typeof metadata.progress === "number" && metadata.progress >= 0.9 ? 0.8 : 0.55;
+    } catch {
+      return 0.55;
+    }
+  }
+  return 0.5;
+}
+
 function ftrlFeaturesFor(input: {
   semanticScore: number;
   negativePenalty: number;
@@ -1541,6 +1702,7 @@ function calculateV2Score(input: {
   now: number;
   clusters: ClusterVector[];
   recentIntent: RecentIntentVector[];
+  recentBehavior: RecentBehaviorVector[];
   settings: RankingSettingsSnapshot;
   baseScore: number;
   duplicateCount: number;
@@ -1557,6 +1719,13 @@ function calculateV2Score(input: {
   );
   const matches = interestMatchesFor(candidate, input.clusters);
   const recentMatches = recentIntentMatchesFor(candidate, input.recentIntent);
+  const recentBehaviorMatches = recentBehaviorMatchesFor(candidate, input.recentBehavior, input.now);
+  const recentHistoryScore = clamp(
+    recentBehaviorMatches.positive * 0.08 - recentBehaviorMatches.negative * 0.08,
+    -0.08,
+    0.08
+  );
+  const activeRecentHistoryScore = input.settings.recentHistoryMode === "active" ? recentHistoryScore : 0;
   const semanticScore = clamp(
     matches.positiveInterestMatch * 0.42 * params.personalizationStrength +
       recentMatches.positive * 0.18 * params.recentIntentStrength,
@@ -1615,6 +1784,7 @@ function calculateV2Score(input: {
     keywordNegativePenalty +
     duplicatePenalty +
     exposurePenalty +
+    activeRecentHistoryScore +
     explorationBonus;
   const ftrlFeatures = ftrlFeaturesFor({
     semanticScore,
@@ -1658,11 +1828,13 @@ function calculateV2Score(input: {
     freshnessScore: roundScore(freshness),
     stateScore: roundScore(stateScore),
     diversityScore: 0,
-    penaltyScore: roundScore(negativePenalty + keywordNegativePenalty + duplicatePenalty + exposurePenalty),
+    penaltyScore: roundScore(negativePenalty + keywordNegativePenalty + duplicatePenalty + exposurePenalty + Math.min(0, activeRecentHistoryScore)),
     negativePenalty: roundScore(negativePenalty + keywordNegativePenalty),
     duplicatePenalty: roundScore(duplicatePenalty),
     diversityPenalty: 0,
     explorationBonus: roundScore(explorationBonus),
+    recentHistoryScore: roundScore(recentHistoryScore),
+    fatiguePenalty: 0,
     explorationEligible: exploration.eligible,
     explorationBucket: exploration.bucket,
     explorationReason: exploration.reason,
@@ -1677,6 +1849,36 @@ function calculateV2Score(input: {
     primaryFamilyMaturity: roundScore(matches.primaryFamilyMaturity),
     primaryFamilyDominanceRatio: roundScore(matches.primaryFamilyDominanceRatio),
     matchedFamilyCount: matches.matchedFamilyCount
+  };
+}
+
+function applyExposureFatigue(
+  score: V2Score,
+  candidate: ArticleRankingCandidateRow,
+  duplicate: DuplicateFeature,
+  fatigue: ExposureFatigueCounts,
+  settings: RankingSettingsSnapshot
+): V2Score {
+  if (candidate.state.favorited || candidate.state.liked || candidate.state.readLater) {
+    return score;
+  }
+  const duplicatePenalty = duplicate.groupId
+    ? -Math.min(0.06, (fatigue.duplicateGroups.get(duplicate.groupId) ?? 0) * 0.015)
+    : 0;
+  const familyPenalty = score.primaryFamilyId
+    ? -Math.min(0.03, (fatigue.families.get(score.primaryFamilyId) ?? 0) * 0.006)
+    : 0;
+  const sourcePenalty = -Math.min(0.015, (fatigue.feeds.get(candidate.feedId) ?? 0) * 0.003);
+  const fatiguePenalty = roundScore(duplicatePenalty + familyPenalty + sourcePenalty);
+  if (settings.crossSessionFatigueMode !== "active") {
+    return { ...score, fatiguePenalty };
+  }
+  return {
+    ...score,
+    score: roundScore(clamp(score.score + fatiguePenalty, 0, 1)),
+    preRerankScore: roundScore(clamp(score.preRerankScore + fatiguePenalty, 0, 1)),
+    penaltyScore: roundScore(score.penaltyScore + fatiguePenalty),
+    fatiguePenalty
   };
 }
 
@@ -1834,7 +2036,8 @@ function normalizeTitle(title: string): string {
 function rerankCanonicalWindow(
   items: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }>,
   settings: RankingSettingsSnapshot,
-  limit: number
+  limit: number,
+  explorationBucketSamples: Map<string, number> = new Map()
 ): Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }> {
   const params = cocoonParameters(settings.cocoonLevel);
   const remaining = items
@@ -1905,12 +2108,13 @@ function rerankCanonicalWindow(
     });
   }
 
-  return applyExplorationSlots(selected, settings);
+  return applyExplorationSlots(selected, settings, explorationBucketSamples);
 }
 
 function applyExplorationSlots(
   selected: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }>,
-  settings: RankingSettingsSnapshot
+  settings: RankingSettingsSnapshot,
+  explorationBucketSamples: Map<string, number> = new Map()
 ): Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }> {
   if (!settings.explorationEnabled || selected.length === 0) {
     return selected;
@@ -1936,7 +2140,14 @@ function applyExplorationSlots(
         !item.candidate.state.hidden &&
         !item.candidate.state.notInterested
     )
-    .sort((left, right) => explorationSeedScore(left, settings) - explorationSeedScore(right, settings));
+    .sort((left, right) => {
+      if (settings.learnedExplorationMode === "active") {
+        const leftSample = explorationBucketSamples.get(left.score.explorationBucket ?? "") ?? 0.5;
+        const rightSample = explorationBucketSamples.get(right.score.explorationBucket ?? "") ?? 0.5;
+        return rightSample - leftSample || explorationSeedScore(left, settings) - explorationSeedScore(right, settings);
+      }
+      return explorationSeedScore(left, settings) - explorationSeedScore(right, settings);
+    });
 
   const next = selected.slice();
   const slotPositions = maxTop20Slots === 2 ? [10, 20] : [20];
@@ -1981,6 +2192,30 @@ function explorationSeedScore(
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   }
   return hash / 0xffffffff;
+}
+
+function sampleBeta(alpha: number, beta: number): number {
+  const left = sampleGamma(Math.max(alpha, 0.001));
+  const right = sampleGamma(Math.max(beta, 0.001));
+  return left / Math.max(left + right, Number.EPSILON);
+}
+
+function sampleGamma(shape: number): number {
+  if (shape < 1) {
+    return sampleGamma(shape + 1) * Math.pow(Math.random(), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    const normal = Math.sqrt(-2 * Math.log(Math.max(Math.random(), Number.EPSILON))) *
+      Math.cos(2 * Math.PI * Math.random());
+    const value = 1 + c * normal;
+    if (value <= 0) continue;
+    const cube = value * value * value;
+    const uniform = Math.random();
+    if (uniform < 1 - 0.0331 * normal * normal * normal * normal) return d * cube;
+    if (Math.log(uniform) < 0.5 * normal * normal + d * (1 - cube + Math.log(cube))) return d * cube;
+  }
 }
 
 function explanationPayloadFor(

@@ -639,6 +639,8 @@ export type UpsertArticleRankScoreInput = {
   duplicatePenalty?: number | null;
   diversityPenalty?: number | null;
   explorationBonus?: number | null;
+  explorationBucketKey?: string | null;
+  wasExploration?: boolean;
   pendingEmbeddingScore?: number | null;
   exposurePenalty?: number | null;
   preRerankScore?: number | null;
@@ -667,6 +669,8 @@ export type ArticleRankScoreComponentsRow = {
   duplicatePenalty: number | null;
   diversityPenalty: number | null;
   explorationBonus: number | null;
+  explorationBucketKey?: string | null;
+  wasExploration?: boolean;
   pendingEmbeddingScore: number | null;
   exposurePenalty: number | null;
   preRerankScore: number | null;

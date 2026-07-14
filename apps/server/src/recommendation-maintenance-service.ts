@@ -16,6 +16,7 @@ import {
 } from "./interest-family-service.js";
 import { PermanentJobFailure } from "./job-runner.js";
 import type { RankingRecalculateJobService } from "./ranking-job-service.js";
+import type { RecommendationMemoryService } from "./recommendation-memory-service.js";
 
 export {
   INTEREST_CLUSTER_AUTO_MERGE_JOB_TYPE,
@@ -78,6 +79,7 @@ export type RecommendationMaintenanceServiceOptions = {
     "rebuildActiveIndexCandidates" | "autoMergeOpenCandidates"
   >;
   interestFamilies?: Pick<InterestFamilyService, "rebuildActiveIndexFamilies">;
+  memory?: Pick<RecommendationMemoryService, "rebuildSnapshot">;
   getRankingSettings?: () => { localLearningEnabled: boolean; localLearningShadowMode: boolean };
   getMaintenanceSettings?: () => { ftrlAutoPromoteEnabled: boolean; clusterAutoMergeEnabled?: boolean };
   now?: () => number;
@@ -372,16 +374,19 @@ export class RecommendationMaintenanceService {
         return;
       case DUPLICATE_GROUP_REBUILD_JOB_TYPE:
         this.rebuildDuplicateGroups();
+        this.options.memory?.rebuildSnapshot();
         this.options.rankingJobs.enqueueAll();
         this.markScheduleCompleted(job.id);
         return;
       case KEYWORD_PROFILE_REBUILD_JOB_TYPE:
         this.rebuildKeywordProfile();
+        this.options.memory?.rebuildSnapshot();
         this.options.rankingJobs.enqueueAll();
         this.markScheduleCompleted(job.id);
         return;
       case RECENT_INTENT_REBUILD_JOB_TYPE:
         this.rebuildRecentIntent();
+        this.options.memory?.rebuildSnapshot();
         this.options.rankingJobs.enqueueAll();
         this.markScheduleCompleted(job.id);
         return;
@@ -431,6 +436,7 @@ export class RecommendationMaintenanceService {
           throw new PermanentJobFailure("Interest family service is not configured");
         }
         this.options.interestFamilies.rebuildActiveIndexFamilies();
+        this.options.memory?.rebuildSnapshot();
         this.options.rankingJobs.enqueueAll();
         this.markScheduleCompleted(job.id);
         return;

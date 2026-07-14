@@ -19,6 +19,7 @@ export const RECOMMENDATION_MAINTENANCE_SETTINGS_KEY = "recommendation.maintenan
 
 export const supportedSettingsLocales = ["zh-CN", "en-US", "ja-JP"] as const;
 export type SettingsLocale = (typeof supportedSettingsLocales)[number];
+export type RecommendationV3ModuleMode = "disabled" | "shadow" | "active";
 export const supportedDefaultHomeViews = ["recommended", "latest"] as const;
 export type DefaultHomeView = (typeof supportedDefaultHomeViews)[number];
 
@@ -61,6 +62,9 @@ export type AppSettings = {
     localLearningShadowMode: boolean;
     explorationEnabled: boolean;
     evaluationEnabled: boolean;
+    crossSessionFatigueMode: RecommendationV3ModuleMode;
+    recentHistoryMode: RecommendationV3ModuleMode;
+    learnedExplorationMode: RecommendationV3ModuleMode;
   };
   recommendationMaintenance: RecommendationMaintenanceSettings;
 };
@@ -118,7 +122,10 @@ const DEFAULT_RANKING_SETTINGS = {
   localLearningEnabled: true,
   localLearningShadowMode: false,
   explorationEnabled: true,
-  evaluationEnabled: false
+  evaluationEnabled: false,
+  crossSessionFatigueMode: "shadow",
+  recentHistoryMode: "shadow",
+  learnedExplorationMode: "shadow"
 } as const;
 export const DEFAULT_RECOMMENDATION_MAINTENANCE_SETTINGS: RecommendationMaintenanceSettings = {
   maintenanceEnabled: true,
@@ -174,6 +181,9 @@ type SettingsPatch = {
     localLearningShadowMode?: boolean;
     explorationEnabled?: boolean;
     evaluationEnabled?: boolean;
+    crossSessionFatigueMode?: RecommendationV3ModuleMode;
+    recentHistoryMode?: RecommendationV3ModuleMode;
+    learnedExplorationMode?: RecommendationV3ModuleMode;
   };
   recommendationMaintenance?: Partial<RecommendationMaintenanceSettings>;
 };
@@ -519,7 +529,19 @@ export class SettingsService {
       evaluationEnabled:
         typeof input.evaluationEnabled === "boolean"
           ? input.evaluationEnabled
-          : DEFAULT_RANKING_SETTINGS.evaluationEnabled
+          : DEFAULT_RANKING_SETTINGS.evaluationEnabled,
+      crossSessionFatigueMode: readRecommendationV3ModuleMode(
+        input.crossSessionFatigueMode,
+        DEFAULT_RANKING_SETTINGS.crossSessionFatigueMode
+      ),
+      recentHistoryMode: readRecommendationV3ModuleMode(
+        input.recentHistoryMode,
+        DEFAULT_RANKING_SETTINGS.recentHistoryMode
+      ),
+      learnedExplorationMode: readRecommendationV3ModuleMode(
+        input.learnedExplorationMode,
+        DEFAULT_RANKING_SETTINGS.learnedExplorationMode
+      )
     };
   }
 
@@ -695,7 +717,10 @@ function parseRankingPatch(value: unknown): NonNullable<SettingsPatch["ranking"]
     "localLearningEnabled",
     "localLearningShadowMode",
     "explorationEnabled",
-    "evaluationEnabled"
+    "evaluationEnabled",
+    "crossSessionFatigueMode",
+    "recentHistoryMode",
+    "learnedExplorationMode"
   ]);
 
   const patch: NonNullable<SettingsPatch["ranking"]> = {};
@@ -743,6 +768,15 @@ function parseRankingPatch(value: unknown): NonNullable<SettingsPatch["ranking"]
     if (Object.hasOwn(input, key)) {
       if (typeof input[key] !== "boolean") {
         throw validationError(`${key} must be a boolean`, { field: key });
+      }
+      patch[key] = input[key];
+    }
+  }
+
+  for (const key of ["crossSessionFatigueMode", "recentHistoryMode", "learnedExplorationMode"] as const) {
+    if (Object.hasOwn(input, key)) {
+      if (!isRecommendationV3ModuleMode(input[key])) {
+        throw validationError(`${key} must be disabled, shadow, or active`, { field: key });
       }
       patch[key] = input[key];
     }
@@ -1031,6 +1065,17 @@ function isDefaultHomeView(value: unknown): value is DefaultHomeView {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readRecommendationV3ModuleMode(
+  value: unknown,
+  fallback: RecommendationV3ModuleMode
+): RecommendationV3ModuleMode {
+  return isRecommendationV3ModuleMode(value) ? value : fallback;
+}
+
+function isRecommendationV3ModuleMode(value: unknown): value is RecommendationV3ModuleMode {
+  return value === "disabled" || value === "shadow" || value === "active";
 }
 
 function validationError(message: string, details?: unknown): SettingsServiceError {

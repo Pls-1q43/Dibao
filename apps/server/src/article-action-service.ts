@@ -6,6 +6,7 @@ import type {
 import type { ProfileEventProcessJobService } from "./profile-event-job-service.js";
 import type { RankingRecalculateJobService } from "./ranking-job-service.js";
 import type { BehaviorProjectionJobService } from "./behavior-projection-job-service.js";
+import type { RecommendationMemoryService } from "./recommendation-memory-service.js";
 
 export class ArticleActionServiceError extends Error {
   constructor(
@@ -32,6 +33,7 @@ export type ArticleActionServiceOptions = {
   behaviorProjectionJobs?: Pick<BehaviorProjectionJobService, "enqueueProjection">;
   rankingJobs?: Pick<RankingRecalculateJobService, "enqueueAll" | "enqueueArticles">;
   maintenance?: { enqueueStrongActionMaintenance: (now?: number) => unknown };
+  recommendationMemory?: Pick<RecommendationMemoryService, "recordBehaviorOutcome">;
   removeReadLaterOnReadComplete?: () => boolean;
   deferPostActionWork?: (work: () => void) => void;
   now?: () => number;
@@ -83,6 +85,12 @@ export class ArticleActionService {
       if (isStrongMaintenanceAction(input)) {
         this.options.maintenance?.enqueueStrongActionMaintenance(this.now());
       }
+      this.options.recommendationMemory?.recordBehaviorOutcome({
+        articleId: input.articleId,
+        type: input.type,
+        progress: input.progress,
+        now: this.now()
+      });
     });
 
     return finalResult;

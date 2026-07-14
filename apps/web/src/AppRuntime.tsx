@@ -3483,6 +3483,9 @@ export function App() {
               loadMoreError={loadMoreError}
               nextCursor={nextArticleCursor}
               onIgnoreArticle={handleIgnoreArticle}
+              onRecordRecommendationExposures={(input) => {
+                void dibaoApi.recordRecommendationExposures(input).catch(() => undefined);
+              }}
               onLoadMore={handleLoadMoreArticles}
               onMarkScopeRead={handleMarkCurrentArticleListScopeRead}
               onPreviewMarkScopeRead={previewCurrentArticleListScopeRead}

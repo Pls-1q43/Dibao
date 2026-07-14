@@ -166,6 +166,7 @@ export function ArticleListPanel(props: {
   onLoadMore: () => void | Promise<void>;
   onMarkScopeRead: () => void;
   onPreviewMarkScopeRead: () => Promise<number>;
+  onRecordRecommendationExposures?: (input: { clientSessionId: string; articleIds: string[]; exposedAt: number }) => void;
   onOpenSources: () => void;
   onExplainArticle: (articleId: string) => void;
   onSelectArticle: (articleId: string) => void;
@@ -204,6 +205,12 @@ export function ArticleListPanel(props: {
     onIgnoreArticle: props.onIgnoreArticle,
     rootRef: scrollContainerRef,
     selectedArticleId: props.selectedArticleId
+  });
+  useRecommendationExposureTelemetry({
+    articleView: props.articleView,
+    articles: props.articles,
+    onRecord: props.onRecordRecommendationExposures,
+    rootRef: scrollContainerRef
   });
 
   usePersistedArticleListScroll({
@@ -1388,6 +1395,74 @@ function useArticleListIgnoreTelemetry(props: {
       observer.disconnect();
     };
   }, [props.articles, props.enabled, props.rootRef]);
+}
+
+function useRecommendationExposureTelemetry(props: {
+  articleView: ArticleView;
+  articles: ArticleListItem[];
+  onRecord?: (input: { clientSessionId: string; articleIds: string[]; exposedAt: number }) => void;
+  rootRef: RefObject<HTMLElement | null>;
+}) {
+  const onRecordRef = useRef(props.onRecord);
+  const sessionIdRef = useRef(createRecommendationExposureSessionId());
+  const seenIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    onRecordRef.current = props.onRecord;
+  }, [props.onRecord]);
+
+  useEffect(() => {
+    const root = props.rootRef.current;
+    if (
+      props.articleView !== "recommended" ||
+      !root ||
+      !onRecordRef.current ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+    const articleIds = new Set(props.articles.map((article) => article.id));
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const newlyVisible: string[] = [];
+        for (const entry of entries) {
+          const articleId = entry.target.getAttribute("data-article-id");
+          if (
+            entry.isIntersecting &&
+            entry.intersectionRatio >= 0.6 &&
+            articleId &&
+            articleIds.has(articleId) &&
+            !seenIds.current.has(articleId)
+          ) {
+            seenIds.current.add(articleId);
+            newlyVisible.push(articleId);
+          }
+        }
+        if (newlyVisible.length > 0) {
+          onRecordRef.current?.({
+            clientSessionId: sessionIdRef.current,
+            articleIds: newlyVisible,
+            exposedAt: Date.now()
+          });
+        }
+      },
+      { root, threshold: [0.6] }
+    );
+    for (const articleId of articleIds) {
+      const element = root.querySelector<HTMLElement>(`[data-article-id="${cssEscape(articleId)}"]`);
+      if (element) {
+        observer.observe(element);
+      }
+    }
+    return () => observer.disconnect();
+  }, [props.articleView, props.articles, props.rootRef]);
+}
+
+function createRecommendationExposureSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `exposure_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 export function scrolledPastArticleIdsForIgnoreTelemetry(

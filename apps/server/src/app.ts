@@ -205,6 +205,7 @@ import {
   type RankExplanationClusterMatch,
   type RankExplanationResult
 } from "./ranking-service.js";
+import { RecommendationMemoryService } from "./recommendation-memory-service.js";
 import {
   DEFAULT_RETENTION_CLEANUP_INTERVAL_MS,
   RetentionCleanupJobService,
@@ -391,6 +392,12 @@ type EmbeddingIndexParams = {
 
 type RecommendationMaintenanceParams = {
   task: string;
+};
+
+type RecommendationExposureBody = {
+  clientSessionId?: unknown;
+  articleIds?: unknown;
+  exposedAt?: unknown;
 };
 
 type RecommendationClusterQuery = {
@@ -581,6 +588,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   configureServerTelemetry({
     enabled: settingsService.getSettings().telemetry.enabled
   });
+  const recommendationMemoryService = new RecommendationMemoryService(db, options.now);
   attachServerTelemetryErrorHandler(app);
   const rankingService = new RecommendationRankingService({
     db,
@@ -765,6 +773,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     clusterLabels: clusterLabelService,
     clusterMerge: clusterMergeService,
     interestFamilies: interestFamilyService,
+    memory: recommendationMemoryService,
     getRankingSettings: () => settingsService.getSettings().ranking,
     getMaintenanceSettings: () => settingsService.getSettings().recommendationMaintenance,
     now: options.now
@@ -905,6 +914,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   const articleActionService = new ArticleActionService({
     actions: articleActions,
     behaviorProjectionJobs: behaviorProjectionJobService,
+    recommendationMemory: recommendationMemoryService,
     maintenance: {
       enqueueStrongActionMaintenance: (now) => {
         const maintenanceSettings = settingsService.getSettings().recommendationMaintenance;
@@ -1924,12 +1934,37 @@ export function buildServer(options: BuildServerOptions = {}) {
           rankingService,
           clusterLabels: clusterLabelService,
           interestFamilies: interestFamilyService,
+          memory: recommendationMemoryService,
           settings: settingsService.getSettings().ranking,
           includeClusterItems: includeClusterItems ?? true
         })
       };
     }
   );
+
+  app.post<{ Body: RecommendationExposureBody }>("/api/recommendation/exposures", async (request, reply) => {
+    const body = request.body ?? {};
+    const exposedAt =
+      typeof body.exposedAt === "number" && Number.isInteger(body.exposedAt) && body.exposedAt > 0
+        ? body.exposedAt
+        : undefined;
+    if (
+      typeof body.clientSessionId !== "string" ||
+      body.clientSessionId.trim().length === 0 ||
+      !Array.isArray(body.articleIds) ||
+      !body.articleIds.every((articleId) => typeof articleId === "string") ||
+      (body.exposedAt !== undefined && exposedAt === undefined)
+    ) {
+      return sendApiError(reply, 400, "VALIDATION_ERROR", "Invalid recommendation exposure batch");
+    }
+    return {
+      data: recommendationMemoryService.recordExposures({
+        clientSessionId: body.clientSessionId,
+        articleIds: body.articleIds,
+        exposedAt
+      })
+    };
+  });
 
   app.get<{ Querystring: RecommendationStatusQuery }>(
     "/api/recommendation/transparency",
@@ -1974,6 +2009,7 @@ export function buildServer(options: BuildServerOptions = {}) {
         rankingService,
         clusterLabels: clusterLabelService,
         interestFamilies: interestFamilyService,
+        memory: recommendationMemoryService,
         settings: settingsService.getSettings().ranking,
         maintenanceSettings: settingsService.getSettings().recommendationMaintenance,
         maintenanceScheduleStates: recommendationMaintenanceService.listScheduleStates(),
@@ -3409,6 +3445,7 @@ function getRecommendationStatus(options: {
   rankingService: RecommendationRankingService;
   clusterLabels: InterestClusterLabelService;
   interestFamilies: InterestFamilyService;
+  memory?: RecommendationMemoryService;
   settings: ReturnType<SettingsService["getSettings"]>["ranking"];
   includeClusterItems?: boolean;
   clusterItemLimit?: number;
@@ -3481,6 +3518,7 @@ function getRecommendationStatus(options: {
     ...(activeIndex ? { embeddingIndexId: activeIndex.id } : {})
   });
   const lastRankingUpdate = options.rankings.getLastRankingUpdate({ activeRankContext });
+  const snapshot = options.memory?.snapshotSummary() ?? null;
   const profileSignals = options.profiles.countProfileSignals();
   const profileLearning = isProfileLearning(profileSignals, clusters);
   const warnings = recommendationWarnings({
@@ -3527,6 +3565,19 @@ function getRecommendationStatus(options: {
     rankedArticles,
     lastProfileUpdate: timestampToIso(lastProfileUpdate),
     lastRankingUpdate: timestampToIso(lastRankingUpdate),
+    memory: {
+      snapshot: snapshot
+        ? {
+            schemaVersion: snapshot.schemaVersion,
+            embeddingIndexId: snapshot.embeddingIndexId,
+            generatedAt: timestampToIso(snapshot.generatedAt),
+            sourceWatermark: snapshot.sourceWatermark
+          }
+        : null,
+      crossSessionFatigueMode: options.settings.crossSessionFatigueMode,
+      recentHistoryMode: options.settings.recentHistoryMode,
+      learnedExplorationMode: options.settings.learnedExplorationMode
+    },
     warnings
   };
 }
@@ -3720,6 +3771,7 @@ function getRecommendationTransparency(options: {
   rankingService: RecommendationRankingService;
   clusterLabels: InterestClusterLabelService;
   interestFamilies: InterestFamilyService;
+  memory?: RecommendationMemoryService;
   settings: ReturnType<SettingsService["getSettings"]>["ranking"];
   includeClusterItems?: boolean;
   clusterItemLimit?: number;
