@@ -70,7 +70,7 @@ describe("server API vertical slice", () => {
           database: "ok",
           fts: "ok",
           vectorStore: "ok",
-          version: "0.2.1"
+          version: "0.3.0"
         }
       });
     } finally {
@@ -2277,7 +2277,7 @@ describe("server API vertical slice", () => {
         name: "Timeout Test",
         version: "1.0.0",
         publisher: "Dibao",
-        dibao: { minVersion: "0.1.0", maxVersion: "<0.3.0" },
+        dibao: { minVersion: "0.1.0", maxVersion: "<0.4.0" },
         entry: { server: "server/index.mjs" },
         capabilities: [],
         contributes: { hooks: ["settings.afterUpdated"] }
@@ -5182,7 +5182,7 @@ describe("server API vertical slice", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toMatchObject({
         data: {
-          currentVersion: "0.2.1",
+          currentVersion: "0.3.0",
           latestVersion: "v0.2.0",
           releaseUrl: "https://github.com/Pls-1q43/Dibao/releases/tag/v0.2.0",
           updateAvailable: false,

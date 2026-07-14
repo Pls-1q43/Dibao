@@ -58,7 +58,7 @@ function createPlugin(targetDir: string): void {
         name: basename(targetDir),
         version: "0.1.0",
         publisher: "Example",
-        dibao: { minVersion: "0.2.0", maxVersion: "<0.3.0" },
+        dibao: { minVersion: "0.2.0", maxVersion: "<0.4.0" },
         entry: { server: "server/index.mjs", web: "web/index.html" },
         capabilities: ["settings:plugin", "files:plugin-data", "jobs:write"],
         contributes: {

@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "prebuild": "node scripts/prepare-sentry-config.mjs",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace=@dibao/shared --workspace=@dibao/ranking --workspace=@dibao/rss --workspace=@dibao/db --workspace=@dibao/plugin-sdk --workspace=@dibao/plugin-cli --workspace=@dibao/server --workspace=@dibao/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "dev:server": "npm run dev -w @dibao/server",

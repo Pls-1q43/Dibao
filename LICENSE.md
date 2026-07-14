@@ -4,7 +4,7 @@ Copyright (c) 2026 Pls and Dibao contributors.
 
 ## Dibao BUSL Parameters
 
-- Licensed Work: Dibao 0.2.1
+- Licensed Work: Dibao 0.3.0
 - Licensor: Pls / Dibao project maintainer
 - License: Business Source License 1.1
 - SPDX-License-Identifier: BUSL-1.1
