@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setImmediate as delayImmediate } from "node:timers/promises";
 import {
   FeedParseError,
   normalizeFeedUrl,
@@ -71,6 +72,8 @@ export type FeedRefreshServiceOptions = {
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
   now?: () => number;
 };
+
+const FEED_WRITE_BATCH_SIZE = 10;
 
 export class FeedRefreshService {
   private readonly fetcher: FeedFetcher;
@@ -163,88 +166,95 @@ export class FeedRefreshService {
       skipped: 0
     };
     const finalChangedIds = new Set<string>();
+    const existingFeed = this.options.feeds.findById(input.feedId);
+    const feed = this.options.feeds.upsert({
+      id: input.feedId,
+      folderId: input.folderId,
+      title: input.parsed.title,
+      siteUrl: input.parsed.siteUrl,
+      feedUrl: input.feedUrl,
+      description: input.parsed.description,
+      enabled: true,
+      fullContentMode: existingFeed?.fullContentMode ?? "feed_only",
+      now: fetchedAt
+    });
+    let articlesCreated = 0;
+    let articlesUpdated = 0;
+    const articleIds: string[] = [];
+    const createdArticleIds: string[] = [];
+    const updatedArticleIds: string[] = [];
+    const records: Array<{
+      article: ArticleRow;
+      existingContentHash: string | null;
+      item: ParsedFeedItem;
+      feedContentHash: string;
+    }> = [];
 
-    const result = await this.options.db.transaction(() => {
-      const existingFeed = this.options.feeds.findById(input.feedId);
-      const feed = this.options.feeds.upsert({
-        id: input.feedId,
-        folderId: input.folderId,
-        title: input.parsed.title,
-        siteUrl: input.parsed.siteUrl,
-        feedUrl: input.feedUrl,
-        description: input.parsed.description,
-        enabled: true,
-        fullContentMode: existingFeed?.fullContentMode ?? "feed_only",
-        now: fetchedAt
-      });
+    // A single large RSS transaction keeps SQLite's only writer lock for the
+    // full feed/FTS write. Bound each lock window so the HTTP process can serve
+    // session and list reads between batches.
+    for (const items of chunkItems(input.parsed.items, FEED_WRITE_BATCH_SIZE)) {
+      const batch = this.options.db.transaction(() => {
+        const result: typeof records = [];
+        for (const item of items) {
+          const feedContentHash = effectiveContentHash({
+            title: item.title,
+            summary: item.summary,
+            contentHtml: item.contentHtml,
+            contentText: item.contentText,
+            source: "feed"
+          });
+          const articleInput = articleInputForFeedItem(feed, item, fetchedAt, feedContentHash);
+          const existing = this.options.articles.findById(articleInput.id);
+          const existingContentHash = existing?.contentHash ?? null;
+          const article = this.options.articles.upsert(articleInput);
+          if (isRetentionDeletedArticle(article)) {
+            continue;
+          }
 
-      let articlesCreated = 0;
-      let articlesUpdated = 0;
-      const articleIds: string[] = [];
-      const createdArticleIds: string[] = [];
-      const updatedArticleIds: string[] = [];
-      const records: Array<{
-        article: ArticleRow;
-        existingContentHash: string | null;
-        item: ParsedFeedItem;
-        feedContentHash: string;
-      }> = [];
-
-      for (const item of input.parsed.items) {
-        const feedContentHash = effectiveContentHash({
-          title: item.title,
-          summary: item.summary,
-          contentHtml: item.contentHtml,
-          contentText: item.contentText,
-          source: "feed"
-        });
-        const articleInput = articleInputForFeedItem(feed, item, fetchedAt, feedContentHash);
-        const existing = this.options.articles.findById(articleInput.id);
-        const existingContentHash = existing?.contentHash ?? null;
-        const article = this.options.articles.upsert(articleInput);
-        if (isRetentionDeletedArticle(article)) {
-          continue;
+          this.options.articles.upsertContent({
+            articleId: article.id,
+            contentHtml: item.contentHtml,
+            contentText: item.contentText,
+            extractionStatus: "feed_only",
+            extractedAt: fetchedAt,
+            contentHash: feedContentHash,
+            now: fetchedAt
+          });
+          result.push({ article, existingContentHash, item, feedContentHash });
+          if (existing) {
+            articlesUpdated += 1;
+            updatedArticleIds.push(article.id);
+          } else {
+            articlesCreated += 1;
+            createdArticleIds.push(article.id);
+          }
         }
-
-        articleIds.push(article.id);
-        this.options.articles.upsertContent({
-          articleId: article.id,
-          contentHtml: item.contentHtml,
-          contentText: item.contentText,
-          extractionStatus: "feed_only",
-          extractedAt: fetchedAt,
-          contentHash: feedContentHash,
-          now: fetchedAt
-        });
-        records.push({ article, existingContentHash, item, feedContentHash });
-
-        if (existing) {
-          articlesUpdated += 1;
-          updatedArticleIds.push(article.id);
-        } else {
-          articlesCreated += 1;
-          createdArticleIds.push(article.id);
-        }
+        return result;
+      })();
+      for (const record of batch) {
+        articleIds.push(record.article.id);
+        records.push(record);
       }
+      await delayImmediate();
+    }
 
-      this.options.feeds.recordFetchSuccess(feed.id, fetchedAt);
-      const updatedFeed = this.options.feeds.findById(feed.id);
-      if (!updatedFeed) {
-        throw new Error(`Failed to load refreshed feed: ${feed.id}`);
-      }
-
-      return {
-        jobId: syncJobId(feed.id, fetchedAt),
-        feed: updatedFeed,
-        articleIds,
-        createdArticleIds,
-        updatedArticleIds,
-        records,
-        articlesSeen: input.parsed.items.length,
-        articlesCreated,
-        articlesUpdated
-      };
-    })();
+    this.options.feeds.recordFetchSuccess(feed.id, fetchedAt);
+    const updatedFeed = this.options.feeds.findById(feed.id);
+    if (!updatedFeed) {
+      throw new Error(`Failed to load refreshed feed: ${feed.id}`);
+    }
+    const result = {
+      jobId: syncJobId(feed.id, fetchedAt),
+      feed: updatedFeed,
+      articleIds,
+      createdArticleIds,
+      updatedArticleIds,
+      records,
+      articlesSeen: input.parsed.items.length,
+      articlesCreated,
+      articlesUpdated
+    };
 
     for (const record of result.records) {
       let finalContentHash = record.feedContentHash;
@@ -311,8 +321,8 @@ export class FeedRefreshService {
     }
 
     this.options.feeds.recordFetchSuccess(result.feed.id, fetchedAt);
-    const updatedFeed = this.options.feeds.findById(result.feed.id);
-    if (!updatedFeed) {
+    const finalFeed = this.options.feeds.findById(result.feed.id);
+    if (!finalFeed) {
       throw new Error(`Failed to load refreshed feed: ${result.feed.id}`);
     }
 
@@ -320,7 +330,7 @@ export class FeedRefreshService {
 
     return {
       jobId: result.jobId,
-      feed: updatedFeed,
+      feed: finalFeed,
       articleIds: result.articleIds,
       createdArticleIds: result.createdArticleIds,
       updatedArticleIds: result.updatedArticleIds,
@@ -334,6 +344,14 @@ export class FeedRefreshService {
 }
 
 const defaultFeedFetcher: FeedFetcher = async (url, init) => fetch(url, init);
+
+function chunkItems<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let offset = 0; offset < items.length; offset += size) {
+    chunks.push(items.slice(offset, offset + size));
+  }
+  return chunks;
+}
 
 function normalizeHttpFeedUrl(input: string): string {
   let feedUrl: string;
