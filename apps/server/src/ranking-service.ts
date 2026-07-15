@@ -399,7 +399,14 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const recentIntent = activeIndexId ? this.recentIntentVectorsFor(activeIndexId) : [];
-    const recentBehavior = activeIndexId ? this.recentBehaviorVectorsFor(activeIndexId) : [];
+    // Shadow telemetry must not make a normal recommendation refresh do another
+    // candidate-by-behaviour vector pass. Shadow evaluation belongs to an
+    // explicitly scheduled diagnostic path; only an active module pays this
+    // ranking cost.
+    const recentBehavior =
+      activeIndexId && settings.recentHistoryMode === "active"
+        ? this.recentBehaviorVectorsFor(activeIndexId)
+        : [];
     if (timeBudgetExceeded()) {
       return timeBudgetPauseResult();
     }
@@ -416,8 +423,10 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const ftrlModel = this.ftrlModel();
-    const exposureFatigue = this.exposureFatigueFor(candidates, now);
-    const explorationBucketSamples = this.explorationBucketSamples();
+    const explorationBucketSamples =
+      settings.learnedExplorationMode === "active"
+        ? this.explorationBucketSamples()
+        : new Map<string, number>();
     const duplicateStats = duplicateStatsFor(candidates, duplicateFeatures);
     const rerankWindowId = `${activeRankContext}:${now}`;
     const scored: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }> = [];
@@ -535,17 +544,31 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         source: sourceFeatures.get(candidate.feedId) ?? emptySourceFeature(),
         ftrlModel
       });
-      const score = applyExposureFatigue(
-        baseV2Score,
-        candidate,
-        duplicateFeatures.get(candidate.articleId) ?? emptyDuplicateFeature(),
-        exposureFatigue,
-        settings
-      );
-      scored.push({ candidate, score });
+      scored.push({ candidate, score: baseV2Score });
     }
 
-    const reranked = rerankCanonicalWindow(scored, settings, MMR_WINDOW_LIMIT, explorationBucketSamples);
+    const scoredWithFatigue = (() => {
+      if (settings.crossSessionFatigueMode !== "active") {
+        return scored;
+      }
+      const exposureFatigue = this.exposureFatigueFor(scored, duplicateFeatures, now);
+      return scored.map(({ candidate, score }) => ({
+        candidate,
+        score: applyExposureFatigue(
+          score,
+          candidate,
+          duplicateFeatures.get(candidate.articleId) ?? emptyDuplicateFeature(),
+          exposureFatigue,
+          settings
+        )
+      }));
+    })();
+    const reranked = rerankCanonicalWindow(
+      scoredWithFatigue,
+      settings,
+      MMR_WINDOW_LIMIT,
+      explorationBucketSamples
+    );
     const rankScores: UpsertArticleRankScoreInput[] = [];
     const explanations: UpsertArticleRankExplanationInput[] = [];
     for (const item of reranked) {
@@ -1088,7 +1111,8 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
   }
 
   private exposureFatigueFor(
-    candidates: ArticleRankingCandidateRow[],
+    scored: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }>,
+    duplicateFeatures: Map<string, DuplicateFeature>,
     now: number
   ): ExposureFatigueCounts {
     const result: ExposureFatigueCounts = {
@@ -1097,37 +1121,48 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       duplicateGroups: new Map()
     };
     const db = this.options.db;
-    if (!db || candidates.length === 0) {
+    if (!db || scored.length === 0) {
       return result;
     }
-    const feedIds = uniqueStrings(candidates.map((candidate) => candidate.feedId));
+    const feedIds = uniqueStrings(scored.map(({ candidate }) => candidate.feedId));
+    const familyIds = uniqueStrings(
+      scored.map(({ score }) => score.primaryFamilyId).filter((id): id is string => id !== null)
+    );
+    const duplicateGroupIds = uniqueStrings(
+      scored
+        .map(({ candidate }) => duplicateFeatures.get(candidate.articleId)?.groupId ?? null)
+        .filter((id): id is string => id !== null)
+    );
+    const cutoff = now - 7 * 86_400_000;
+    this.collectExposureCounts("feed_id", feedIds, cutoff, result.feeds);
+    this.collectExposureCounts("interest_family_id", familyIds, cutoff, result.families);
+    this.collectExposureCounts("duplicate_group_id", duplicateGroupIds, cutoff, result.duplicateGroups);
+    return result;
+  }
+
+  private collectExposureCounts(
+    column: "feed_id" | "interest_family_id" | "duplicate_group_id",
+    ids: string[],
+    cutoff: number,
+    target: Map<string, number>
+  ): void {
+    const db = this.options.db;
+    if (!db || ids.length === 0) {
+      return;
+    }
     const rows = db
       .prepare(
         `
-          select feed_id as feedId, interest_family_id as familyId, duplicate_group_id as duplicateGroupId, count(*) as count
+          select ${column} as id, count(*) as count
           from recommendation_exposures
-          where exposed_at >= ?
-            and (feed_id in (${feedIds.map(() => "?").join(", ")}) or interest_family_id is not null or duplicate_group_id is not null)
-          group by feed_id, interest_family_id, duplicate_group_id
+          where exposed_at >= ? and ${column} in (${ids.map(() => "?").join(", ")})
+          group by ${column}
         `
       )
-      .all(now - 7 * 86_400_000, ...feedIds) as Array<{
-      feedId: string | null;
-      familyId: string | null;
-      duplicateGroupId: string | null;
-      count: number;
-    }>;
+      .all(cutoff, ...ids) as Array<{ id: string; count: number }>;
     for (const row of rows) {
-      if (row.feedId) result.feeds.set(row.feedId, (result.feeds.get(row.feedId) ?? 0) + row.count);
-      if (row.familyId) result.families.set(row.familyId, (result.families.get(row.familyId) ?? 0) + row.count);
-      if (row.duplicateGroupId) {
-        result.duplicateGroups.set(
-          row.duplicateGroupId,
-          (result.duplicateGroups.get(row.duplicateGroupId) ?? 0) + row.count
-        );
-      }
+      target.set(row.id, row.count);
     }
-    return result;
   }
 
   private explorationBucketSamples(): Map<string, number> {
