@@ -64,6 +64,9 @@ const server = buildServer({
 });
 
 let closing = false;
+// The worker has no listening socket. Keep its event loop alive without
+// polling SQLite; JobRunner's own interval and wake signal perform drains.
+const keepAlive = setInterval(() => undefined, 60_000);
 
 try {
   await server.ready();
@@ -82,6 +85,7 @@ try {
   );
 } catch (error) {
   server.log.error(error);
+  clearInterval(keepAlive);
   process.exit(1);
 }
 
@@ -99,6 +103,7 @@ async function closeAndExit(code: number): Promise<void> {
   }
 
   closing = true;
+  clearInterval(keepAlive);
   try {
     await server.close();
   } catch (error) {
