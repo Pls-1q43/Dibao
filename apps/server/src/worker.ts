@@ -1,4 +1,4 @@
-import { buildServer, type DibaoServerInstance } from "./app.js";
+import { buildServer } from "./app.js";
 import {
   DEFAULT_WORKER_CORE_MIGRATION_WAIT_MS,
   waitForCoreMigrationsReady,
@@ -64,11 +64,6 @@ const server = buildServer({
 });
 
 let closing = false;
-const keepAlive = setInterval(() => {
-  void (server as DibaoServerInstance).drainBackgroundJobsNow?.().catch((error) => {
-    server.log.error(error);
-  });
-}, 1_000);
 
 try {
   await server.ready();
@@ -87,7 +82,6 @@ try {
   );
 } catch (error) {
   server.log.error(error);
-  clearInterval(keepAlive);
   process.exit(1);
 }
 
@@ -105,7 +99,6 @@ async function closeAndExit(code: number): Promise<void> {
   }
 
   closing = true;
-  clearInterval(keepAlive);
   try {
     await server.close();
   } catch (error) {

@@ -96,6 +96,33 @@ export class ArticleActionService {
     return finalResult;
   }
 
+  recordMany(inputs: RecordArticleActionServiceInput[]): Array<RecordArticleActionResult | null> {
+    if (inputs.length === 0) {
+      return [];
+    }
+    const now = this.now();
+    const results = this.options.actions.recordMany
+      ? this.options.actions.recordMany(inputs.map((input) => ({ ...input, now })))
+      : inputs.map((input) => this.options.actions.record({ ...input, now }));
+    const successfulArticleIds = results.flatMap((result, index) =>
+      result && inputs[index] ? [inputs[index].articleId] : []
+    );
+    if (successfulArticleIds.length === 0) {
+      return results;
+    }
+
+    this.deferPostActionWork(() => {
+      if (this.options.behaviorProjectionJobs) {
+        this.options.behaviorProjectionJobs.enqueueProjection();
+      } else {
+        this.options.rankingJobs?.enqueueArticles(
+          successfulArticleIds
+        );
+      }
+    });
+    return results;
+  }
+
   private deferPostActionWork(work: () => void): void {
     const defer =
       this.options.deferPostActionWork ??

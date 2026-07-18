@@ -42,10 +42,6 @@ import {
 import { ProfileService } from "./profile-service.js";
 import {
   RankingRecalculateJobService,
-  RANKING_RECALCULATE_CHUNK_DELAY_MS,
-  RANKING_RECALCULATE_CHUNK_SIZE,
-  RANKING_RECALCULATE_MAX_CHUNK_SIZE,
-  RANKING_RECALCULATE_MIN_CHUNK_SIZE,
   RANKING_RECALCULATE_JOB_TYPE
 } from "./ranking-job-service.js";
 import { RecommendationRankingService } from "./ranking-service.js";
@@ -1541,6 +1537,33 @@ describe("job runner foundation", () => {
     }
   });
 
+  it("backs off consecutive feed refresh failures and resets after success", () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    try {
+      feeds.upsert({
+        id: "feed_backoff",
+        title: "Backoff Feed",
+        feedUrl: "https://example.com/backoff.xml",
+        now: 0
+      });
+      feeds.recordFetchFailure("feed_backoff", "offline", 1_000);
+      const first = feeds.findById("feed_backoff")!;
+      const firstDelay = first.nextRefreshAt! - first.lastFetchedAt!;
+
+      feeds.recordFetchFailure("feed_backoff", "offline", first.nextRefreshAt!);
+      const second = feeds.findById("feed_backoff")!;
+      const secondDelay = second.nextRefreshAt! - second.lastFetchedAt!;
+      expect(secondDelay).toBeGreaterThan(firstDelay);
+
+      feeds.recordFetchSuccess("feed_backoff", second.nextRefreshAt!);
+      const recovered = feeds.findById("feed_backoff")!;
+      expect(recovered.nextRefreshAt! - recovered.lastFetchedAt!).toBeLessThan(secondDelay);
+    } finally {
+      db.close();
+    }
+  });
+
   it("retention scheduler enqueues one cleanup job and wakes the runner", async () => {
     const db = createEmptyDatabase();
     const jobs = new SqliteJobRepository(db);
@@ -1653,12 +1676,12 @@ describe("job runner foundation", () => {
     }
   });
 
-  it("runs full ranking recalculation as resumable chunks", async () => {
+  it("runs one coalesced active-window ranking refresh", async () => {
     const db = createEmptyDatabase();
     try {
       const jobs = new SqliteJobRepository(db);
-      const calls: Array<{ cursor: string | null; limit: number }> = [];
       let now = 1000;
+      let refreshes = 0;
       const rankingJobs = new RankingRecalculateJobService({
         jobs,
         ranking: {
@@ -1669,29 +1692,15 @@ describe("job runner foundation", () => {
             return articleIds.length;
           },
           recalculateAll() {
-            return 0;
-          },
-          recalculateChunk(input: { cursor?: string | null; limit: number }) {
-            calls.push({
-              cursor: input.cursor ?? null,
-              limit: input.limit
-            });
-            return {
-              processed: input.cursor === "cursor_2" ? 100 : 500,
-              nextCursor:
-                input.cursor === null || input.cursor === undefined
-                  ? "cursor_1"
-                  : input.cursor === "cursor_1"
-                    ? "cursor_2"
-                    : null
-            };
+            refreshes += 1;
+            return 42;
           }
         },
-        jobIdFactory: () => `job_rank_${calls.length}_${randomFixtureId()}`,
-        now: () => now,
-        targetChunkMs: 0
+        jobIdFactory: () => `job_rank_${randomFixtureId()}`,
+        now: () => now
       });
       rankingJobs.enqueueAll();
+      rankingJobs.enqueueArticles(["article_new"]);
       const runner = new JobRunner({
         jobs,
         handlers: {
@@ -1703,26 +1712,17 @@ describe("job runner foundation", () => {
       });
 
       await expect(runner.drainDue()).resolves.toBe(1);
-      now += RANKING_RECALCULATE_CHUNK_DELAY_MS;
-      await expect(runner.drainDue()).resolves.toBe(1);
-      now += RANKING_RECALCULATE_CHUNK_DELAY_MS;
-      await expect(runner.drainDue()).resolves.toBe(1);
-      expect(calls).toEqual([
-        { cursor: null, limit: RANKING_RECALCULATE_CHUNK_SIZE },
-        { cursor: "cursor_1", limit: RANKING_RECALCULATE_CHUNK_SIZE },
-        { cursor: "cursor_2", limit: RANKING_RECALCULATE_CHUNK_SIZE }
-      ]);
-      expect(jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "succeeded")).toBe(3);
+      expect(refreshes).toBe(1);
+      expect(jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "succeeded")).toBe(1);
     } finally {
       db.close();
     }
   });
 
-  it("clamps oversized legacy full ranking chunks to the maximum chunk size", async () => {
+  it("cancels legacy cursor ranking jobs without running a full-history scan", () => {
     const db = createEmptyDatabase();
     try {
       const jobs = new SqliteJobRepository(db);
-      const calls: Array<{ cursor: string | null; limit: number }> = [];
       const rankingJobs = new RankingRecalculateJobService({
         jobs,
         ranking: {
@@ -1734,19 +1734,8 @@ describe("job runner foundation", () => {
           },
           recalculateAll() {
             return 0;
-          },
-          recalculateChunk(input: { cursor?: string | null; limit: number }) {
-            calls.push({
-              cursor: input.cursor ?? null,
-              limit: input.limit
-            });
-            return {
-              processed: input.limit,
-              nextCursor: "cursor_legacy_next"
-            };
           }
         },
-        jobIdFactory: () => "job_rank_legacy_next",
         now: () => 1000
       });
       jobs.enqueue({
@@ -1757,212 +1746,10 @@ describe("job runner foundation", () => {
         runAfter: 1000,
         now: 1000
       });
-      const runner = new JobRunner({
-        jobs,
-        handlers: {
-          [RANKING_RECALCULATE_JOB_TYPE]: (job) => {
-            rankingJobs.handleRankingRecalculateJob(job);
-          }
-        },
-        now: () => 1000
-      });
-
-      await expect(runner.drainDue()).resolves.toBe(1);
-      expect(calls).toEqual([
-        { cursor: "cursor_legacy", limit: RANKING_RECALCULATE_MAX_CHUNK_SIZE }
-      ]);
-      expect(JSON.parse(jobs.findById("job_rank_legacy_next")?.payloadJson ?? "{}")).toEqual({
-        cursor: "cursor_legacy_next",
-        limit: RANKING_RECALCULATE_MAX_CHUNK_SIZE
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("keeps stale tiny full ranking chunk limits at the minimum chunk size", async () => {
-    const db = createEmptyDatabase();
-    try {
-      const jobs = new SqliteJobRepository(db);
-      const calls: Array<{ cursor: string | null; limit: number }> = [];
-      const rankingJobs = new RankingRecalculateJobService({
-        jobs,
-        ranking: {
-          recalculateArticle() {
-            return 1;
-          },
-          recalculateArticles(articleIds: string[]) {
-            return articleIds.length;
-          },
-          recalculateAll() {
-            return 0;
-          },
-          recalculateChunk(input: { cursor?: string | null; limit: number }) {
-            calls.push({
-              cursor: input.cursor ?? null,
-              limit: input.limit
-            });
-            return {
-              processed: input.limit,
-              nextCursor: null
-            };
-          }
-        },
-        jobIdFactory: () => "job_rank_tiny_next",
-        now: () => 1000
-      });
-      jobs.enqueue({
-        id: "job_rank_tiny",
-        type: RANKING_RECALCULATE_JOB_TYPE,
-        payloadJson: JSON.stringify({ cursor: "cursor_tiny", limit: 1 }),
-        maxAttempts: 2,
-        runAfter: 1000,
-        now: 1000
-      });
-      const runner = new JobRunner({
-        jobs,
-        handlers: {
-          [RANKING_RECALCULATE_JOB_TYPE]: (job) => {
-            rankingJobs.handleRankingRecalculateJob(job);
-          }
-        },
-        now: () => 1000
-      });
-
-      await expect(runner.drainDue()).resolves.toBe(1);
-      expect(calls).toEqual([
-        { cursor: "cursor_tiny", limit: RANKING_RECALCULATE_MIN_CHUNK_SIZE }
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("reschedules paused full ranking chunks after the foreground quiet window", async () => {
-    const db = createEmptyDatabase();
-    try {
-      const jobs = new SqliteJobRepository(db);
-      const chunks: Array<{ cursor: string | null; limit: number }> = [];
-      const rankingJobs = new RankingRecalculateJobService({
-        jobs,
-        ranking: {
-          recalculateArticle() {
-            return 1;
-          },
-          recalculateArticles(articleIds: string[]) {
-            return articleIds.length;
-          },
-          recalculateAll() {
-            return 0;
-          },
-          recalculateChunk(input: { cursor?: string | null; limit: number }) {
-            chunks.push({
-              cursor: input.cursor ?? null,
-              limit: input.limit
-            });
-            return {
-              processed: 0,
-              nextCursor: input.cursor ?? null,
-              paused: true,
-              resumeAfter: 42_000
-            };
-          }
-        },
-        jobIdFactory: () => "job_rank_resume",
-        now: () => 10_000
-      });
-      jobs.enqueue({
-        id: "job_rank_paused",
-        type: RANKING_RECALCULATE_JOB_TYPE,
-        payloadJson: null,
-        maxAttempts: 2,
-        runAfter: 10_000,
-        now: 10_000
-      });
-      const runner = new JobRunner({
-        jobs,
-        handlers: {
-          [RANKING_RECALCULATE_JOB_TYPE]: (job) => {
-            rankingJobs.handleRankingRecalculateJob(job);
-          }
-        },
-        now: () => 10_000
-      });
-
-      await expect(runner.drainDue()).resolves.toBe(1);
-      expect(chunks).toEqual([{ cursor: null, limit: RANKING_RECALCULATE_CHUNK_SIZE }]);
-      expect(jobs.findById("job_rank_paused")).toMatchObject({
-        status: "succeeded"
-      });
-      expect(jobs.findById("job_rank_resume")).toMatchObject({
-        status: "queued",
-        runAfter: 42_000
-      });
-      expect(JSON.parse(jobs.findById("job_rank_resume")?.payloadJson ?? "{}")).toEqual({
-        cursor: null,
-        limit: RANKING_RECALCULATE_CHUNK_SIZE
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("shrinks time-budget paused full ranking chunks even when no article was written", async () => {
-    const db = createEmptyDatabase();
-    try {
-      const jobs = new SqliteJobRepository(db);
-      const rankingJobs = new RankingRecalculateJobService({
-        jobs,
-        ranking: {
-          recalculateArticle() {
-            return 1;
-          },
-          recalculateArticles(articleIds: string[]) {
-            return articleIds.length;
-          },
-          recalculateAll() {
-            return 0;
-          },
-          recalculateChunk() {
-            const startedAt = Date.now();
-            while (Date.now() - startedAt < 5) {
-              // Keep the fixture deterministic enough for adaptive chunk sizing.
-            }
-            return {
-              processed: 0,
-              nextCursor: "cursor_slow",
-              paused: true,
-              pauseReason: "time_budget",
-              resumeAfter: 42_000
-            };
-          }
-        },
-        jobIdFactory: () => "job_rank_smaller",
-        now: () => 10_000,
-        targetChunkMs: 1
-      });
-      jobs.enqueue({
-        id: "job_rank_slow",
-        type: RANKING_RECALCULATE_JOB_TYPE,
-        payloadJson: JSON.stringify({ cursor: "cursor_slow", limit: 8 }),
-        maxAttempts: 2,
-        runAfter: 10_000,
-        now: 10_000
-      });
-      const runner = new JobRunner({
-        jobs,
-        handlers: {
-          [RANKING_RECALCULATE_JOB_TYPE]: (job) => {
-            rankingJobs.handleRankingRecalculateJob(job);
-          }
-        },
-        now: () => 10_000
-      });
-
-      await expect(runner.drainDue()).resolves.toBe(1);
-      expect(JSON.parse(jobs.findById("job_rank_smaller")?.payloadJson ?? "{}")).toEqual({
-        cursor: "cursor_slow",
-        limit: 4
+      expect(rankingJobs.cancelLegacyCursorJobs()).toBe(1);
+      expect(jobs.findById("job_rank_legacy")).toMatchObject({
+        status: "cancelled",
+        error: expect.stringContaining("active-window refresh")
       });
     } finally {
       db.close();

@@ -111,7 +111,6 @@ export class SqliteJobRepository implements JobRepository {
   }
 
   claimNextDue(now: number): JobRow | null {
-    refreshWalVisibility(this.db);
     return this.db.transaction(() => {
       const candidate = this.db
         .prepare(
@@ -442,14 +441,6 @@ export class SqliteJobRepository implements JobRepository {
       .run(now, now, now);
 
     return result.changes;
-  }
-}
-
-function refreshWalVisibility(db: DibaoDatabase): void {
-  try {
-    db.pragma("wal_checkpoint(PASSIVE)");
-  } catch {
-    // A busy checkpoint should not block ordinary job claiming; the next poll can retry.
   }
 }
 

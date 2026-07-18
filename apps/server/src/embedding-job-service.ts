@@ -17,7 +17,10 @@ import {
 import type { EmbeddingProviderService } from "./embedding-provider-service.js";
 import { DeferredJobRun, PermanentJobFailure } from "./job-runner.js";
 import type { ProfileService } from "./profile-service.js";
-import type { RankingRecalculateJobService } from "./ranking-job-service.js";
+import {
+  RANKING_RECALCULATE_REFRESH_DELAY_MS,
+  type RankingRecalculateJobService
+} from "./ranking-job-service.js";
 
 export const EMBEDDING_GENERATE_JOB_TYPE = "embedding_generate" as const;
 export const OPENAI_COMPATIBLE_EMBEDDING_BATCH_SIZE = 16;
@@ -295,9 +298,11 @@ export class EmbeddingJobService {
 
     const profileResult = this.options.profile?.processArticleEvents(writtenArticleIds);
     if (profileResult?.profileChanged || profileResult?.feedStatsChanged) {
-      this.options.rankingJobs?.enqueueAll();
+      this.options.rankingJobs?.enqueueAll({ delayMs: RANKING_RECALCULATE_REFRESH_DELAY_MS });
     } else {
-      this.options.rankingJobs?.enqueueArticles(writtenArticleIds);
+      this.options.rankingJobs?.enqueueArticles(writtenArticleIds, {
+        delayMs: RANKING_RECALCULATE_REFRESH_DELAY_MS
+      });
     }
   }
 

@@ -356,8 +356,24 @@ export class SqliteRankingRepository implements RankingRepository {
                 and a.status != 'deleted'
                 and s.hidden_at is null
                 and s.not_interested_at is null
+                and s.read_at is null
+                and coalesce(s.reading_progress, 0) < 0.9
                 and f.deleted_at is null
                 and f.enabled = 1
+                and not (
+                  exists (
+                    select 1
+                    from behavior_events ignored
+                    where ignored.article_id = a.id
+                      and ignored.event_type = 'impression'
+                      and ignored.event_weight < 0
+                  )
+                  and coalesce(s.reading_progress, 0) = 0
+                  and s.last_opened_at is null
+                  and s.favorited_at is null
+                  and s.liked_at is null
+                  and s.read_later_at is null
+                )
                 ${articleFilter}
                 ${cursorFilter}
               order by a.id

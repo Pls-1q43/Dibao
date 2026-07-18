@@ -179,7 +179,8 @@ import { ProfileService } from "./profile-service.js";
 import { ProfileRebuildService } from "./profile-rebuild-service.js";
 import {
   RankingRecalculateJobService,
-  RANKING_RECALCULATE_JOB_TYPE
+  RANKING_RECALCULATE_JOB_TYPE,
+  RANKING_RECALCULATE_REFRESH_DELAY_MS
 } from "./ranking-job-service.js";
 import {
   ReaderCommandService,
@@ -206,6 +207,7 @@ import {
   type RankExplanationResult
 } from "./ranking-service.js";
 import { RecommendationMemoryService } from "./recommendation-memory-service.js";
+import { PassiveExposureBuffer } from "./passive-exposure-buffer.js";
 import {
   DEFAULT_RETENTION_CLEANUP_INTERVAL_MS,
   RetentionCleanupJobService,
@@ -446,6 +448,8 @@ type EncodedCursorPayload = CursorPayload | { keyset: ArticleListCursor };
 
 const ARTICLE_EXPLANATION_CACHE_TTL_MS = 60_000;
 const ARTICLE_EXPLANATION_CACHE_MAX_ENTRIES = 500;
+const WAL_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+const WAL_MAINTENANCE_MIN_BYTES = 16 * 1024 * 1024;
 
 type BuildServerOptions = {
   db?: DibaoDatabase;
@@ -589,6 +593,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     enabled: settingsService.getSettings().telemetry.enabled
   });
   const recommendationMemoryService = new RecommendationMemoryService(db, options.now);
+  const passiveExposureBuffer = new PassiveExposureBuffer(recommendationMemoryService);
   attachServerTelemetryErrorHandler(app);
   const rankingService = new RecommendationRankingService({
     db,
@@ -697,25 +702,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   const rankingJobService = new RankingRecalculateJobService({
     jobs,
     ranking: rankingService,
-    now: options.now,
-    targetChunkMs: options.rankingTargetChunkMs,
-    onChunk: (record) => {
-      app.log.info(
-        {
-          route: "jobs.rankingRecalculate.chunk",
-          jobId: record.jobId,
-          durationMs: roundDuration(record.durationMs),
-          processed: record.processed,
-          limit: record.limit,
-          nextLimit: record.nextLimit,
-          hasNextCursor: record.nextCursor !== null,
-          paused: record.paused,
-          pauseReason: record.pauseReason ?? null,
-          resumeAfter: timestampToIso(record.resumeAfter)
-        },
-        "job.performance"
-      );
-    }
+    now: options.now
   });
   const behaviorProjectionJobService = new BehaviorProjectionJobService({
     db,
@@ -1006,6 +993,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   const authRequired = options.authRequired ?? true;
   let maintenanceTickTimer: NodeJS.Timeout | null = null;
   let maintenanceInitialTickTimer: NodeJS.Timeout | null = null;
+  let walMaintenanceTimer: NodeJS.Timeout | null = null;
   let backgroundStartupTimer: NodeJS.Timeout | null = null;
   let stopJobWakeWatcher: (() => void) | null = null;
   let backgroundServicesStarted = false;
@@ -1218,7 +1206,9 @@ export function buildServer(options: BuildServerOptions = {}) {
 
     enqueueEmbeddingArticles(uniqueArticleIds);
     try {
-      rankingJobService.enqueueArticles(uniqueArticleIds);
+      rankingJobService.enqueueArticles(uniqueArticleIds, {
+        delayMs: RANKING_RECALCULATE_REFRESH_DELAY_MS
+      });
       if (hasBehaviorEvidence(uniqueArticleIds)) {
         const maintenanceSettings = settingsService.getSettings().recommendationMaintenance;
         if (maintenanceSettings.maintenanceEnabled) {
@@ -1389,6 +1379,13 @@ export function buildServer(options: BuildServerOptions = {}) {
       return;
     }
     backgroundServicesStarted = true;
+    const cancelledLegacyRankingJobs = rankingJobService.cancelLegacyCursorJobs();
+    if (cancelledLegacyRankingJobs > 0) {
+      app.log.info(
+        { cancelledLegacyRankingJobs },
+        "cancelled legacy full-history ranking jobs"
+      );
+    }
     const pendingProjectionJob = behaviorProjectionJobService.enqueueProjectionIfPending();
     if (pendingProjectionJob) {
       app.log.info(
@@ -1415,6 +1412,33 @@ export function buildServer(options: BuildServerOptions = {}) {
     jobHistoryCleanupScheduler.start();
     profileDecayScheduler.start();
     recommendationMaintenanceScheduler.start();
+    if (!walMaintenanceTimer && configuredDatabasePath && configuredDatabasePath !== ":memory:") {
+      const maintainWalWhenIdle = () => {
+        const now = options.now?.() ?? Date.now();
+        if (
+          foregroundQuietUntil(settings, {
+            now,
+            quietWindowMs: foregroundQuietWindowMs,
+            signalPath: foregroundSignalPath
+          })
+        ) {
+          return;
+        }
+        try {
+          const wal = statSync(`${configuredDatabasePath}-wal`, { throwIfNoEntry: false });
+          if (!wal || wal.size < WAL_MAINTENANCE_MIN_BYTES) {
+            return;
+          }
+          db.pragma("wal_checkpoint(PASSIVE)");
+          app.log.info({ walBytes: wal.size }, "sqlite.wal_maintenance");
+        } catch (error) {
+          // The next idle interval can retry; this path must never affect requests.
+          app.log.debug({ error }, "sqlite.wal_maintenance_skipped");
+        }
+      };
+      walMaintenanceTimer = setInterval(maintainWalWhenIdle, WAL_MAINTENANCE_INTERVAL_MS);
+      walMaintenanceTimer.unref?.();
+    }
     if (!maintenanceTickTimer) {
       const intervalMs =
         options.recommendationMaintenanceIntervalMs ??
@@ -1481,6 +1505,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       stopJobWakeWatcher();
       stopJobWakeWatcher = null;
     }
+    passiveExposureBuffer.dispose();
     pluginService.dispose();
     if (maintenanceTickTimer) {
       clearInterval(maintenanceTickTimer);
@@ -1489,6 +1514,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     if (maintenanceInitialTickTimer) {
       clearTimeout(maintenanceInitialTickTimer);
       maintenanceInitialTickTimer = null;
+    }
+    if (walMaintenanceTimer) {
+      clearInterval(walMaintenanceTimer);
+      walMaintenanceTimer = null;
     }
     if (backgroundStartupTimer) {
       clearTimeout(backgroundStartupTimer);
@@ -1958,7 +1987,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       return sendApiError(reply, 400, "VALIDATION_ERROR", "Invalid recommendation exposure batch");
     }
     return {
-      data: recommendationMemoryService.recordExposures({
+      data: passiveExposureBuffer.record({
         clientSessionId: body.clientSessionId,
         articleIds: body.articleIds,
         exposedAt
@@ -2961,12 +2990,14 @@ export function buildServer(options: BuildServerOptions = {}) {
     const startedAt = performance.now();
     const data: Array<{ articleId: string; eventId: string; state: unknown }> = [];
     const skipped: Array<{ articleId: string; code: string; message: string }> = [];
-    for (const action of parsed.actions) {
-      try {
-        const result = articleActionService.record({
-          articleId: action.articleId,
-          ...action.input
-        });
+    try {
+      const results = articleActionService.recordMany(
+        parsed.actions.map((action) => ({ articleId: action.articleId, ...action.input }))
+      );
+      for (const [index, result] of results.entries()) {
+        const action = parsed.actions[index];
+        if (!action) continue;
+        if (result) {
         invalidateArticleExplanationCache(action.articleId);
         data.push({
           articleId: action.articleId,
@@ -2979,17 +3010,16 @@ export function buildServer(options: BuildServerOptions = {}) {
           action: action.input.type,
           state: result.state
         }).catch((error) => app.log.error(error));
-      } catch (error) {
-        if (error instanceof ArticleActionServiceError && error.code === "NOT_FOUND") {
-          skipped.push({
-            articleId: action.articleId,
-            code: error.code,
-            message: error.message
-          });
           continue;
         }
-        return sendArticleActionError(reply, error);
+        skipped.push({
+          articleId: action.articleId,
+          code: "NOT_FOUND",
+          message: "Article not found"
+        });
       }
+    } catch (error) {
+      return sendArticleActionError(reply, error);
     }
     app.log.info(
       {

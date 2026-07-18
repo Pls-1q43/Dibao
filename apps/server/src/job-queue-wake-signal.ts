@@ -1,5 +1,6 @@
-import { writeFile, watchFile, unwatchFile, type Stats } from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, writeFile, watchFile, unwatchFile, type Stats } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 const JOB_QUEUE_WAKE_SIGNAL_FILE = "job-queue-wake.json";
 
@@ -8,6 +9,10 @@ export function jobQueueWakeSignalPath(databasePath: string | undefined): string
     return null;
   }
 
+  if (process.platform === "linux" && existsSync("/dev/shm")) {
+    const key = createHash("sha256").update(resolve(databasePath)).digest("hex").slice(0, 16);
+    return join("/dev/shm", `dibao-${key}-${JOB_QUEUE_WAKE_SIGNAL_FILE}`);
+  }
   return join(dirname(databasePath), JOB_QUEUE_WAKE_SIGNAL_FILE);
 }
 

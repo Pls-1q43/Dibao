@@ -2068,6 +2068,23 @@ describe("db package", () => {
         candidate?.behaviorProjectionScore ?? 0
       );
 
+      articles.upsert({
+        id: "article_ignored_rank",
+        feedId: "feed_rank",
+        url: "https://example.com/ignored-rank",
+        title: "Ignored rank candidate",
+        publishedAt: 1000,
+        discoveredAt: 1000,
+        dedupeKey: "ignored-rank",
+        now: 1000
+      });
+      actions.record({ articleId: "article_ignored_rank", type: "impression", now: 2000 });
+      expect(rankings.listCandidates({ articleIds: ["article_ignored_rank"] })).toEqual([]);
+      actions.record({ articleId: "article_ignored_rank", type: "open", now: 3000 });
+      expect(rankings.listCandidates({ articleIds: ["article_ignored_rank"] })[0]?.articleId).toBe(
+        "article_ignored_rank"
+      );
+
       const pagedCandidate = rankings.listCandidates({
         afterArticleId: "article_like_rank",
         limit: 1

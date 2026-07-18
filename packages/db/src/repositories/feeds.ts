@@ -278,8 +278,19 @@ export class SqliteFeedRepository implements FeedRepository {
     if (baseline === null) {
       return null;
     }
+    const intervalMs = refreshIntervalMs ?? this.refreshIntervalForFeed(feed);
+    if (feed.lastError === null) {
+      return baseline + intervalMs;
+    }
 
-    return baseline + (refreshIntervalMs ?? this.refreshIntervalForFeed(feed));
+    // Failures must not keep an unhealthy source due on every scheduler tick.
+    // Derive a bounded exponential delay from its uninterrupted failure span;
+    // a successful fetch clears last_error and immediately resets this policy.
+    const failureStartedAt = feed.lastSuccessAt ?? feed.createdAt;
+    const failedForMs = Math.max(intervalMs, baseline - failureStartedAt);
+    const exponent = Math.min(7, Math.floor(Math.log2(failedForMs / intervalMs)) + 1);
+    const retryDelayMs = Math.min(24 * 60 * 60 * 1000, intervalMs * 2 ** exponent);
+    return baseline + retryDelayMs;
   }
 
   private configuredRefreshIntervalForFeed(feed: FeedDbRow): number | null {
