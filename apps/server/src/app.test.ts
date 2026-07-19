@@ -3421,6 +3421,72 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("omits unsupported legacy Gemini dimensions and requests them from official OpenAI text-embedding-3", async () => {
+    const db = createEmptyDatabase();
+    const geminiCalls: Array<{
+      url: string;
+      apiKey: string | null;
+      inputCount: number;
+      model: string;
+      outputDimensionality: number | null;
+    }> = [];
+    const openAiCalls: Array<{
+      url: string;
+      authorization: string | null;
+      inputCount: number;
+      dimensions: number | null;
+    }> = [];
+    const app = buildServer({
+      db,
+      logger: false,
+      embeddingFetcher: async (input, init) => {
+        const url = String(input);
+        if (url.includes("generativelanguage.googleapis.com")) {
+          return geminiEmbeddingFetcherFixture(geminiCalls, 3)(input, init);
+        }
+        return embeddingFetcherFixture(openAiCalls, 3)(input, init);
+      }
+    });
+
+    try {
+      const legacy = await postJson(app, "/api/embedding/providers", {
+        type: "gemini",
+        name: "Legacy Gemini",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        model: "embedding-001",
+        dimension: 3,
+        apiKey: "legacy-secret",
+        enabled: false
+      });
+      const legacyId = legacy.json().data.id;
+      const legacyTest = await app.inject({ method: "POST", url: `/api/embedding/providers/${legacyId}/test` });
+      expect(legacyTest.statusCode, legacyTest.body).toBe(200);
+
+      const openAi = await postJson(app, "/api/embedding/providers", {
+        type: "openai_compatible",
+        name: "Official OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        model: "text-embedding-3-small",
+        dimension: 3,
+        apiKey: "openai-secret",
+        enabled: false
+      });
+      const openAiId = openAi.json().data.id;
+      const openAiTest = await app.inject({ method: "POST", url: `/api/embedding/providers/${openAiId}/test` });
+      expect(openAiTest.statusCode, openAiTest.body).toBe(200);
+
+      expect(geminiCalls).toEqual([
+        expect.objectContaining({ model: "models/embedding-001", outputDimensionality: null })
+      ]);
+      expect(openAiCalls).toEqual([
+        expect.objectContaining({ url: "https://api.openai.com/v1/embeddings", dimensions: 3 })
+      ]);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("rejects unsupported embedding providers and invalid provider base URLs", async () => {
     const db = createEmptyDatabase();
     const app = buildServer({ db, logger: false });
@@ -6661,6 +6727,55 @@ describe("server API vertical slice", () => {
       expect(openEmbeddingArticleIds(db)).toEqual(
         expect.arrayContaining(backfill.json().data.effectiveContentChangedArticleIds)
       );
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("uses an enabled official full-content selector plugin before the built-in extractor", async () => {
+    const db = createEmptyDatabase();
+    const plugins = new SqlitePluginRepository(db);
+    const selectedText = "Selector plugin extracted this nested article body. ".repeat(8);
+    const app = buildServer({
+      db,
+      logger: false,
+      feedFetcher: fixtureFetcher({ "https://example.com/feed.xml": fixtureRss }),
+      fullContentFetcher: async () =>
+        new Response(
+          `<html><head><title>Selector fixture</title></head><body><div class="entry-content"><div><p>${selectedText}</p></div></div></body></html>`,
+          { headers: { "content-type": "text/html" } }
+        )
+    });
+
+    try {
+      const catalog = await app.inject({ method: "GET", url: "/api/plugins/catalog" });
+      expect(catalog.json()).toMatchObject({
+        data: expect.arrayContaining([
+          expect.objectContaining({ id: "app.dibao.full-content-selectors", status: "installed" })
+        ])
+      });
+      const enabled = await app.inject({
+        method: "POST",
+        url: "/api/plugins/app.dibao.full-content-selectors/enable"
+      });
+      expect(enabled.statusCode, enabled.body).toBe(200);
+
+      const add = await postJson(app, "/api/feeds", { feedUrl: "https://example.com/feed.xml" });
+      const feedId = add.json().data.feed.id;
+      const preview = await postJson(app, `/api/feeds/${feedId}/full-content/preview`, {});
+
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json()).toMatchObject({
+        data: {
+          status: "success",
+          title: "Selector fixture",
+          contentText: expect.stringContaining("Selector plugin extracted")
+        }
+      });
+      expect(
+        plugins.getKv("app.dibao.full-content-selectors", "fullContentExtractor:balanced-readable-selectors:last")
+      ).toMatchObject({ textLength: expect.any(Number) });
     } finally {
       await app.close();
       db.close();

@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   ControlledFetchError,
@@ -128,6 +130,27 @@ describe("controlledFetchText", () => {
     ).rejects.toMatchObject({
       code: "FETCH_PRIVATE_TARGET"
     } satisfies Partial<ControlledFetchError>);
+  });
+
+  it("pins the default transport to the DNS address that passed policy validation", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("pinned");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      await expect(
+        controlledFetchText(`http://does-not-resolve.invalid:${port}/feed.xml`, {
+          allowCidrs: ["127.0.0.1/32"],
+          maxBytes: 100,
+          resolveHostname: async () => ["127.0.0.1"]
+        })
+      ).resolves.toMatchObject({ body: "pinned" });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("allows private targets when explicitly enabled or allowlisted", async () => {

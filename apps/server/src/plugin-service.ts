@@ -32,6 +32,10 @@ import {
   assertControlledFetchTarget,
   controlledFetchText
 } from "./controlled-fetch.js";
+import type {
+  FullContentPluginExtractionInput,
+  FullContentPluginExtractionResult
+} from "./full-content-extraction-service.js";
 import { DeferredJobRun, PermanentJobFailure, type JobHandler } from "./job-runner.js";
 
 export const PLUGIN_CAPABILITIES = [
@@ -72,6 +76,7 @@ const PLUGIN_EVENT_SET = new Set<string>(PLUGIN_EVENT_CATALOG);
 const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
 const PLUGIN_SCHEMA_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const PLUGIN_HOOK_TIMEOUT_MS = 2_000;
+const PLUGIN_FULL_CONTENT_EXTRACTOR_TIMEOUT_MS = 2_000;
 const PLUGIN_ACTIVATION_TIMEOUT_MS = 10_000;
 const PLUGIN_API_TIMEOUT_MS = 30_000;
 const PLUGIN_TASK_PAUSED_RETRY_MS = 6 * 60 * 60 * 1000;
@@ -112,6 +117,7 @@ export type PluginManifest = {
     actions?: PluginActionContribution[];
     hooks?: string[];
     events?: string[];
+    fullContentExtractors?: PluginFullContentExtractorContribution[];
     tasks?: PluginTaskContribution[];
     setupSteps?: PluginSetupStepContribution[];
   };
@@ -145,6 +151,12 @@ export type PluginActionContribution = {
   slot: string;
   icon?: string;
   command: string;
+  order?: number;
+};
+
+export type PluginFullContentExtractorContribution = {
+  id: string;
+  title: string;
   order?: number;
 };
 
@@ -293,11 +305,17 @@ type PluginRuntime = {
   child: ChildProcess | null;
   disposed: boolean;
   hooks: Set<string>;
+  fullContentExtractors: Set<string>;
   tasks: Set<string>;
   apiGet: Set<string>;
   apiPost: Set<string>;
   pending: Map<string, PluginRuntimePending>;
-  invoke: (kind: "hook" | "task" | "api", name: string, input: unknown, timeoutMs?: number) => Promise<unknown>;
+  invoke: (
+    kind: "hook" | "task" | "api" | "fullContentExtractor",
+    name: string,
+    input: unknown,
+    timeoutMs?: number
+  ) => Promise<unknown>;
   dispose: () => Promise<void>;
 };
 
@@ -589,6 +607,62 @@ export class PluginService {
         this.disposeRuntime(install.id);
       }
     }
+  }
+
+  async extractFullContent(
+    input: FullContentPluginExtractionInput
+  ): Promise<FullContentPluginExtractionResult | null> {
+    for (const candidate of this.enabledFullContentExtractors()) {
+      try {
+        const runtime = await this.ensureRuntime(candidate.install);
+        if (!runtime.fullContentExtractors.has(candidate.extractor.id)) {
+          continue;
+        }
+        const result = await runtime.invoke(
+          "fullContentExtractor",
+          candidate.extractor.id,
+          input,
+          PLUGIN_FULL_CONTENT_EXTRACTOR_TIMEOUT_MS
+        );
+        const normalized = normalizeFullContentPluginResult(result);
+        if (!normalized) {
+          continue;
+        }
+        this.options.plugins.setKv(
+          candidate.install.id,
+          `fullContentExtractor:${candidate.extractor.id}:last`,
+          {
+            articleUrl: input.articleUrl,
+            extractedAt: this.now(),
+            textLength: normalized.contentText.length
+          },
+          this.now()
+        );
+        return normalized;
+      } catch (error) {
+        const message = errorMessage(error);
+        if (candidate.install.official && isTransientPluginRuntimeError(message)) {
+          const failedAt = this.now();
+          this.options.plugins.setKv(
+            candidate.install.id,
+            `fullContentExtractor:${candidate.extractor.id}:lastError`,
+            { articleUrl: input.articleUrl, failedAt, error: redactText(message) },
+            failedAt
+          );
+          this.recordOfficialPluginRuntimeError(
+            candidate.install.id,
+            `fullContentExtractor:${candidate.extractor.id}`,
+            message,
+            failedAt
+          );
+          this.disposeRuntime(candidate.install.id);
+          continue;
+        }
+        this.options.plugins.setStatus(candidate.install.id, "failed", message, this.now());
+        this.disposeRuntime(candidate.install.id);
+      }
+    }
+    return null;
   }
 
   async enqueueDueSchedules(): Promise<JobRow[]> {
@@ -1073,6 +1147,7 @@ export class PluginService {
       child: null,
       disposed: false,
       hooks: new Set(),
+      fullContentExtractors: new Set(),
       tasks: new Set(),
       apiGet: new Set(),
       apiPost: new Set(),
@@ -1303,6 +1378,13 @@ export class PluginService {
         throw new PluginServiceError(403, "FORBIDDEN", `Plugin task is not declared: ${name}`);
       }
       runtime.tasks.add(name);
+      return;
+    }
+    if (kind === "fullContentExtractor") {
+      if (!(manifest.contributes?.fullContentExtractors?.some((extractor) => extractor.id === name) ?? false)) {
+        throw new PluginServiceError(403, "FORBIDDEN", `Plugin full content extractor is not declared: ${name}`);
+      }
+      runtime.fullContentExtractors.add(name);
       return;
     }
     if (kind === "api:get") {
@@ -2040,6 +2122,30 @@ export class PluginService {
       });
   }
 
+  private enabledFullContentExtractors(): Array<{
+    install: PluginInstallRow;
+    extractor: PluginFullContentExtractorContribution;
+  }> {
+    const candidates: Array<{
+      install: PluginInstallRow;
+      extractor: PluginFullContentExtractorContribution;
+    }> = [];
+    for (const install of this.options.plugins.listInstalls()) {
+      if (install.status !== "enabled") {
+        continue;
+      }
+      const manifest = parseStoredManifest(install);
+      for (const extractor of manifest.contributes?.fullContentExtractors ?? []) {
+        candidates.push({ install, extractor });
+      }
+    }
+    return candidates.sort((left, right) =>
+      (left.extractor.order ?? 100) - (right.extractor.order ?? 100) ||
+      left.install.id.localeCompare(right.install.id) ||
+      left.extractor.id.localeCompare(right.extractor.id)
+    );
+  }
+
   private async fetchUpdateMetadata(url: string): Promise<PluginUpdateMetadata> {
     this.assertUserPluginInstallEnabled();
     const body = await this.fetchPluginText(url, PLUGIN_UPDATE_METADATA_MAX_BYTES);
@@ -2533,6 +2639,15 @@ function parsePluginManifest(input: unknown): PluginManifest {
       throw new PluginServiceError(400, "VALIDATION_ERROR", `Unsupported plugin event: ${event}`);
     }
   }
+  for (const extractor of contributes.fullContentExtractors ?? []) {
+    if (!extractor.id || !extractor.title) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        "Plugin full content extractors require id and title"
+      );
+    }
+  }
   return {
     manifestVersion: 1,
     id,
@@ -2589,9 +2704,44 @@ function normalizeContributions(
     events: Array.isArray(contributes.events)
       ? contributes.events.filter((event): event is string => typeof event === "string")
       : [],
+    fullContentExtractors: normalizeFullContentExtractorContributions(contributes.fullContentExtractors),
     tasks: Array.isArray(contributes.tasks) ? contributes.tasks : [],
     setupSteps: Array.isArray(contributes.setupSteps) ? contributes.setupSteps : []
   };
+}
+
+function normalizeFullContentExtractorContributions(
+  input: unknown
+): PluginFullContentExtractorContribution[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const ids = new Set<string>();
+  return input.map((item) => {
+    const record = parseJsonObject(item);
+    const id = stringValue(record?.id);
+    const title = stringValue(record?.title);
+    const order = record?.order;
+    if (!id || !title) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        "Plugin full content extractors require id and title"
+      );
+    }
+    if (ids.has(id)) {
+      throw new PluginServiceError(400, "VALIDATION_ERROR", `Duplicate plugin full content extractor id: ${id}`);
+    }
+    if (order !== undefined && (typeof order !== "number" || !Number.isFinite(order))) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        `Plugin full content extractor order must be a number: ${id}`
+      );
+    }
+    ids.add(id);
+    return { id, title, order: typeof order === "number" ? order : undefined };
+  });
 }
 
 function runtimeContributions(contributes: PluginManifest["contributes"]): PluginRuntimeContributions {
@@ -3103,9 +3253,27 @@ function pluginApiStability(manifest: PluginManifest): PluginApiStabilitySummary
   if (manifest.capabilities.includes("articles:read") || manifest.capabilities.includes("articles:write")) {
     beta.add("articles.snapshot");
   }
+  if ((manifest.contributes?.fullContentExtractors ?? []).length > 0) {
+    beta.add("fullContent.extractor");
+  }
   return {
     stable: [...stable].sort(),
     beta: [...beta].sort()
+  };
+}
+
+function normalizeFullContentPluginResult(result: unknown): FullContentPluginExtractionResult | null {
+  const record = parseJsonObject(result);
+  const contentHtml = stringValue(record?.contentHtml);
+  const contentText = stringValue(record?.contentText);
+  if (!contentHtml || !contentText) {
+    return null;
+  }
+  return {
+    title: stringOrNull(record?.title),
+    contentHtml,
+    contentText,
+    excerpt: stringOrNull(record?.excerpt)
   };
 }
 

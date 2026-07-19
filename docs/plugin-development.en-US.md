@@ -89,6 +89,7 @@ Beta:
 - `database.defineTable`
 - `ranking.*`
 - `articles.snapshot/openableSummary/countDiscovered`
+- `fullContent.extractor`
 - diagnostics and recommendation transparency APIs
 
 Beta fields and semantics may change during 0.2.x. Long-lived plugins should use manifest migrations for durable schema changes instead of relying only on `database.defineTable`.
@@ -117,6 +118,19 @@ export default {
 ```
 
 Dibao pre-activates the server entry when a plugin is enabled. Activation failure keeps the plugin in `failed`. Disabling a plugin stops contributions and cancels open plugin jobs. Missing task handlers defer jobs for recovery instead of marking them as ordinary permanent failures.
+
+## Full Content Extractors (Beta)
+
+Declare `contributes.fullContentExtractors` with an `id`, `title`, and optional `order`, then register the matching handler during activation. Enabled extractors run in ascending order before Dibao's built-in extraction; malformed, empty, or short results fall back safely to the built-in extractor.
+
+```js
+ctx.fullContent.register("site-selector", ({ articleUrl, html, contentType }) => {
+  if (!contentType.includes("html") || !html.includes("article-body")) return null;
+  return { contentHtml: "<p>...</p>", contentText: "...", excerpt: "..." };
+});
+```
+
+The handler receives downloaded page content only. It must return normalized safe reader HTML and text, must not make network requests, and should complete quickly; a timeout falls back to the built-in extractor.
 
 ## Data, Secrets, Deliveries
 
