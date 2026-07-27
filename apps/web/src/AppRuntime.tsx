@@ -358,6 +358,7 @@ export function App() {
   const [isArticlesLoading, setIsArticlesLoading] = useState(true);
   const [isLoadingMoreArticles, setIsLoadingMoreArticles] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailReloadRevision, setDetailReloadRevision] = useState(0);
   const [isExplanationLoading, setIsExplanationLoading] = useState(false);
   const [isListExplanationLoading, setIsListExplanationLoading] = useState(false);
   const [isAddingFeed, setIsAddingFeed] = useState(false);
@@ -1583,6 +1584,7 @@ export function App() {
     };
   }, [
     currentArticleView,
+    detailReloadRevision,
     selectedArticleId,
     submittedSearchForm.sort,
     t.actions.errors.open,
@@ -2701,6 +2703,12 @@ export function App() {
     setIsSourceDrawerOpen(false);
   }
 
+  function handleRetryArticleDetail() {
+    if (selectedArticleId) {
+      setDetailReloadRevision((current) => current + 1);
+    }
+  }
+
   function navigateToAppPage(page: AppPage) {
     window.history.pushState({ dibaoPage: page.type }, "", urlForAppPage(page, {
       favoriteSort,
@@ -3371,6 +3379,7 @@ export function App() {
               feeds={feeds}
               form={searchForm}
               hasSubmitted={hasSubmittedSearch}
+              infiniteArticleLoading={appSettings.behavior.infiniteArticleLoading}
               isArticlesLoading={isArticlesLoading}
               isMarkingScopeRead={isMarkingScopeRead}
               isLoadingMore={isLoadingMoreArticles}
@@ -3420,6 +3429,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onOpenExplanation={handleOpenExplanation}
               onReadProgress={handleReadProgress}
+              onRetryDetail={handleRetryArticleDetail}
               pendingAction={
                 articleDetail && pendingArticleAction?.articleId === articleDetail.id
                   ? pendingArticleAction.intent
@@ -3472,6 +3482,7 @@ export function App() {
               articleView={currentArticleView}
               articles={articles}
               feedCount={feeds.length}
+              infiniteArticleLoading={appSettings.behavior.infiniteArticleLoading}
               isIgnoreTelemetryEnabled={isArticleListIgnoreTelemetryEnabled({
                 articleView: currentArticleView,
                 markScrolledArticlesIgnored: appSettings.behavior.markScrolledArticlesIgnored
@@ -3548,6 +3559,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onOpenExplanation={handleOpenExplanation}
               onReadProgress={handleReadProgress}
+              onRetryDetail={handleRetryArticleDetail}
               pendingAction={
                 articleDetail && pendingArticleAction?.articleId === articleDetail.id
                   ? pendingArticleAction.intent

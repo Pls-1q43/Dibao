@@ -150,6 +150,7 @@ export function ArticleListPanel(props: {
   favoriteSort: FavoriteArticleSort;
   readLaterSort: ReadLaterArticleSort;
   feedCount: number;
+  infiniteArticleLoading?: boolean;
   isIgnoreTelemetryEnabled: boolean;
   isArticlesLoading: boolean;
   isLoadingMore: boolean;
@@ -190,6 +191,7 @@ export function ArticleListPanel(props: {
 }) {
   const { t, formatDate, formatArticleDate } = useI18n();
   const scrollContainerRef = useRef<HTMLElement>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const [virtualViewport, setVirtualViewport] = useState({ scrollTop: 0, height: 800 });
   const [rowHeightRevision, setRowHeightRevision] = useState(0);
   const measuredRowHeights = useRef(new Map<string, number>());
@@ -217,6 +219,23 @@ export function ArticleListPanel(props: {
     enabled: !props.selectedArticleId,
     storageKey: listScrollKey,
     rootRef: scrollContainerRef
+  });
+
+  const isInfiniteLoadingAvailable = supportsInfiniteArticleLoading();
+  const isInfiniteLoadingEnabled = Boolean(props.infiniteArticleLoading) && isInfiniteLoadingAvailable;
+  useInfiniteArticleLoading({
+    enabled:
+      isInfiniteLoadingEnabled &&
+      !props.isArticlesLoading &&
+      !props.isLoadingMore &&
+      props.loadMoreError === null &&
+      props.nextCursor !== null,
+    hasMore: props.nextCursor !== null,
+    isLoadingMore: props.isLoadingMore,
+    loadMoreError: props.loadMoreError,
+    onLoadMore: props.onLoadMore,
+    rootRef: scrollContainerRef,
+    sentinelRef: loadMoreSentinelRef
   });
 
   useEffect(() => {
@@ -525,7 +544,14 @@ export function ArticleListPanel(props: {
             ))
           : null}
 
-        {!props.isArticlesLoading && props.nextCursor ? (
+        {!props.isArticlesLoading && props.nextCursor && isInfiniteLoadingEnabled && !props.loadMoreError ? (
+          <div className={styles.loadMoreBar} aria-live="polite">
+            <div className={styles.paginationSentinel} ref={loadMoreSentinelRef} />
+            {props.isLoadingMore ? <span>{t.articles.loadingMore}</span> : null}
+          </div>
+        ) : null}
+
+        {!props.isArticlesLoading && props.nextCursor && (!isInfiniteLoadingEnabled || props.loadMoreError) ? (
           <div className={styles.loadMoreBar}>
             <button
               className={styles.secondaryButton}
@@ -535,7 +561,11 @@ export function ArticleListPanel(props: {
               }}
               type="button"
             >
-              {props.isLoadingMore ? t.articles.loadingMore : t.articles.loadMore}
+              {props.isLoadingMore
+                ? t.articles.loadingMore
+                : props.loadMoreError
+                  ? t.articles.retryLoadMore
+                  : t.articles.loadMore}
             </button>
           </div>
         ) : null}
@@ -825,6 +855,7 @@ export function SearchResultsPanel(props: {
   feeds: Feed[];
   form: SearchFormState;
   hasSubmitted: boolean;
+  infiniteArticleLoading?: boolean;
   isArticlesLoading: boolean;
   isLoadingMore: boolean;
   isMarkingScopeRead: boolean;
@@ -847,6 +878,24 @@ export function SearchResultsPanel(props: {
 }) {
   const { t, formatDate, formatArticleDate } = useI18n();
   const [isAdvancedSearchOpen, setIsAdvancedSearchOpen] = useState(false);
+  const scrollContainerRef = useRef<HTMLElement>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
+  const isInfiniteLoadingAvailable = supportsInfiniteArticleLoading();
+  const isInfiniteLoadingEnabled = Boolean(props.infiniteArticleLoading) && isInfiniteLoadingAvailable;
+  useInfiniteArticleLoading({
+    enabled:
+      isInfiniteLoadingEnabled &&
+      !props.isArticlesLoading &&
+      !props.isLoadingMore &&
+      props.loadMoreError === null &&
+      props.nextCursor !== null,
+    hasMore: props.nextCursor !== null,
+    isLoadingMore: props.isLoadingMore,
+    loadMoreError: props.loadMoreError,
+    onLoadMore: props.onLoadMore,
+    rootRef: scrollContainerRef,
+    sentinelRef: loadMoreSentinelRef
+  });
 
   function update(patch: Partial<SearchFormState>) {
     props.onChange({
@@ -856,7 +905,7 @@ export function SearchResultsPanel(props: {
   }
 
   return (
-    <section className={styles.articlePanel} aria-labelledby="search-title">
+    <section className={styles.articlePanel} aria-labelledby="search-title" ref={scrollContainerRef}>
       <form
         className={styles.searchForm}
         onSubmit={(event) => {
@@ -1090,7 +1139,14 @@ export function SearchResultsPanel(props: {
             </article>
           ))}
 
-        {!props.isArticlesLoading && props.nextCursor ? (
+        {!props.isArticlesLoading && props.nextCursor && isInfiniteLoadingEnabled && !props.loadMoreError ? (
+          <div className={styles.loadMoreBar} aria-live="polite">
+            <div className={styles.paginationSentinel} ref={loadMoreSentinelRef} />
+            {props.isLoadingMore ? <span>{t.articles.loadingMore}</span> : null}
+          </div>
+        ) : null}
+
+        {!props.isArticlesLoading && props.nextCursor && (!isInfiniteLoadingEnabled || props.loadMoreError) ? (
           <div className={styles.loadMoreBar}>
             <button
               className={styles.secondaryButton}
@@ -1098,7 +1154,11 @@ export function SearchResultsPanel(props: {
               onClick={props.onLoadMore}
               type="button"
             >
-              {props.isLoadingMore ? t.articles.loadingMore : t.search.loadMore}
+              {props.isLoadingMore
+                ? t.articles.loadingMore
+                : props.loadMoreError
+                  ? t.articles.retryLoadMore
+                  : t.search.loadMore}
             </button>
           </div>
         ) : null}
@@ -1620,6 +1680,58 @@ function usePersistedArticleListScroll(props: {
   }, [props.enabled, props.rootRef, props.storageKey]);
 }
 
+function supportsInfiniteArticleLoading(): boolean {
+  return typeof IntersectionObserver !== "undefined";
+}
+
+function useInfiniteArticleLoading(props: {
+  enabled: boolean;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  loadMoreError: string | null;
+  onLoadMore: () => void | Promise<void>;
+  rootRef: RefObject<HTMLElement | null>;
+  sentinelRef: RefObject<HTMLDivElement | null>;
+}) {
+  const onLoadMoreRef = useRef(props.onLoadMore);
+  const isRequestingRef = useRef(false);
+
+  useEffect(() => {
+    onLoadMoreRef.current = props.onLoadMore;
+  }, [props.onLoadMore]);
+
+  useEffect(() => {
+    if (!props.isLoadingMore) {
+      isRequestingRef.current = false;
+    }
+  }, [props.hasMore, props.isLoadingMore, props.loadMoreError]);
+
+  useEffect(() => {
+    const root = props.rootRef.current;
+    const sentinel = props.sentinelRef.current;
+    if (!props.enabled || !props.hasMore || props.loadMoreError || !root || !sentinel) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting) || isRequestingRef.current) {
+          return;
+        }
+        isRequestingRef.current = true;
+        void onLoadMoreRef.current();
+      },
+      {
+        root,
+        rootMargin: "0px 0px 240px",
+        threshold: 0
+      }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [props.enabled, props.hasMore, props.loadMoreError, props.rootRef, props.sentinelRef]);
+}
+
 function cssEscape(value: string): string {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(value);
@@ -1689,6 +1801,7 @@ export function ArticleDetailPanel(props: {
     metadata: ReadProgressMetadata,
     options?: ReadProgressPostOptions
   ) => void;
+  onRetryDetail?: () => void;
   pendingAction: ArticleActionIntent | null;
   pluginBottomActions?: PluginActionButton[];
   pluginToolbarActions?: PluginActionButton[];
@@ -1748,7 +1861,16 @@ export function ArticleDetailPanel(props: {
       {props.isDetailLoading && !props.article ? <ReaderSkeleton /> : null}
 
       {!props.isDetailLoading && props.detailError ? (
-        <p className={styles.errorText}>{props.detailError}</p>
+        <div className={styles.readerDetailError}>
+          <p className={styles.errorText}>{props.detailError}</p>
+          <button
+            className={styles.secondaryButton}
+            onClick={props.onRetryDetail}
+            type="button"
+          >
+            {t.reader.reload}
+          </button>
+        </div>
       ) : null}
 
       {!props.isDetailLoading && !props.detailError && !props.article ? (
@@ -1757,23 +1879,22 @@ export function ArticleDetailPanel(props: {
 
       {!props.detailError && props.article ? (
         <article className={styles.reader} data-reader-theme={props.readerSettings.theme}>
-          <button
-            className={styles.mobileBackButton}
-            onClick={props.onBackToList}
-            type="button"
-          >
-            {t.reader.backToList}
-          </button>
           <header className={styles.readerHeader}>
-            {safeOriginalArticleUrl(props.article.url) ? (
-              <a
-                href={safeOriginalArticleUrl(props.article.url) ?? undefined}
-                rel="noreferrer"
-                target="_blank"
-              >
-                {t.reader.originalLink}
-              </a>
-            ) : null}
+            <div className={styles.readerHeaderActions}>
+              <button className={styles.secondaryButton} onClick={props.onBackToList} type="button">
+                {t.reader.backToList}
+              </button>
+              {safeOriginalArticleUrl(props.article.url) ? (
+                <a
+                  className={styles.secondaryButton}
+                  href={safeOriginalArticleUrl(props.article.url) ?? undefined}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {t.reader.originalLink}
+                </a>
+              ) : null}
+            </div>
             <h2 id="reader-title">{props.article.title}</h2>
             <p>
               {t.reader.meta(

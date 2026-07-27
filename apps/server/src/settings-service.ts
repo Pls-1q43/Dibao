@@ -40,6 +40,7 @@ export type AppSettings = {
   behavior: {
     markScrolledArticlesIgnored: boolean;
     removeReadLaterOnReadComplete: boolean;
+    infiniteArticleLoading: boolean;
   };
   telemetry: {
     enabled: boolean;
@@ -101,7 +102,8 @@ const DEFAULT_LOCALE: SettingsLocale = "zh-CN";
 const DEFAULT_HOME_VIEW: DefaultHomeView = "recommended";
 const DEFAULT_BEHAVIOR_SETTINGS = {
   markScrolledArticlesIgnored: true,
-  removeReadLaterOnReadComplete: false
+  removeReadLaterOnReadComplete: false,
+  infiniteArticleLoading: false
 } as const;
 const DEFAULT_TELEMETRY_SETTINGS = {
   enabled: true
@@ -167,6 +169,7 @@ type SettingsPatch = {
   behavior?: {
     markScrolledArticlesIgnored?: boolean;
     removeReadLaterOnReadComplete?: boolean;
+    infiniteArticleLoading?: boolean;
   };
   telemetry?: {
     enabled?: boolean;
@@ -291,7 +294,8 @@ export class SettingsService {
 
     if (
       patch.behavior?.markScrolledArticlesIgnored !== undefined ||
-      patch.behavior?.removeReadLaterOnReadComplete !== undefined
+      patch.behavior?.removeReadLaterOnReadComplete !== undefined ||
+      patch.behavior?.infiniteArticleLoading !== undefined
     ) {
       this.options.settings.setJson(
         BEHAVIOR_SETTINGS_KEY,
@@ -429,7 +433,11 @@ export class SettingsService {
       removeReadLaterOnReadComplete:
         typeof input.removeReadLaterOnReadComplete === "boolean"
           ? input.removeReadLaterOnReadComplete
-          : DEFAULT_BEHAVIOR_SETTINGS.removeReadLaterOnReadComplete
+          : DEFAULT_BEHAVIOR_SETTINGS.removeReadLaterOnReadComplete,
+      infiniteArticleLoading:
+        typeof input.infiniteArticleLoading === "boolean"
+          ? input.infiniteArticleLoading
+          : DEFAULT_BEHAVIOR_SETTINGS.infiniteArticleLoading
     };
   }
 
@@ -789,7 +797,7 @@ function parseBehaviorPatch(value: unknown): SettingsPatch["behavior"] {
   const input = readSectionObject(value, "behavior");
   rejectUnknownKeys(
     input,
-    ["markScrolledArticlesIgnored", "removeReadLaterOnReadComplete"],
+    ["markScrolledArticlesIgnored", "removeReadLaterOnReadComplete", "infiniteArticleLoading"],
     "behavior"
   );
 
@@ -811,6 +819,15 @@ function parseBehaviorPatch(value: unknown): SettingsPatch["behavior"] {
       });
     }
     patch.removeReadLaterOnReadComplete = input.removeReadLaterOnReadComplete;
+  }
+
+  if (Object.hasOwn(input, "infiniteArticleLoading")) {
+    if (typeof input.infiniteArticleLoading !== "boolean") {
+      throw validationError("behavior.infiniteArticleLoading must be a boolean", {
+        field: "behavior.infiniteArticleLoading"
+      });
+    }
+    patch.infiniteArticleLoading = input.infiniteArticleLoading;
   }
 
   return patch;

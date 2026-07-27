@@ -4994,7 +4994,8 @@ describe("server API vertical slice", () => {
           },
           behavior: {
             markScrolledArticlesIgnored: true,
-            removeReadLaterOnReadComplete: false
+            removeReadLaterOnReadComplete: false,
+            infiniteArticleLoading: false
           },
           telemetry: {
             enabled: true
@@ -5054,7 +5055,8 @@ describe("server API vertical slice", () => {
         },
         behavior: {
           markScrolledArticlesIgnored: false,
-          removeReadLaterOnReadComplete: true
+          removeReadLaterOnReadComplete: true,
+          infiniteArticleLoading: true
         },
         telemetry: {
           enabled: false
@@ -5089,7 +5091,8 @@ describe("server API vertical slice", () => {
             },
             behavior: {
               markScrolledArticlesIgnored: false,
-              removeReadLaterOnReadComplete: true
+              removeReadLaterOnReadComplete: true,
+              infiniteArticleLoading: true
             },
             telemetry: {
               enabled: false
@@ -5132,7 +5135,8 @@ describe("server API vertical slice", () => {
             },
             behavior: {
               markScrolledArticlesIgnored: false,
-              removeReadLaterOnReadComplete: true
+              removeReadLaterOnReadComplete: true,
+              infiniteArticleLoading: true
             },
             telemetry: {
               enabled: false
@@ -5170,6 +5174,11 @@ describe("server API vertical slice", () => {
         {
           behavior: {
             removeReadLaterOnReadComplete: "yes"
+          }
+        },
+        {
+          behavior: {
+            infiniteArticleLoading: "yes"
           }
         },
         {

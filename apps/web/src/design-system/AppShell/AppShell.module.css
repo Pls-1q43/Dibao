@@ -2916,6 +2916,11 @@
   overflow-anchor: none;
 }
 
+.paginationSentinel {
+  width: 100%;
+  min-height: 1px;
+}
+
 .paginationError {
   margin: 0;
   border-top: var(--border-subtle);
@@ -3055,11 +3060,11 @@
   padding-bottom: var(--space-4);
 }
 
-.readerHeader a {
-  justify-self: start;
-  color: var(--color-pine);
-  font-size: var(--text-sm);
-  text-decoration: none;
+.readerHeaderActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .readerHeader h2 {
@@ -3080,6 +3085,19 @@
   justify-content: space-between;
   gap: var(--space-3);
   margin-top: var(--space-2);
+}
+
+.readerDetailError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.readerDetailError .errorText {
+  margin: 0;
 }
 
 .inlineNotice {
@@ -3971,7 +3989,6 @@
     padding-bottom: var(--space-3);
   }
 
-  .readerHeader a,
   .readerHeader p {
     font-size: 12px;
     line-height: 1.45;

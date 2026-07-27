@@ -386,6 +386,9 @@ describe("web API client", () => {
           retentionDays: 45,
           keepFavorites: false
         },
+        behavior: {
+          infiniteArticleLoading: true
+        },
         ranking: {
           maxPositiveInterestClusters: 48,
           maxNegativeInterestClusters: 32
@@ -420,6 +423,9 @@ describe("web API client", () => {
           retention: {
             retentionDays: 45,
             keepFavorites: false
+          },
+          behavior: {
+            infiniteArticleLoading: true
           },
           ranking: {
             maxPositiveInterestClusters: 48,

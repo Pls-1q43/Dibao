@@ -662,6 +662,17 @@ export function SettingsWorkspace(props: {
             />
             <span>{t.settings.sections.behavior.removeReadLaterOnReadComplete}</span>
           </label>
+          <label className={styles.managementCheckbox} htmlFor="settings-infinite-article-loading">
+            <input
+              checked={draft.infiniteArticleLoading}
+              id="settings-infinite-article-loading"
+              onChange={(event) =>
+                applyDraft({ ...draft, infiniteArticleLoading: event.target.checked })
+              }
+              type="checkbox"
+            />
+            <span>{t.settings.sections.behavior.infiniteArticleLoading}</span>
+          </label>
           <RangeSettingField
             id="settings-cocoon-level"
             label={t.settings.sections.behavior.cocoonLevel}

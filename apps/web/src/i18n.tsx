@@ -396,6 +396,7 @@ export const zhCN = {
         algorithmTransparencyLink: "查看算法透明说明",
         markScrolledArticlesIgnored: "滚过未打开文章后，将其标记为已忽略并移出未读",
         removeReadLaterOnReadComplete: "稍后读中的文章读完后，自动移出稍后读",
+        infiniteArticleLoading: "无限加载：滚动到列表底部时自动加载下一批文章",
         cocoonLevel: "信息茧房水平",
         cocoonLevelHint: "1 表示更开放、更分散、更探索；10 表示更贴合、更稳定、更少扰动。所有级别都只在订阅源内排序，并始终尊重去重和明确负反馈。",
         interestClusterLimits: {
@@ -636,6 +637,7 @@ export const zhCN = {
     },
     loadMore: "加载更多",
     loadingMore: "加载中",
+    retryLoadMore: "重试加载",
     loadingSlow: "加载似乎比预期时间更长，邸报仍在继续读取。",
     emptyNoFeedsTitle: "还没有订阅源",
     emptyNoFeedsBody: "添加一个 RSS / Atom 源后，文章会出现在这里。",
@@ -1181,6 +1183,7 @@ export const zhCN = {
   reader: {
     originalLink: "原文",
     backToList: "返回列表",
+    reload: "重新加载",
     selectArticleTitle: "选择一篇文章",
     selectArticleBody: "文章详情会在这里打开。",
     feedOnlyNotice: "当前仅有订阅源摘要。",
@@ -1720,6 +1723,7 @@ export const enUS = {
         algorithmTransparencyLink: "View personalization details",
         markScrolledArticlesIgnored: "Mark unopened articles you scroll past as ignored and remove them from unread",
         removeReadLaterOnReadComplete: "Remove Read Later articles after you finish them",
+        infiniteArticleLoading: "Infinite loading: automatically load more articles when you reach the end of a list",
         cocoonLevel: "Cocoon level",
         cocoonLevelHint: "1 is broader and more exploratory; 10 stays closer to your established interests. Every level only ranks articles from your subscribed feeds and still respects deduping and explicit negative feedback.",
         interestClusterLimits: {
@@ -1965,6 +1969,7 @@ export const enUS = {
     },
     loadMore: "Load more",
     loadingMore: "Loading",
+    retryLoadMore: "Retry loading",
     loadingSlow: "Loading is taking longer than expected. Dibao is still reading.",
     emptyNoFeedsTitle: "No feeds yet",
     emptyNoFeedsBody: "Add an RSS / Atom feed and articles will appear here.",
@@ -2499,6 +2504,7 @@ export const enUS = {
   reader: {
     originalLink: "Original",
     backToList: "Back to list",
+    reload: "Reload",
     selectArticleTitle: "Select an article",
     selectArticleBody: "Article details will open here.",
     feedOnlyNotice: "Only the feed summary is available.",
@@ -3034,6 +3040,7 @@ export const jaJP = {
         algorithmTransparencyLink: "アルゴリズムの透明性を見る",
         markScrolledArticlesIgnored: "開かずに通過した記事を無視済みにし、未読から外す",
         removeReadLaterOnReadComplete: "あとで読むの記事を読み終えたら、あとで読むから外す",
+        infiniteArticleLoading: "無限読み込み：一覧の末尾までスクロールすると次の記事を自動で読み込む",
         cocoonLevel: "パーソナライズ度",
         cocoonLevelHint: "1 はより開かれた分散的な探索、10 はより個人に合わせた安定的で控えめな変化です。どのレベルでも購読フィード内だけで並び替え、重複排除と明示的な低評価を尊重します。",
         interestClusterLimits: {
@@ -3279,6 +3286,7 @@ export const jaJP = {
     },
     loadMore: "さらに読み込む",
     loadingMore: "読み込み中",
+    retryLoadMore: "再読み込み",
     loadingSlow: "読み込みに予想より時間がかかっています。邸報はまだ読み取りを続けています。",
     emptyNoFeedsTitle: "フィードはまだありません",
     emptyNoFeedsBody: "RSS / Atom フィードを追加すると、ここに記事が表示されます。",
@@ -3813,6 +3821,7 @@ export const jaJP = {
   reader: {
     originalLink: "原文",
     backToList: "一覧に戻る",
+    reload: "再読み込み",
     selectArticleTitle: "記事を選択",
     selectArticleBody: "記事の詳細はここに表示されます。",
     feedOnlyNotice: "現在はフィードの要約のみ利用できます。",

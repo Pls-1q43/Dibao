@@ -390,6 +390,7 @@ export type AppSettings = {
   behavior: {
     markScrolledArticlesIgnored: boolean;
     removeReadLaterOnReadComplete: boolean;
+    infiniteArticleLoading: boolean;
   };
   telemetry: {
     enabled: boolean;
@@ -455,6 +456,7 @@ export type UpdateSettingsInput = {
   behavior?: {
     markScrolledArticlesIgnored?: boolean;
     removeReadLaterOnReadComplete?: boolean;
+    infiniteArticleLoading?: boolean;
   };
   telemetry?: {
     enabled?: boolean;
@@ -1140,7 +1142,8 @@ export const defaultAppSettings: AppSettings = {
   },
   behavior: {
     markScrolledArticlesIgnored: true,
-    removeReadLaterOnReadComplete: false
+    removeReadLaterOnReadComplete: false,
+    infiniteArticleLoading: false
   },
   telemetry: {
     enabled: true

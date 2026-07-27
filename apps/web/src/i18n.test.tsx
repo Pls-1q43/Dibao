@@ -684,6 +684,7 @@ describe("web i18n", () => {
           onCloseExplanation={() => undefined}
           onOpenExplanation={() => undefined}
           onReadProgress={() => undefined}
+          onRetryDetail={() => undefined}
           pendingAction={null}
           readerSettings={defaultAppSettings.reader}
         />
@@ -693,6 +694,37 @@ describe("web i18n", () => {
     expect(html).toContain("Design Feed");
     expect(html).toContain("2026");
     expect(html).toContain("Reporter");
+    expect(html).toContain("返回列表");
+    expect(html).toContain("原文");
+  });
+
+  it("renders a localized retry action when article detail loading fails", () => {
+    const html = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <ArticleDetailPanel
+          actionError={null}
+          article={null}
+          articleView="latest"
+          detailError="请求超时"
+          explanation={null}
+          explanationError={null}
+          isDetailLoading={false}
+          isExplanationLoading={false}
+          isExplanationOpen={false}
+          onArticleAction={() => undefined}
+          onBackToList={() => undefined}
+          onCloseExplanation={() => undefined}
+          onOpenExplanation={() => undefined}
+          onReadProgress={() => undefined}
+          onRetryDetail={() => undefined}
+          pendingAction={null}
+          readerSettings={defaultAppSettings.reader}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(html).toContain("请求超时");
+    expect(html).toContain("重新加载");
   });
 
   it("only renders row recommendation explain actions for personalized views", () => {
@@ -1138,6 +1170,7 @@ describe("web i18n", () => {
     expect(html).toContain("修改密码");
     expect(html).toContain("查看算法透明说明");
     expect(html).toContain("稍后读中的文章读完后，自动移出稍后读");
+    expect(html).toContain("无限加载：滚动到列表底部时自动加载下一批文章");
     expect(html).toContain("type=\"range\"");
     expect(html).toContain("兴趣簇上限");
     expect(html).toContain("低配 VPS：24 / 16");
