@@ -813,7 +813,7 @@ export function SettingsWorkspace(props: {
               value={draft.readerWidth}
             />
           </div>
-          <label className={styles.managementCheckbox} htmlFor="settings-infinite-article-loading">
+          <label className={styles.settingsInlineStatus} htmlFor="settings-infinite-article-loading">
             <input
               checked={draft.infiniteArticleLoading}
               id="settings-infinite-article-loading"
