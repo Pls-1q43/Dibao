@@ -545,9 +545,15 @@ export function ArticleListPanel(props: {
           : null}
 
         {!props.isArticlesLoading && props.nextCursor && isInfiniteLoadingEnabled && !props.loadMoreError ? (
-          <div className={styles.loadMoreBar} aria-live="polite">
+          <div
+            className={classNames(
+              styles.loadMoreBar,
+              props.isLoadingMore ? styles.loadMoreBarLoading : null
+            )}
+            aria-live="polite"
+          >
             <div className={styles.paginationSentinel} ref={loadMoreSentinelRef} />
-            {props.isLoadingMore ? <span>{t.articles.loadingMore}</span> : null}
+            {props.isLoadingMore ? <InfiniteLoadStatus label={t.articles.loadingMore} /> : null}
           </div>
         ) : null}
 
@@ -1140,9 +1146,15 @@ export function SearchResultsPanel(props: {
           ))}
 
         {!props.isArticlesLoading && props.nextCursor && isInfiniteLoadingEnabled && !props.loadMoreError ? (
-          <div className={styles.loadMoreBar} aria-live="polite">
+          <div
+            className={classNames(
+              styles.loadMoreBar,
+              props.isLoadingMore ? styles.loadMoreBarLoading : null
+            )}
+            aria-live="polite"
+          >
             <div className={styles.paginationSentinel} ref={loadMoreSentinelRef} />
-            {props.isLoadingMore ? <span>{t.articles.loadingMore}</span> : null}
+            {props.isLoadingMore ? <InfiniteLoadStatus label={t.articles.loadingMore} /> : null}
           </div>
         ) : null}
 
@@ -1217,6 +1229,15 @@ function TimeWindowFilter(props: {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function InfiniteLoadStatus(props: { label: string }) {
+  return (
+    <span className={styles.infiniteLoadStatus}>
+      <span aria-hidden="true" className={styles.infiniteLoadSpinner} />
+      <span>{props.label}</span>
+    </span>
   );
 }
 
