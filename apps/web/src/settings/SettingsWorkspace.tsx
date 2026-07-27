@@ -813,16 +813,19 @@ export function SettingsWorkspace(props: {
               value={draft.readerWidth}
             />
           </div>
-          <label className={styles.settingsInlineStatus} htmlFor="settings-infinite-article-loading">
-            <input
-              checked={draft.infiniteArticleLoading}
-              id="settings-infinite-article-loading"
-              onChange={(event) =>
-                applyDraft({ ...draft, infiniteArticleLoading: event.target.checked })
-              }
-              type="checkbox"
-            />
+          <label className={styles.readerSettingsToggle} htmlFor="settings-infinite-article-loading">
             <span>{t.settings.sections.behavior.infiniteArticleLoading}</span>
+            <span className={styles.readerSettingsToggleControl}>
+              <input
+                checked={draft.infiniteArticleLoading}
+                id="settings-infinite-article-loading"
+                onChange={(event) =>
+                  applyDraft({ ...draft, infiniteArticleLoading: event.target.checked })
+                }
+                type="checkbox"
+              />
+              <span aria-hidden="true" />
+            </span>
           </label>
         </section>
 
