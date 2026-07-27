@@ -19,7 +19,7 @@ describe("RecommendationMemoryService", () => {
           article_id, rank_context, score, interest_score, source_score, freshness_score,
           state_score, diversity_score, penalty_score, calculated_at, rerank_position,
           was_exploration, exploration_bucket_key
-        ) values ('article_1', 'rec_v3:embedding:cocoon_5:schema_3', 0.5, 0, 0, 0, 0, 0, 0, 1, 1, 1, 'feed:feed_1')`
+        ) values ('article_1', 'rec_v3:embedding:cocoon_5:schema_4', 0.5, 0, 0, 0, 0, 0, 0, 1, 1, 1, 'feed:feed_1')`
       ).run();
       const service = new RecommendationMemoryService(db, () => 10_000);
 

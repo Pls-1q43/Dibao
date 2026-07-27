@@ -936,7 +936,7 @@ export class RecommendationMaintenanceService {
 
   private trainFtrl(): void {
     const now = this.now();
-    const modelId = "ftrl_schema_3";
+    const modelId = "ftrl_schema_4";
     const rows = this.options.db
       .prepare(
         `
@@ -1027,7 +1027,7 @@ export class RecommendationMaintenanceService {
               created_at,
               updated_at
             )
-            values (?, 'rec_v3', 3, ?, ?, ?, ?, ?, ?)
+            values (?, 'rec_v3', 4, ?, ?, ?, ?, ?, ?)
             on conflict(id) do update set
               sample_count = excluded.sample_count,
               blend_alpha = excluded.blend_alpha,

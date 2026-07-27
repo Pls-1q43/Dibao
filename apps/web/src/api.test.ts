@@ -1257,7 +1257,7 @@ describe("web API client", () => {
             activeRankContext: "base",
             algorithm: {
               version: "rec_v3",
-              featureSchemaVersion: 3,
+              featureSchemaVersion: 4,
               cocoonLevel: 1,
               localLearning: { enabled: true, shadowMode: false },
               exploration: { enabled: true },

@@ -202,6 +202,8 @@ import {
   RecommendationMaintenanceScheduler
 } from "./recommendation-maintenance-scheduler.js";
 import {
+  RECOMMENDATION_ALGORITHM_VERSION,
+  RECOMMENDATION_FEATURE_SCHEMA_VERSION,
   RecommendationRankingService,
   type RankExplanationClusterMatch,
   type RankExplanationResult
@@ -3573,8 +3575,8 @@ function getRecommendationStatus(options: {
     activeIndex: activeIndex ? mapRecommendationIndex(activeIndex) : null,
     activeRankContext,
     algorithm: {
-      version: "rec_v3",
-      featureSchemaVersion: 3,
+      version: RECOMMENDATION_ALGORITHM_VERSION,
+      featureSchemaVersion: RECOMMENDATION_FEATURE_SCHEMA_VERSION,
       cocoonLevel: options.settings.cocoonLevel,
       localLearning: {
         enabled: options.settings.localLearningEnabled,

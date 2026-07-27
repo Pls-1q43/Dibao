@@ -40,10 +40,14 @@ import {
   RECENT_INTENT_REBUILD_JOB_TYPE,
   RecommendationMaintenanceService
 } from "./recommendation-maintenance-service.js";
-import { RecommendationRankingService } from "./ranking-service.js";
+import {
+  RECOMMENDATION_FEATURE_SCHEMA_VERSION,
+  RecommendationRankingService
+} from "./ranking-service.js";
 import { buildServer as buildRealServer } from "./app.js";
 
 const tempDirs: string[] = [];
+const TEST_ACTIVE_RANK_CONTEXT = `rec_v3:embedding:cocoon_5:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -1157,6 +1161,117 @@ describe("profile algorithm and recommendation ranking", () => {
     }
   });
 
+  it("generalizes negative finance-market profile terms without boosting generic positive words", () => {
+    const fixture = createProfileFixture();
+    const { articles, db } = fixture;
+
+    try {
+      articles.upsert({
+        id: "article_finance_us",
+        feedId: "feed_profile",
+        url: "https://example.com/article_finance_us",
+        canonicalUrl: "https://example.com/article_finance_us",
+        title: "SPCX is now Wall Street's most shorted new stock",
+        summary: "An article with comments, points, and news boilerplate.",
+        publishedAt: 1500,
+        discoveredAt: 1500,
+        contentHash: "hash_finance_us",
+        dedupeKey: "article_finance_us",
+        now: 1500
+      });
+      articles.upsert({
+        id: "article_finance_cn",
+        feedId: "feed_profile",
+        url: "https://example.com/article_finance_cn",
+        canonicalUrl: "https://example.com/article_finance_cn",
+        title: "这才是A股接下来的真剧本",
+        summary: "上一交易日后的市场推演。",
+        publishedAt: 1600,
+        discoveredAt: 1600,
+        contentHash: "hash_finance_cn",
+        dedupeKey: "article_finance_cn",
+        now: 1600
+      });
+      articles.upsert({
+        id: "article_meaningful_positive",
+        feedId: "feed_profile",
+        url: "https://example.com/article_meaningful_positive",
+        canonicalUrl: "https://example.com/article_meaningful_positive",
+        title: "Compiler agents improve code review",
+        summary: "Compiler agents coordinate patches and tests.",
+        publishedAt: 1700,
+        discoveredAt: 1700,
+        contentHash: "hash_meaningful_positive",
+        dedupeKey: "article_meaningful_positive",
+        now: 1700
+      });
+      db.prepare(
+        `
+          insert into profile_terms (term, polarity, scope, weight, evidence_count, last_event_at, updated_at)
+          values
+            ('article', 'positive', 'long', 10, 5, 2000, 5000),
+            ('comments', 'positive', 'long', 9, 4, 2000, 5000),
+            ('news', 'positive', 'recent', 9, 4, 2000, 5000),
+            ('points', 'positive', 'recent', 8, 3, 2000, 5000),
+            ('compiler agents', 'positive', 'long', 12, 3, 2000, 5000),
+            ('code review', 'positive', 'recent', 8, 2, 2000, 5000),
+            ('上一交易日', 'negative', 'long', 10, 2, 2000, 5000),
+            ('A股三大指数', 'negative', 'long', 10, 2, 2000, 5000),
+            ('美股盘前', 'negative', 'recent', 8, 1, 2000, 5000)
+          on conflict(term, polarity, scope) do update set
+            weight = excluded.weight,
+            evidence_count = excluded.evidence_count,
+            last_event_at = excluded.last_event_at,
+            updated_at = excluded.updated_at
+        `
+      ).run();
+
+      const rankingWithDb = new RecommendationRankingService({
+        db,
+        embeddings: new SqliteEmbeddingRepository(db),
+        profiles: new SqliteProfileRepository(db),
+        rankings: new SqliteRankingRepository(db),
+        now: () => 5000
+      });
+      rankingWithDb.recalculateArticles([
+        "article_finance_us",
+        "article_finance_cn",
+        "article_meaningful_positive"
+      ]);
+
+      const rows = db
+        .prepare(
+          `
+            select
+              article_id as articleId,
+              bm25_score as bm25Score,
+              negative_penalty as negativePenalty
+            from article_rank_scores
+            where rank_context = ?
+              and article_id in (?, ?, ?)
+          `
+        )
+        .all(
+          rankingWithDb.getActiveRankContext(),
+          "article_finance_us",
+          "article_finance_cn",
+          "article_meaningful_positive"
+        ) as Array<{
+        articleId: string;
+        bm25Score: number | null;
+        negativePenalty: number | null;
+      }>;
+      const byId = new Map(rows.map((row) => [row.articleId, row]));
+
+      expect(byId.get("article_finance_us")?.negativePenalty ?? 0).toBeLessThan(-0.08);
+      expect(byId.get("article_finance_cn")?.negativePenalty ?? 0).toBeLessThan(-0.08);
+      expect(byId.get("article_finance_us")?.bm25Score ?? 0).toBe(0);
+      expect(byId.get("article_meaningful_positive")?.bm25Score ?? 0).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("builds recent intent from existing embeddings and uses it without embedding calls", () => {
     const fixture = createProfileFixture();
     const { actions, db } = fixture;
@@ -2200,7 +2315,7 @@ function insertRankingFamily(
 
 function recommendedIds(
   db: DibaoDatabase,
-  rankContext = "rec_v3:embedding:cocoon_5:schema_3",
+  rankContext = TEST_ACTIVE_RANK_CONTEXT,
   limit = 100
 ): string[] {
   return new SqliteArticleRepository(db)
@@ -2216,18 +2331,18 @@ function activeScoreForContext(
   const contexts =
     rankContext === "base"
       ? ["base"]
-      : [rankContext, "rec_v3:embedding:cocoon_5:schema_3"];
+      : [rankContext, TEST_ACTIVE_RANK_CONTEXT];
   const row = db
     .prepare(
       `
         select score
         from article_rank_scores
-        where article_id = ?
+          where article_id = ?
           and rank_context in (${contexts.map(() => "?").join(", ")})
-        order by case when rank_context = 'rec_v3:embedding:cocoon_5:schema_3' then 0 else 1 end
+        order by case when rank_context = ? then 0 else 1 end
       `
     )
-    .get(articleId, ...contexts) as { score: number } | undefined;
+    .get(articleId, ...contexts, TEST_ACTIVE_RANK_CONTEXT) as { score: number } | undefined;
 
   return row?.score ?? null;
 }
@@ -2343,12 +2458,12 @@ function activeScore(db: DibaoDatabase, articleId: string): number | null {
       `
         select score
         from article_rank_scores
-        where article_id = ?
-          and rank_context in ('index_profile', 'rec_v3:embedding:cocoon_5:schema_3')
-        order by case when rank_context = 'rec_v3:embedding:cocoon_5:schema_3' then 0 else 1 end
+          where article_id = ?
+          and rank_context in ('index_profile', ?)
+        order by case when rank_context = ? then 0 else 1 end
       `
     )
-    .get(articleId) as { score: number } | undefined;
+    .get(articleId, TEST_ACTIVE_RANK_CONTEXT, TEST_ACTIVE_RANK_CONTEXT) as { score: number } | undefined;
 
   return row?.score ?? null;
 }
@@ -2359,11 +2474,11 @@ function activeBm25Score(db: DibaoDatabase, articleId: string): number | null {
       `
         select bm25_score as bm25Score
         from article_rank_scores
-        where article_id = ?
-          and rank_context = 'rec_v3:embedding:cocoon_5:schema_3'
+          where article_id = ?
+          and rank_context = ?
       `
     )
-    .get(articleId) as { bm25Score: number | null } | undefined;
+    .get(articleId, TEST_ACTIVE_RANK_CONTEXT) as { bm25Score: number | null } | undefined;
 
   return row?.bm25Score ?? null;
 }

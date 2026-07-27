@@ -150,8 +150,16 @@ type LexicalFeature = {
   bm25Recent: number;
   positiveOverlap: number;
   negativeOverlap: number;
+  topicNegativePenalty: number;
   titleKeywordMatch: number;
   matchedTerms: Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent" }>;
+};
+
+type ProfileTerm = {
+  term: string;
+  polarity: "positive" | "negative";
+  scope: "long" | "recent";
+  weight: number;
 };
 
 type RecentIntentVector = {
@@ -229,8 +237,8 @@ type V2Score = {
   matchedFamilyCount: number;
 };
 
-const RECOMMENDATION_ALGORITHM_VERSION = "rec_v3";
-const RECOMMENDATION_FEATURE_SCHEMA_VERSION = 3;
+export const RECOMMENDATION_ALGORITHM_VERSION = "rec_v3";
+export const RECOMMENDATION_FEATURE_SCHEMA_VERSION = 4;
 const MMR_WINDOW_LIMIT = 500;
 const DEFAULT_RANKING_CHUNK_TIME_BUDGET_MS = 2_000;
 const RANKING_TIME_BUDGET_RESUME_DELAY_MS = 5_000;
@@ -942,7 +950,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     polarity: "positive" | "negative";
     scopes: Array<"long" | "recent">;
     limit: number;
-  }): Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent"; weight: number }> {
+  }): ProfileTerm[] {
     const db = this.options.db;
     if (!db || input.scopes.length === 0) {
       return [];
@@ -962,12 +970,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
           limit ?
         `
       )
-      .all(input.polarity, ...input.scopes, input.limit) as Array<{
-      term: string;
-      polarity: "positive" | "negative";
-      scope: "long" | "recent";
-      weight: number;
-    }>;
+      .all(input.polarity, ...input.scopes, input.limit) as ProfileTerm[];
   }
 
   private lexicalFeaturesFor(
@@ -983,15 +986,20 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     }
 
     const ids = candidates.map((candidate) => candidate.articleId);
-    const positiveLong = this.profileTerms({ polarity: "positive", scopes: ["long"], limit: 24 });
-    const positiveRecent = this.profileTerms({ polarity: "positive", scopes: ["recent"], limit: 24 });
+    const positiveLong = filterPositiveLexicalTerms(
+      this.profileTerms({ polarity: "positive", scopes: ["long"], limit: 48 })
+    ).slice(0, 24);
+    const positiveRecent = filterPositiveLexicalTerms(
+      this.profileTerms({ polarity: "positive", scopes: ["recent"], limit: 48 })
+    ).slice(0, 24);
     const negativeTerms = this.profileTerms({
       polarity: "negative",
       scopes: ["long", "recent"],
-      limit: 32
+      limit: 64
     });
+    const financeMarketNegativeActive = hasFinanceMarketNegativeProfile(negativeTerms);
     const applyBm25 = (
-      terms: Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent"; weight: number }>,
+      terms: ProfileTerm[],
       field: "bm25Positive" | "bm25Recent"
     ) => {
       const query = sanitizeFtsQuery(terms.map((term) => term.term).join(" "));
@@ -1047,6 +1055,16 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       }
       feature.positiveOverlap = clamp(Math.log1p(positiveWeight) / Math.log1p(20), 0, 1);
       feature.negativeOverlap = clamp(Math.log1p(negativeWeight) / Math.log1p(20), 0, 1);
+      feature.topicNegativePenalty = financeMarketNegativeActive
+        ? financeMarketNegativePenalty(title, text)
+        : 0;
+      if (feature.topicNegativePenalty > 0) {
+        matched.push({
+          term: "finance-market",
+          polarity: "negative",
+          scope: "long"
+        });
+      }
       feature.matchedTerms = matched.slice(0, 12);
       result.set(candidate.articleId, feature);
     }
@@ -1698,7 +1716,7 @@ function ftrlFeaturesFor(input: {
       semantic: clamp(input.semanticScore / 0.68, 0, 1),
       semantic_negative: clamp(Math.abs(input.negativePenalty) / 0.5, 0, 1),
       bm25: clamp(input.bm25Score / 0.14, 0, 1),
-      keyword_negative: clamp(Math.abs(input.keywordNegativePenalty) / 0.12, 0, 1),
+      keyword_negative: clamp(Math.abs(input.keywordNegativePenalty) / 0.32, 0, 1),
       freshness: clamp(input.freshness / 0.2, 0, 1),
       source: clamp((input.sourceScore + 0.14) / 0.28, 0, 1),
       source_confidence: clamp(input.source.sourceConfidence, 0, 1),
@@ -1805,7 +1823,11 @@ function calculateV2Score(input: {
     ) *
     0.12 *
     params.keywordProfileStrength;
-  const keywordNegativePenalty = -input.lexical.negativeOverlap * 0.12;
+  const keywordNegativePenalty = -clamp(
+    input.lexical.negativeOverlap * 0.12 + input.lexical.topicNegativePenalty,
+    0,
+    0.32
+  );
   const freshness = freshnessScore(ageHours, 0.18, profileAlgorithmDefaults.freshnessHalfLifeHours) *
     params.freshnessWeight;
   const pendingEmbeddingScore =
@@ -1985,12 +2007,129 @@ function normalizeForTermMatch(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
+const GENERIC_POSITIVE_PROFILE_TERMS = new Set([
+  "article",
+  "articles",
+  "comment",
+  "comments",
+  "point",
+  "points",
+  "news",
+  "page",
+  "front page",
+  "show hn",
+  "ask hn",
+  "作者",
+  "原创",
+  "编辑",
+  "来源",
+  "阅读",
+  "点击",
+  "以下文章来源于",
+  "引领未来商业与生活新知"
+]);
+
+const FINANCE_MARKET_MARKERS = [
+  "a股",
+  "港股",
+  "美股",
+  "股市",
+  "股票",
+  "个股",
+  "证券",
+  "券商",
+  "基金",
+  "债券",
+  "沪指",
+  "恒指",
+  "上证",
+  "深证",
+  "深成指",
+  "创业板",
+  "科创50",
+  "三大指数",
+  "两市成交",
+  "午间休盘",
+  "上一交易日",
+  "交易日",
+  "开盘",
+  "收盘",
+  "涨停",
+  "跌停",
+  "板块领涨",
+  "板块领跌",
+  "纳指",
+  "道指",
+  "标普",
+  "wall street",
+  "stock",
+  "stocks",
+  "shares",
+  "trading",
+  "shorted",
+  "nasdaq",
+  "dow",
+  "s p",
+  "market moving"
+];
+
+function filterPositiveLexicalTerms(terms: ProfileTerm[]): ProfileTerm[] {
+  return terms.filter((term) => !isGenericPositiveProfileTerm(term.term));
+}
+
+function isGenericPositiveProfileTerm(term: string): boolean {
+  const normalized = normalizeForTermMatch(term);
+  if (!normalized) {
+    return true;
+  }
+  if (GENERIC_POSITIVE_PROFILE_TERMS.has(normalized)) {
+    return true;
+  }
+  return normalized.length === 1;
+}
+
+function hasFinanceMarketNegativeProfile(negativeTerms: ProfileTerm[]): boolean {
+  let markerCount = 0;
+  let markerWeight = 0;
+  for (const term of negativeTerms) {
+    if (financeMarketMarkerScore(normalizeForTermMatch(term.term)) <= 0) {
+      continue;
+    }
+    markerCount += 1;
+    markerWeight += Math.max(0, term.weight);
+  }
+  return markerCount >= 2 || markerWeight >= 16;
+}
+
+function financeMarketNegativePenalty(title: string, text: string): number {
+  const titleScore = financeMarketMarkerScore(title);
+  const textScore = financeMarketMarkerScore(text);
+  if (titleScore <= 0 && textScore <= 0) {
+    return 0;
+  }
+  return clamp(titleScore * 0.22 + Math.max(0, textScore - titleScore) * 0.1, 0.08, 0.26);
+}
+
+function financeMarketMarkerScore(text: string): number {
+  if (!text) {
+    return 0;
+  }
+  let score = 0;
+  for (const marker of FINANCE_MARKET_MARKERS) {
+    if (text.includes(marker)) {
+      score += marker.length >= 4 ? 0.35 : 0.22;
+    }
+  }
+  return clamp(score, 0, 1);
+}
+
 function emptyLexicalFeature(): LexicalFeature {
   return {
     bm25Positive: 0,
     bm25Recent: 0,
     positiveOverlap: 0,
     negativeOverlap: 0,
+    topicNegativePenalty: 0,
     titleKeywordMatch: 0,
     matchedTerms: []
   };

@@ -2116,7 +2116,7 @@ describe("db package", () => {
     }
   });
 
-  it("reads active ranking candidates, profile snapshots, and active rank fallback", () => {
+  it("reads active ranking candidates, profile snapshots, and base rank fallback", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
       const feeds = new SqliteFeedRepository(db);
@@ -2204,7 +2204,7 @@ describe("db package", () => {
         calculatedAt: 2000
       });
       expect(
-        articles.list({ view: "recommended", rankContext: "index_profile" }).items[0]?.rank
+        articles.list({ view: "recommended", rankContext: "base" }).items[0]?.rank
       ).toEqual({
         score: 0.42,
         calculatedAt: 2000
@@ -2214,7 +2214,7 @@ describe("db package", () => {
     }
   });
 
-  it("orders recommended article lists from rank scores while preserving active and base fallback", () => {
+  it("orders recommended article lists from active rank scores without base or unranked fallback", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
       const feeds = new SqliteFeedRepository(db);
@@ -2226,7 +2226,7 @@ describe("db package", () => {
         now: 1000
       });
 
-      for (const id of ["base_only", "active_high", "active_low", "unranked"]) {
+      for (const id of ["base_only", "active_high", "active_mid", "active_low", "unranked"]) {
         articles.upsert({
           id: `article_${id}`,
           feedId: "feed_ranked_list",
@@ -2242,12 +2242,13 @@ describe("db package", () => {
       insertRank(db, "article_base_only", 0.95, 2000);
       insertRank(db, "article_active_high", 0.1, 2000);
       insertRank(db, "article_active_high", 0.9, 3000, "active");
+      insertRank(db, "article_active_mid", 0.8, 3000, "active");
       insertRank(db, "article_active_low", 0.7, 3000, "active");
 
       const firstPage = articles.list({ view: "recommended", rankContext: "active", limit: 2 });
       expect(firstPage.items.map((item) => item.id)).toEqual([
-        "article_base_only",
-        "article_active_high"
+        "article_active_high",
+        "article_active_mid"
       ]);
       expect(firstPage.nextCursor).toMatchObject({ type: "recommended" });
       expect(firstPage.timing).toMatchObject({
@@ -2259,7 +2260,7 @@ describe("db package", () => {
         articles
           .list({ view: "recommended", rankContext: "active", limit: 3, offset: 2 })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low", "article_unranked"]);
+      ).toEqual(["article_active_low"]);
       expect(
         articles
           .list({
@@ -2269,7 +2270,7 @@ describe("db package", () => {
             cursor: firstPage.nextCursor ?? undefined
           })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low", "article_unranked"]);
+      ).toEqual(["article_active_low"]);
       const withoutCount = articles.list({
         view: "recommended",
         rankContext: "active",

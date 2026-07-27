@@ -549,7 +549,10 @@ export class SqliteArticleRepository implements ArticleRepository {
   }): ArticleReadDbRow[] {
     const targetCount = input.cursor ? input.limit + 1 : input.offset + input.limit + 1;
     const rankedCandidates = this.listRankedRecommendedCandidates(input, targetCount);
-    const missingUnrankedCount = Math.max(0, targetCount - rankedCandidates.length);
+    const missingUnrankedCount =
+      input.rankContext === BASE_RANK_CONTEXT
+        ? Math.max(0, targetCount - rankedCandidates.length)
+        : 0;
     const candidates =
       missingUnrankedCount > 0
         ? [
@@ -577,34 +580,24 @@ export class SqliteArticleRepository implements ArticleRepository {
   ): RecommendedCandidateRow[] {
     let candidates: RecommendedCandidateRow[] = [];
     const windows = recommendedCandidateWindows(targetCount);
+    const latestRerankWindowId =
+      input.rankContext === BASE_RANK_CONTEXT ? null : this.latestRerankWindowId(input.rankContext);
     for (const candidateLimit of windows) {
       const active = measureArticleListTiming(input.timing, "rankCandidateMs", () =>
         this.selectRankedRecommendedCandidates({
           rankContext: input.rankContext,
           excludeRankContext: null,
+          rerankWindowId: latestRerankWindowId,
           conditions: input.conditions,
           filterParams: input.filterParams,
           cursor: input.cursor,
           limit: candidateLimit
         })
       );
-      const base =
-        input.rankContext === BASE_RANK_CONTEXT
-          ? []
-          : measureArticleListTiming(input.timing, "rankCandidateMs", () =>
-              this.selectRankedRecommendedCandidates({
-                rankContext: BASE_RANK_CONTEXT,
-                excludeRankContext: input.rankContext,
-                conditions: input.conditions,
-                filterParams: input.filterParams,
-                cursor: input.cursor,
-                limit: candidateLimit
-              })
-            );
-      candidates = mergeRecommendedCandidates(active, base);
+      candidates = active;
       if (
         candidates.length >= targetCount ||
-        (active.length < candidateLimit && base.length < candidateLimit)
+        active.length < candidateLimit
       ) {
         return candidates;
       }
@@ -615,6 +608,7 @@ export class SqliteArticleRepository implements ArticleRepository {
   private selectRankedRecommendedCandidates(input: {
     rankContext: string;
     excludeRankContext: string | null;
+    rerankWindowId: string | null;
     conditions: string[];
     filterParams: unknown[];
     cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
@@ -634,6 +628,8 @@ export class SqliteArticleRepository implements ArticleRepository {
       `
       : "";
     const excludeParams = input.excludeRankContext ? [input.excludeRankContext] : [];
+    const rerankWindowFilter = input.rerankWindowId ? "and ars.rerank_window_id = ?" : "";
+    const rerankWindowParams = input.rerankWindowId ? [input.rerankWindowId] : [];
     const keyset = rankedRecommendedKeysetCondition(input.cursor);
     return this.db
       .prepare(
@@ -650,6 +646,7 @@ export class SqliteArticleRepository implements ArticleRepository {
           join feeds f on f.id = a.feed_id and f.deleted_at is null
           left join article_states s on s.article_id = a.id
           where ars.rank_context = ?
+            ${rerankWindowFilter}
             ${excludeActive}
             and ${input.conditions.join(" and ")}
             ${keyset ? `and ${keyset.sql}` : ""}
@@ -664,11 +661,28 @@ export class SqliteArticleRepository implements ArticleRepository {
       )
       .all(
         input.rankContext,
+        ...rerankWindowParams,
         ...excludeParams,
         ...input.filterParams,
         ...(keyset?.params ?? []),
         input.limit
       ) as RecommendedCandidateRow[];
+  }
+
+  private latestRerankWindowId(rankContext: string): string | null {
+    const row = this.db
+      .prepare(
+        `
+          select rerank_window_id as rerankWindowId
+          from article_rank_scores
+          where rank_context = ?
+            and rerank_window_id is not null
+          order by calculated_at desc, rerank_window_id desc
+          limit 1
+        `
+      )
+      .get(rankContext) as { rerankWindowId: string | null } | undefined;
+    return row?.rerankWindowId ?? null;
   }
 
   private listUnrankedRecommendedCandidates(
@@ -1597,50 +1611,6 @@ function recommendedCandidateWindows(targetCount: number): number[] {
     .filter((value) => value >= firstWindow)
     .map((value) => Math.min(value, 20_000));
   return Array.from(new Set(windows));
-}
-
-function mergeRecommendedCandidates(
-  active: RecommendedCandidateRow[],
-  base: RecommendedCandidateRow[]
-): RecommendedCandidateRow[] {
-  const byId = new Map<string, RecommendedCandidateRow>();
-  for (const candidate of [...active, ...base]) {
-    if (!byId.has(candidate.id)) {
-      byId.set(candidate.id, candidate);
-    }
-  }
-  return Array.from(byId.values()).sort(compareRecommendedCandidates);
-}
-
-function compareRecommendedCandidates(
-  left: RecommendedCandidateRow,
-  right: RecommendedCandidateRow
-): number {
-  if (left.sortRankMissing !== right.sortRankMissing) {
-    return left.sortRankMissing - right.sortRankMissing;
-  }
-
-  const leftScore = left.sortScore ?? Number.NEGATIVE_INFINITY;
-  const rightScore = right.sortScore ?? Number.NEGATIVE_INFINITY;
-  if (leftScore !== rightScore) {
-    return rightScore - leftScore;
-  }
-
-  if (left.sortRerankMissing !== right.sortRerankMissing) {
-    return left.sortRerankMissing - right.sortRerankMissing;
-  }
-
-  const leftPosition = left.sortRerankPosition ?? Number.POSITIVE_INFINITY;
-  const rightPosition = right.sortRerankPosition ?? Number.POSITIVE_INFINITY;
-  if (leftPosition !== rightPosition) {
-    return leftPosition - rightPosition;
-  }
-
-  if (left.sortPublishedAt !== right.sortPublishedAt) {
-    return right.sortPublishedAt - left.sortPublishedAt;
-  }
-
-  return right.id.localeCompare(left.id);
 }
 
 function orderByForView(
