@@ -2052,6 +2052,14 @@ const FINANCE_MARKET_MARKERS = [
   "午间休盘",
   "上一交易日",
   "交易日",
+  "每股",
+  "发售价",
+  "发行价",
+  "港元",
+  "市值",
+  "财报",
+  "营收",
+  "净利润",
   "开盘",
   "收盘",
   "涨停",
@@ -2065,8 +2073,16 @@ const FINANCE_MARKET_MARKERS = [
   "stock",
   "stocks",
   "shares",
+  "share price",
+  "price target",
   "trading",
   "shorted",
+  "short interest",
+  "earnings",
+  "revenue",
+  "pre market",
+  "after hours",
+  "ipo",
   "nasdaq",
   "dow",
   "s p",
@@ -2116,11 +2132,22 @@ function financeMarketMarkerScore(text: string): number {
   }
   let score = 0;
   for (const marker of FINANCE_MARKET_MARKERS) {
-    if (text.includes(marker)) {
+    if (normalizedTextIncludesMarker(text, marker)) {
       score += marker.length >= 4 ? 0.35 : 0.22;
     }
   }
   return clamp(score, 0, 1);
+}
+
+function normalizedTextIncludesMarker(text: string, marker: string): boolean {
+  if (/^[a-z0-9 ]+$/.test(marker)) {
+    return new RegExp(`(?:^| )${escapeRegExp(marker)}(?: |$)`).test(text);
+  }
+  return text.includes(marker);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function emptyLexicalFeature(): LexicalFeature {

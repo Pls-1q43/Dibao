@@ -1205,6 +1205,32 @@ describe("profile algorithm and recommendation ranking", () => {
         dedupeKey: "article_meaningful_positive",
         now: 1700
       });
+      articles.upsert({
+        id: "article_finance_share_price",
+        feedId: "feed_profile",
+        url: "https://example.com/article_finance_share_price",
+        canonicalUrl: "https://example.com/article_finance_share_price",
+        title: "中际旭创将香港发售价定在每股980港元",
+        summary: "新股发行价更新。",
+        publishedAt: 1800,
+        discoveredAt: 1800,
+        contentHash: "hash_finance_share_price",
+        dedupeKey: "article_finance_share_price",
+        now: 1800
+      });
+      articles.upsert({
+        id: "article_false_positive_sp",
+        feedId: "feed_profile",
+        url: "https://example.com/article_false_positive_sp",
+        canonicalUrl: "https://example.com/article_false_positive_sp",
+        title: "Business process agents improve planning",
+        summary: "A workflow article that should not match finance markers.",
+        publishedAt: 1900,
+        discoveredAt: 1900,
+        contentHash: "hash_false_positive_sp",
+        dedupeKey: "article_false_positive_sp",
+        now: 1900
+      });
       db.prepare(
         `
           insert into profile_terms (term, polarity, scope, weight, evidence_count, last_event_at, updated_at)
@@ -1236,7 +1262,9 @@ describe("profile algorithm and recommendation ranking", () => {
       rankingWithDb.recalculateArticles([
         "article_finance_us",
         "article_finance_cn",
-        "article_meaningful_positive"
+        "article_meaningful_positive",
+        "article_finance_share_price",
+        "article_false_positive_sp"
       ]);
 
       const rows = db
@@ -1248,14 +1276,16 @@ describe("profile algorithm and recommendation ranking", () => {
               negative_penalty as negativePenalty
             from article_rank_scores
             where rank_context = ?
-              and article_id in (?, ?, ?)
+              and article_id in (?, ?, ?, ?, ?)
           `
         )
         .all(
           rankingWithDb.getActiveRankContext(),
           "article_finance_us",
           "article_finance_cn",
-          "article_meaningful_positive"
+          "article_meaningful_positive",
+          "article_finance_share_price",
+          "article_false_positive_sp"
         ) as Array<{
         articleId: string;
         bm25Score: number | null;
@@ -1265,6 +1295,8 @@ describe("profile algorithm and recommendation ranking", () => {
 
       expect(byId.get("article_finance_us")?.negativePenalty ?? 0).toBeLessThan(-0.08);
       expect(byId.get("article_finance_cn")?.negativePenalty ?? 0).toBeLessThan(-0.08);
+      expect(byId.get("article_finance_share_price")?.negativePenalty ?? 0).toBeLessThan(-0.08);
+      expect(byId.get("article_false_positive_sp")?.negativePenalty ?? 0).toBe(0);
       expect(byId.get("article_finance_us")?.bm25Score ?? 0).toBe(0);
       expect(byId.get("article_meaningful_positive")?.bm25Score ?? 0).toBeGreaterThan(0);
     } finally {
