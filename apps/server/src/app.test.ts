@@ -7904,7 +7904,7 @@ describe("server API vertical slice", () => {
     }
   });
 
-  it("does not fill active recommended pages from base scores or older rerank windows", async () => {
+  it("keeps the latest active rerank window first and backfills underfilled recommended pages", async () => {
     const db = createEmptyDatabase();
     const feeds = new SqliteFeedRepository(db);
     const articles = new SqliteArticleRepository(db);
@@ -7978,7 +7978,9 @@ describe("server API vertical slice", () => {
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json().data.map((article: { id: string }) => article.id)).toEqual([
-        "article_active_new"
+        "article_active_new",
+        "article_base_only",
+        "article_unranked"
       ]);
     } finally {
       await app.close();

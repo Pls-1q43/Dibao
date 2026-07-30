@@ -2214,7 +2214,7 @@ describe("db package", () => {
     }
   });
 
-  it("orders recommended article lists from active rank scores without base or unranked fallback", () => {
+  it("orders recommended article lists from active rank scores before base and unranked fallback", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
       const feeds = new SqliteFeedRepository(db);
@@ -2260,7 +2260,7 @@ describe("db package", () => {
         articles
           .list({ view: "recommended", rankContext: "active", limit: 3, offset: 2 })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low"]);
+      ).toEqual(["article_active_low", "article_base_only", "article_unranked"]);
       expect(
         articles
           .list({
@@ -2270,7 +2270,33 @@ describe("db package", () => {
             cursor: firstPage.nextCursor ?? undefined
           })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low"]);
+      ).toEqual(["article_active_low", "article_base_only", "article_unranked"]);
+      const fallbackPage = articles.list({
+        view: "recommended",
+        rankContext: "active",
+        limit: 4
+      });
+      expect(fallbackPage.items.map((item) => item.id)).toEqual([
+        "article_active_high",
+        "article_active_mid",
+        "article_active_low",
+        "article_base_only"
+      ]);
+      expect(fallbackPage.nextCursor).toMatchObject({
+        type: "recommended",
+        rankMissing: 1,
+        score: 0.95
+      });
+      expect(
+        articles
+          .list({
+            view: "recommended",
+            rankContext: "active",
+            limit: 4,
+            cursor: fallbackPage.nextCursor ?? undefined
+          })
+          .items.map((item) => item.id)
+      ).toEqual(["article_unranked"]);
       const withoutCount = articles.list({
         view: "recommended",
         rankContext: "active",

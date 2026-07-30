@@ -549,17 +549,28 @@ export class SqliteArticleRepository implements ArticleRepository {
   }): ArticleReadDbRow[] {
     const targetCount = input.cursor ? input.limit + 1 : input.offset + input.limit + 1;
     const rankedCandidates = this.listRankedRecommendedCandidates(input, targetCount);
-    const missingUnrankedCount =
-      input.rankContext === BASE_RANK_CONTEXT
-        ? Math.max(0, targetCount - rankedCandidates.length)
-        : 0;
-    const candidates =
+    const shouldBackfillCandidates =
+      input.rankContext === BASE_RANK_CONTEXT || rankedCandidates.length > 0 || input.cursor !== null;
+    const missingBaseCount =
+      !shouldBackfillCandidates || input.rankContext === BASE_RANK_CONTEXT
+        ? 0
+        : Math.max(0, targetCount - rankedCandidates.length);
+    const baseFallbackCandidates =
+      missingBaseCount > 0
+        ? this.listBaseRecommendedCandidates(input, missingBaseCount)
+        : [];
+    const missingUnrankedCount = shouldBackfillCandidates
+      ? Math.max(0, targetCount - rankedCandidates.length - baseFallbackCandidates.length)
+      : 0;
+    const unrankedCandidates =
       missingUnrankedCount > 0
-        ? [
-            ...rankedCandidates,
-            ...this.listUnrankedRecommendedCandidates(input, missingUnrankedCount)
-          ]
-        : rankedCandidates;
+        ? this.listUnrankedRecommendedCandidates(input, missingUnrankedCount)
+        : [];
+    const candidates = [
+      ...rankedCandidates,
+      ...baseFallbackCandidates,
+      ...unrankedCandidates
+    ];
     const pageCandidates = input.cursor
       ? candidates.slice(0, input.limit + 1)
       : candidates.slice(input.offset, input.offset + input.limit + 1);
@@ -588,6 +599,7 @@ export class SqliteArticleRepository implements ArticleRepository {
           rankContext: input.rankContext,
           excludeRankContext: null,
           rerankWindowId: latestRerankWindowId,
+          sortRankMissing: 0,
           conditions: input.conditions,
           filterParams: input.filterParams,
           cursor: input.cursor,
@@ -609,12 +621,25 @@ export class SqliteArticleRepository implements ArticleRepository {
     rankContext: string;
     excludeRankContext: string | null;
     rerankWindowId: string | null;
+    sortRankMissing: 0 | 1;
     conditions: string[];
     filterParams: unknown[];
     cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
     limit: number;
   }): RecommendedCandidateRow[] {
-    if (input.cursor && (input.cursor.rankMissing ?? 0) > 0) {
+    if (
+      input.sortRankMissing === 0 &&
+      input.cursor &&
+      (input.cursor.rankMissing ?? 0) > 0
+    ) {
+      return [];
+    }
+    if (
+      input.sortRankMissing === 1 &&
+      input.cursor &&
+      (input.cursor.rankMissing ?? 0) > 0 &&
+      input.cursor.score === null
+    ) {
       return [];
     }
     const excludeActive = input.excludeRankContext
@@ -630,7 +655,9 @@ export class SqliteArticleRepository implements ArticleRepository {
     const excludeParams = input.excludeRankContext ? [input.excludeRankContext] : [];
     const rerankWindowFilter = input.rerankWindowId ? "and ars.rerank_window_id = ?" : "";
     const rerankWindowParams = input.rerankWindowId ? [input.rerankWindowId] : [];
-    const keyset = rankedRecommendedKeysetCondition(input.cursor);
+    const keyset = rankedRecommendedKeysetCondition(input.cursor, {
+      applyWhenRankMissing: input.sortRankMissing
+    });
     return this.db
       .prepare(
         `
@@ -639,7 +666,7 @@ export class SqliteArticleRepository implements ArticleRepository {
             ars.score as sortScore,
             case when ars.rerank_position is null then 1 else 0 end as sortRerankMissing,
             ars.rerank_position as sortRerankPosition,
-            0 as sortRankMissing,
+            ${input.sortRankMissing} as sortRankMissing,
             coalesce(a.published_at, a.discovered_at) as sortPublishedAt
           from article_rank_scores ars
           join articles a on a.id = ars.article_id
@@ -667,6 +694,43 @@ export class SqliteArticleRepository implements ArticleRepository {
         ...(keyset?.params ?? []),
         input.limit
       ) as RecommendedCandidateRow[];
+  }
+
+  private listBaseRecommendedCandidates(
+    input: {
+      rankContext: string;
+      conditions: string[];
+      filterParams: unknown[];
+      cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
+      timing: ArticleListTiming;
+    },
+    limit: number
+  ): RecommendedCandidateRow[] {
+    if (limit <= 0 || input.rankContext === BASE_RANK_CONTEXT) {
+      return [];
+    }
+
+    let candidates: RecommendedCandidateRow[] = [];
+    const windows = recommendedCandidateWindows(limit);
+    for (const candidateLimit of windows) {
+      const base = measureArticleListTiming(input.timing, "rankCandidateMs", () =>
+        this.selectRankedRecommendedCandidates({
+          rankContext: BASE_RANK_CONTEXT,
+          excludeRankContext: input.rankContext,
+          rerankWindowId: null,
+          sortRankMissing: 1,
+          conditions: input.conditions,
+          filterParams: input.filterParams,
+          cursor: input.cursor,
+          limit: candidateLimit
+        })
+      );
+      candidates = base;
+      if (candidates.length >= limit || base.length < candidateLimit) {
+        return candidates;
+      }
+    }
+    return candidates;
   }
 
   private latestRerankWindowId(rankContext: string): string | null {
@@ -762,12 +826,7 @@ export class SqliteArticleRepository implements ArticleRepository {
           ) as (
             values ${values}
           )
-          ${baseArticleReadSelect()},
-            recommended_ids.sortScore,
-            recommended_ids.sortRerankMissing,
-            recommended_ids.sortRerankPosition,
-            recommended_ids.sortRankMissing,
-            recommended_ids.sortPublishedAt
+          ${baseArticleReadSelect({ rankSource: "recommended_ids" })}
           from recommended_ids
           join articles a on a.id = recommended_ids.id
           join feeds f on f.id = a.feed_id and f.deleted_at is null
@@ -779,11 +838,11 @@ export class SqliteArticleRepository implements ArticleRepository {
             on base_rs.article_id = a.id
             and base_rs.rank_context = ?
           order by
-            sortRankMissing asc,
-            sortScore desc,
-            sortRerankMissing asc,
-            sortRerankPosition asc,
-            sortPublishedAt desc,
+            recommended_ids.sortRankMissing asc,
+            recommended_ids.sortScore desc,
+            recommended_ids.sortRerankMissing asc,
+            recommended_ids.sortRerankPosition asc,
+            recommended_ids.sortPublishedAt desc,
             recommended_ids.id desc,
             displayOrder asc
         `
@@ -1265,8 +1324,11 @@ function unreadArticleCondition(): string {
   `;
 }
 
-function baseArticleReadSelect(options: { includeRank?: boolean } = {}): string {
+function baseArticleReadSelect(
+  options: { includeRank?: boolean; rankSource?: "joined" | "recommended_ids" } = {}
+): string {
   const includeRank = options.includeRank ?? true;
+  const useRecommendedIdsRank = includeRank && options.rankSource === "recommended_ids";
   return `
     select
       a.id,
@@ -1299,10 +1361,34 @@ function baseArticleReadSelect(options: { includeRank?: boolean } = {}): string 
       s.favorited_at as favoritedAt,
       s.read_later_at as readLaterAt,
       coalesce(a.published_at, a.discovered_at) as sortPublishedAt,
-      ${includeRank ? "case when rs.rerank_position is null then 1 else 0 end" : "null"} as sortRerankMissing,
-      ${includeRank ? "rs.rerank_position" : "null"} as sortRerankPosition,
-      ${includeRank ? "case when coalesce(rs.score, base_rs.score) is null then 1 else 0 end" : "null"} as sortRankMissing,
-      ${includeRank ? "coalesce(rs.score, base_rs.score)" : "null"} as rankScore,
+      ${
+        includeRank
+          ? useRecommendedIdsRank
+            ? "recommended_ids.sortRerankMissing"
+            : "case when rs.rerank_position is null then 1 else 0 end"
+          : "null"
+      } as sortRerankMissing,
+      ${
+        includeRank
+          ? useRecommendedIdsRank
+            ? "recommended_ids.sortRerankPosition"
+            : "rs.rerank_position"
+          : "null"
+      } as sortRerankPosition,
+      ${
+        includeRank
+          ? useRecommendedIdsRank
+            ? "recommended_ids.sortRankMissing"
+            : "case when coalesce(rs.score, base_rs.score) is null then 1 else 0 end"
+          : "null"
+      } as sortRankMissing,
+      ${
+        includeRank
+          ? useRecommendedIdsRank
+            ? "recommended_ids.sortScore"
+            : "coalesce(rs.score, base_rs.score)"
+          : "null"
+      } as rankScore,
       ${includeRank ? "coalesce(rs.calculated_at, base_rs.calculated_at)" : "null"} as rankCalculatedAt
   `;
 }
@@ -1435,9 +1521,16 @@ function cursorForArticleListRow(
 }
 
 function rankedRecommendedKeysetCondition(
-  cursor: Extract<ArticleListCursor, { type: "recommended" }> | null
+  cursor: Extract<ArticleListCursor, { type: "recommended" }> | null,
+  options: { applyWhenRankMissing?: 0 | 1 } = {}
 ): { sql: string; params: unknown[] } | null {
   if (!cursor) {
+    return null;
+  }
+  if (
+    options.applyWhenRankMissing !== undefined &&
+    (cursor.rankMissing ?? 0) !== options.applyWhenRankMissing
+  ) {
     return null;
   }
 
@@ -1468,7 +1561,7 @@ function rankedRecommendedKeysetCondition(
 function unrankedRecommendedKeysetCondition(
   cursor: Extract<ArticleListCursor, { type: "recommended" }> | null
 ): { sql: string; params: unknown[] } | null {
-  if (!cursor || (cursor.rankMissing ?? 0) === 0) {
+  if (!cursor || (cursor.rankMissing ?? 0) === 0 || cursor.score !== null) {
     return null;
   }
 
