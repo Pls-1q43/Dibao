@@ -25,6 +25,8 @@ import type {
 } from "../types.js";
 import { BASE_RANK_CONTEXT } from "./ranking.js";
 
+const RECOMMENDED_FALLBACK_PAGE_LIMIT = 20;
+
 const EMBEDDING_ELIGIBLE_TEXT_PREDICATE = `
   (
     trim(coalesce(a.title, '')) != ''
@@ -88,6 +90,11 @@ type RecommendedCandidateRow = {
   sortRerankPosition: number | null;
   sortRankMissing: 0 | 1;
   sortPublishedAt: number;
+};
+
+type RecommendedListPage = {
+  rows: ArticleReadDbRow[];
+  pageLimit: number;
 };
 
 export interface ArticleRepository {
@@ -489,38 +496,44 @@ export class SqliteArticleRepository implements ArticleRepository {
       keyset && input.view !== "recommended" ? [...conditions, keyset.sql] : conditions;
     const pageParams =
       keyset && input.view !== "recommended" ? [...filterParams, ...keyset.params] : filterParams;
-    const rows =
-      input.view === "recommended"
-        ? this.listRecommendedByRank({
-            rankContext,
-            conditions,
-            filterParams,
-            limit,
-            offset,
-            cursor: input.cursor?.type === "recommended" ? input.cursor : null,
-            timing
-          })
-        : measureArticleListTiming(timing, "pageQueryMs", () =>
-            this.db
-              .prepare(
-                `
-                  ${baseArticleReadSelect({ includeRank: needsRank })}
-                  ${baseArticleReadFrom({ includeRank: needsRank })}
-                  where ${pageConditions.join(" and ")}
-                  ${orderByForView(input.view, input.sort)}
-                  limit ?
-                  ${keyset ? "" : "offset ?"}
-                `
-              )
-              .all(
-                ...rankParams,
-                ...pageParams,
-                ...(keyset ? [limit + 1] : [limit + 1, offset])
-              ) as ArticleReadDbRow[]
-          );
+    let pageLimit = limit;
+    const rows = (() => {
+      if (input.view === "recommended") {
+        const page = this.listRecommendedByRank({
+          rankContext,
+          conditions,
+          filterParams,
+          limit,
+          offset,
+          cursor: input.cursor?.type === "recommended" ? input.cursor : null,
+          timing
+        });
+        pageLimit = page.pageLimit;
+        return page.rows;
+      }
 
-    const hasMore = rows.length > limit;
-    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      return measureArticleListTiming(timing, "pageQueryMs", () =>
+        this.db
+          .prepare(
+            `
+              ${baseArticleReadSelect({ includeRank: needsRank })}
+              ${baseArticleReadFrom({ includeRank: needsRank })}
+              where ${pageConditions.join(" and ")}
+              ${orderByForView(input.view, input.sort)}
+              limit ?
+              ${keyset ? "" : "offset ?"}
+            `
+          )
+          .all(
+            ...rankParams,
+            ...pageParams,
+            ...(keyset ? [limit + 1] : [limit + 1, offset])
+          ) as ArticleReadDbRow[]
+      );
+    })();
+
+    const hasMore = rows.length > pageLimit;
+    const pageRows = hasMore ? rows.slice(0, pageLimit) : rows;
     const mapStartedAt = performance.now();
     const items = pageRows.map(mapArticleListItem);
     timing.mapMs = elapsedMs(mapStartedAt);
@@ -531,7 +544,7 @@ export class SqliteArticleRepository implements ArticleRepository {
 
     return {
       items,
-      nextOffset: hasMore ? offset + limit : null,
+      nextOffset: hasMore ? offset + pageLimit : null,
       nextCursor,
       unreadCount,
       timing
@@ -546,9 +559,15 @@ export class SqliteArticleRepository implements ArticleRepository {
     offset: number;
     cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
     timing: ArticleListTiming;
-  }): ArticleReadDbRow[] {
-    const targetCount = input.cursor ? input.limit + 1 : input.offset + input.limit + 1;
-    const rankedCandidates = this.listRankedRecommendedCandidates(input, targetCount);
+  }): RecommendedListPage {
+    const requestedTargetCount = input.cursor ? input.limit + 1 : input.offset + input.limit + 1;
+    const rankedCandidates = this.listRankedRecommendedCandidates(input, requestedTargetCount);
+    const shouldUseFallbackLimit =
+      input.rankContext !== BASE_RANK_CONTEXT && rankedCandidates.length < requestedTargetCount;
+    const pageLimit = shouldUseFallbackLimit
+      ? Math.min(input.limit, RECOMMENDED_FALLBACK_PAGE_LIMIT)
+      : input.limit;
+    const targetCount = input.cursor ? pageLimit + 1 : input.offset + pageLimit + 1;
     const shouldBackfillCandidates =
       input.rankContext === BASE_RANK_CONTEXT || rankedCandidates.length > 0 || input.cursor !== null;
     const missingBaseCount =
@@ -572,11 +591,14 @@ export class SqliteArticleRepository implements ArticleRepository {
       ...unrankedCandidates
     ];
     const pageCandidates = input.cursor
-      ? candidates.slice(0, input.limit + 1)
-      : candidates.slice(input.offset, input.offset + input.limit + 1);
-    return measureArticleListTiming(input.timing, "hydrateMs", () =>
-      this.hydrateRecommendedCandidates(input.rankContext, pageCandidates)
-    );
+      ? candidates.slice(0, pageLimit + 1)
+      : candidates.slice(input.offset, input.offset + pageLimit + 1);
+    return {
+      rows: measureArticleListTiming(input.timing, "hydrateMs", () =>
+        this.hydrateRecommendedCandidates(input.rankContext, pageCandidates)
+      ),
+      pageLimit
+    };
   }
 
   private listRankedRecommendedCandidates(

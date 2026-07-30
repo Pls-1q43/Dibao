@@ -2310,6 +2310,73 @@ describe("db package", () => {
     }
   });
 
+  it("caps underfilled active recommended fallback pages at 20 items", () => {
+    const db = openDatabase(tempDatabasePath(), { migrate: true });
+    try {
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      feeds.upsert({
+        id: "feed_recommended_fallback_cap",
+        title: "Recommended Fallback Cap Feed",
+        feedUrl: "https://example.com/recommended-fallback-cap.xml",
+        now: 1000
+      });
+
+      for (let index = 1; index <= 5; index += 1) {
+        const id = `article_active_cap_${String(index).padStart(2, "0")}`;
+        articles.upsert({
+          id,
+          feedId: "feed_recommended_fallback_cap",
+          url: `https://example.com/${id}`,
+          title: id,
+          publishedAt: 1000 + index,
+          discoveredAt: 1000 + index,
+          dedupeKey: id,
+          now: 1000 + index
+        });
+        insertRank(db, id, 100 - index, 3000, "active_cap");
+      }
+
+      for (let index = 1; index <= 30; index += 1) {
+        const id = `article_base_cap_${String(index).padStart(2, "0")}`;
+        articles.upsert({
+          id,
+          feedId: "feed_recommended_fallback_cap",
+          url: `https://example.com/${id}`,
+          title: id,
+          publishedAt: 2000 + index,
+          discoveredAt: 2000 + index,
+          dedupeKey: id,
+          now: 2000 + index
+        });
+        insertRank(db, id, 60 - index, 2500);
+      }
+
+      const firstFallbackPage = articles.list({
+        view: "recommended",
+        rankContext: "active_cap",
+        limit: 50
+      });
+      expect(firstFallbackPage.items).toHaveLength(20);
+      expect(firstFallbackPage.items.slice(0, 5).map((item) => item.id)).toEqual([
+        "article_active_cap_01",
+        "article_active_cap_02",
+        "article_active_cap_03",
+        "article_active_cap_04",
+        "article_active_cap_05"
+      ]);
+      expect(firstFallbackPage.items[5]?.id).toBe("article_base_cap_01");
+      expect(firstFallbackPage.nextCursor).toMatchObject({
+        type: "recommended",
+        rankMissing: 1,
+        score: 45
+      });
+      expect(firstFallbackPage.nextOffset).toBe(20);
+    } finally {
+      db.close();
+    }
+  });
+
   it("stores auth credentials and hashed sessions", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
