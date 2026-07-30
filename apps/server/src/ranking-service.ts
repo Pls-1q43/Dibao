@@ -534,7 +534,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       processed += 1;
       lastProcessedArticleId = candidate.articleId;
 
-      if (!activeIndexId) {
+      if (!activeIndexId || !isActiveRecommendationCandidate(candidate)) {
         continue;
       }
 
@@ -1745,6 +1745,10 @@ function ftrlPredict(model: FtrlModel, features: Map<string, number>): number {
 
 function rankContextFor(input: { hasEmbedding: boolean; cocoonLevel: number }): string {
   return `${RECOMMENDATION_ALGORITHM_VERSION}:${input.hasEmbedding ? "embedding" : "base"}:cocoon_${input.cocoonLevel}:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
+}
+
+function isActiveRecommendationCandidate(candidate: ArticleRankingCandidateRow): boolean {
+  return !candidate.stateRowExists;
 }
 
 function cocoonParameters(level: number) {

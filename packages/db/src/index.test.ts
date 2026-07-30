@@ -2214,7 +2214,7 @@ describe("db package", () => {
     }
   });
 
-  it("orders recommended article lists from active rank scores before base and unranked fallback", () => {
+  it("orders recommended article lists from latest active scores, stale active scores, base, then unranked fallback", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
       const feeds = new SqliteFeedRepository(db);
@@ -2226,7 +2226,14 @@ describe("db package", () => {
         now: 1000
       });
 
-      for (const id of ["base_only", "active_high", "active_mid", "active_low", "unranked"]) {
+      for (const id of [
+        "base_only",
+        "active_high",
+        "active_mid",
+        "stale_high",
+        "stale_low",
+        "unranked"
+      ]) {
         articles.upsert({
           id: `article_${id}`,
           feedId: "feed_ranked_list",
@@ -2241,16 +2248,29 @@ describe("db package", () => {
 
       insertRank(db, "article_base_only", 0.95, 2000);
       insertRank(db, "article_active_high", 0.1, 2000);
-      insertRank(db, "article_active_high", 0.9, 3000, "active");
-      insertRank(db, "article_active_mid", 0.8, 3000, "active");
-      insertRank(db, "article_active_low", 0.7, 3000, "active");
+      insertRank(db, "article_active_high", 0.9, 4000, "active", {
+        rerankWindowId: "active:new",
+        rerankPosition: 1
+      });
+      insertRank(db, "article_active_mid", 0.8, 4000, "active", {
+        rerankWindowId: "active:new",
+        rerankPosition: 2
+      });
+      insertRank(db, "article_stale_high", 0.99, 3000, "active", {
+        rerankWindowId: "active:old",
+        rerankPosition: 1
+      });
+      insertRank(db, "article_stale_low", 0.7, 3000, "active", {
+        rerankWindowId: "active:old",
+        rerankPosition: 2
+      });
 
       const firstPage = articles.list({ view: "recommended", rankContext: "active", limit: 2 });
       expect(firstPage.items.map((item) => item.id)).toEqual([
         "article_active_high",
         "article_active_mid"
       ]);
-      expect(firstPage.nextCursor).toMatchObject({ type: "recommended" });
+      expect(firstPage.nextCursor).toMatchObject({ type: "recommended", rankMissing: 0 });
       expect(firstPage.timing).toMatchObject({
         unreadCountMs: expect.any(Number),
         rankCandidateMs: expect.any(Number),
@@ -2260,7 +2280,7 @@ describe("db package", () => {
         articles
           .list({ view: "recommended", rankContext: "active", limit: 3, offset: 2 })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low", "article_base_only", "article_unranked"]);
+      ).toEqual(["article_stale_high", "article_stale_low", "article_base_only"]);
       expect(
         articles
           .list({
@@ -2270,7 +2290,7 @@ describe("db package", () => {
             cursor: firstPage.nextCursor ?? undefined
           })
           .items.map((item) => item.id)
-      ).toEqual(["article_active_low", "article_base_only", "article_unranked"]);
+      ).toEqual(["article_stale_high", "article_stale_low", "article_base_only"]);
       const fallbackPage = articles.list({
         view: "recommended",
         rankContext: "active",
@@ -2279,13 +2299,13 @@ describe("db package", () => {
       expect(fallbackPage.items.map((item) => item.id)).toEqual([
         "article_active_high",
         "article_active_mid",
-        "article_active_low",
-        "article_base_only"
+        "article_stale_high",
+        "article_stale_low"
       ]);
       expect(fallbackPage.nextCursor).toMatchObject({
         type: "recommended",
         rankMissing: 1,
-        score: 0.95
+        score: 0.7
       });
       expect(
         articles
@@ -2296,7 +2316,7 @@ describe("db package", () => {
             cursor: fallbackPage.nextCursor ?? undefined
           })
           .items.map((item) => item.id)
-      ).toEqual(["article_unranked"]);
+      ).toEqual(["article_base_only", "article_unranked"]);
       const withoutCount = articles.list({
         view: "recommended",
         rankContext: "active",
@@ -2368,7 +2388,7 @@ describe("db package", () => {
       expect(firstFallbackPage.items[5]?.id).toBe("article_base_cap_01");
       expect(firstFallbackPage.nextCursor).toMatchObject({
         type: "recommended",
-        rankMissing: 1,
+        rankMissing: 2,
         score: 45
       });
       expect(firstFallbackPage.nextOffset).toBe(20);
@@ -2448,7 +2468,8 @@ function insertRank(
   articleId: string,
   score: number,
   calculatedAt: number,
-  rankContext = "base"
+  rankContext = "base",
+  options: { rerankWindowId?: string | null; rerankPosition?: number | null } = {}
 ): void {
   db.prepare(
     `
@@ -2463,11 +2484,20 @@ function insertRank(
         state_score,
         diversity_score,
         penalty_score,
+        rerank_position,
+        rerank_window_id,
         calculated_at
       )
-      values (?, ?, null, ?, 0, 0, 0, 0, 0, 0, ?)
+      values (?, ?, null, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?)
     `
-  ).run(articleId, rankContext, score, calculatedAt);
+  ).run(
+    articleId,
+    rankContext,
+    score,
+    options.rerankPosition ?? null,
+    options.rerankWindowId ?? null,
+    calculatedAt
+  );
 }
 
 function hasTableOrView(db: ReturnType<typeof openDatabase>, name: string): boolean {

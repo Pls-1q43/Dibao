@@ -71,7 +71,7 @@ type ArticleReadDbRow = ArticleDbRow & {
   sortPublishedAt: number;
   sortRerankMissing: 0 | 1 | null;
   sortRerankPosition: number | null;
-  sortRankMissing: 0 | 1 | null;
+  sortRankMissing: 0 | 1 | 2 | null;
   rankScore: number | null;
   rankCalculatedAt: number | null;
 };
@@ -88,7 +88,7 @@ type RecommendedCandidateRow = {
   sortScore: number | null;
   sortRerankMissing: 0 | 1;
   sortRerankPosition: number | null;
-  sortRankMissing: 0 | 1;
+  sortRankMissing: 0 | 1 | 2;
   sortPublishedAt: number;
 };
 
@@ -561,7 +561,18 @@ export class SqliteArticleRepository implements ArticleRepository {
     timing: ArticleListTiming;
   }): RecommendedListPage {
     const requestedTargetCount = input.cursor ? input.limit + 1 : input.offset + input.limit + 1;
-    const rankedCandidates = this.listRankedRecommendedCandidates(input, requestedTargetCount);
+    const latestActiveCandidates = this.listLatestActiveRecommendedCandidates(
+      input,
+      requestedTargetCount
+    );
+    const staleActiveCandidates =
+      input.rankContext !== BASE_RANK_CONTEXT && latestActiveCandidates.length < requestedTargetCount
+        ? this.listStaleActiveRecommendedCandidates(
+            input,
+            Math.max(0, requestedTargetCount - latestActiveCandidates.length)
+          )
+        : [];
+    const rankedCandidates = [...latestActiveCandidates, ...staleActiveCandidates];
     const shouldUseFallbackLimit =
       input.rankContext !== BASE_RANK_CONTEXT && rankedCandidates.length < requestedTargetCount;
     const pageLimit = shouldUseFallbackLimit
@@ -601,7 +612,7 @@ export class SqliteArticleRepository implements ArticleRepository {
     };
   }
 
-  private listRankedRecommendedCandidates(
+  private listLatestActiveRecommendedCandidates(
     input: {
       rankContext: string;
       conditions: string[];
@@ -639,28 +650,62 @@ export class SqliteArticleRepository implements ArticleRepository {
     return candidates;
   }
 
+  private listStaleActiveRecommendedCandidates(
+    input: {
+      rankContext: string;
+      conditions: string[];
+      filterParams: unknown[];
+      cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
+      timing: ArticleListTiming;
+    },
+    targetCount: number
+  ): RecommendedCandidateRow[] {
+    if (targetCount <= 0 || input.rankContext === BASE_RANK_CONTEXT) {
+      return [];
+    }
+
+    let candidates: RecommendedCandidateRow[] = [];
+    const windows = recommendedCandidateWindows(targetCount);
+    const latestRerankWindowId = this.latestRerankWindowId(input.rankContext);
+    if (!latestRerankWindowId) {
+      return [];
+    }
+    for (const candidateLimit of windows) {
+      const stale = measureArticleListTiming(input.timing, "rankCandidateMs", () =>
+        this.selectRankedRecommendedCandidates({
+          rankContext: input.rankContext,
+          excludeRankContext: null,
+          rerankWindowId: null,
+          excludeRerankWindowId: latestRerankWindowId,
+          sortRankMissing: 1,
+          conditions: input.conditions,
+          filterParams: input.filterParams,
+          cursor: input.cursor,
+          limit: candidateLimit
+        })
+      );
+      candidates = stale;
+      if (candidates.length >= targetCount || stale.length < candidateLimit) {
+        return candidates;
+      }
+    }
+    return candidates;
+  }
+
   private selectRankedRecommendedCandidates(input: {
     rankContext: string;
     excludeRankContext: string | null;
     rerankWindowId: string | null;
-    sortRankMissing: 0 | 1;
+    excludeRerankWindowId?: string | null;
+    sortRankMissing: 0 | 1 | 2;
     conditions: string[];
     filterParams: unknown[];
     cursor: Extract<ArticleListCursor, { type: "recommended" }> | null;
     limit: number;
   }): RecommendedCandidateRow[] {
     if (
-      input.sortRankMissing === 0 &&
       input.cursor &&
-      (input.cursor.rankMissing ?? 0) > 0
-    ) {
-      return [];
-    }
-    if (
-      input.sortRankMissing === 1 &&
-      input.cursor &&
-      (input.cursor.rankMissing ?? 0) > 0 &&
-      input.cursor.score === null
+      (input.cursor.rankMissing ?? 0) > input.sortRankMissing
     ) {
       return [];
     }
@@ -677,6 +722,12 @@ export class SqliteArticleRepository implements ArticleRepository {
     const excludeParams = input.excludeRankContext ? [input.excludeRankContext] : [];
     const rerankWindowFilter = input.rerankWindowId ? "and ars.rerank_window_id = ?" : "";
     const rerankWindowParams = input.rerankWindowId ? [input.rerankWindowId] : [];
+    const excludeRerankWindowFilter = input.excludeRerankWindowId
+      ? "and (ars.rerank_window_id is null or ars.rerank_window_id != ?)"
+      : "";
+    const excludeRerankWindowParams = input.excludeRerankWindowId
+      ? [input.excludeRerankWindowId]
+      : [];
     const keyset = rankedRecommendedKeysetCondition(input.cursor, {
       applyWhenRankMissing: input.sortRankMissing
     });
@@ -696,6 +747,7 @@ export class SqliteArticleRepository implements ArticleRepository {
           left join article_states s on s.article_id = a.id
           where ars.rank_context = ?
             ${rerankWindowFilter}
+            ${excludeRerankWindowFilter}
             ${excludeActive}
             and ${input.conditions.join(" and ")}
             ${keyset ? `and ${keyset.sql}` : ""}
@@ -711,6 +763,7 @@ export class SqliteArticleRepository implements ArticleRepository {
       .all(
         input.rankContext,
         ...rerankWindowParams,
+        ...excludeRerankWindowParams,
         ...excludeParams,
         ...input.filterParams,
         ...(keyset?.params ?? []),
@@ -740,7 +793,7 @@ export class SqliteArticleRepository implements ArticleRepository {
           rankContext: BASE_RANK_CONTEXT,
           excludeRankContext: input.rankContext,
           rerankWindowId: null,
-          sortRankMissing: 1,
+          sortRankMissing: 2,
           conditions: input.conditions,
           filterParams: input.filterParams,
           cursor: input.cursor,
@@ -794,7 +847,7 @@ export class SqliteArticleRepository implements ArticleRepository {
               null as sortScore,
               1 as sortRerankMissing,
               null as sortRerankPosition,
-              1 as sortRankMissing,
+              2 as sortRankMissing,
               coalesce(a.published_at, a.discovered_at) as sortPublishedAt
             ${baseArticleReadFrom()}
             where ${input.conditions.join(" and ")}
@@ -860,12 +913,6 @@ export class SqliteArticleRepository implements ArticleRepository {
             on base_rs.article_id = a.id
             and base_rs.rank_context = ?
           order by
-            recommended_ids.sortRankMissing asc,
-            recommended_ids.sortScore desc,
-            recommended_ids.sortRerankMissing asc,
-            recommended_ids.sortRerankPosition asc,
-            recommended_ids.sortPublishedAt desc,
-            recommended_ids.id desc,
             displayOrder asc
         `
       )
@@ -1544,7 +1591,7 @@ function cursorForArticleListRow(
 
 function rankedRecommendedKeysetCondition(
   cursor: Extract<ArticleListCursor, { type: "recommended" }> | null,
-  options: { applyWhenRankMissing?: 0 | 1 } = {}
+  options: { applyWhenRankMissing?: 0 | 1 | 2 } = {}
 ): { sql: string; params: unknown[] } | null {
   if (!cursor) {
     return null;

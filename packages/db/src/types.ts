@@ -612,6 +612,7 @@ export type ArticleRankingCandidateRow = {
   feedOpenRate: number;
   feedFavoriteRate: number;
   feedNotInterestedRate: number;
+  stateRowExists: boolean;
   state: ArticleStateSnapshot;
   behaviorProjectionScore: number;
   behaviorEventCount: number;

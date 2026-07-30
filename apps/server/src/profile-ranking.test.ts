@@ -658,6 +658,27 @@ describe("profile algorithm and recommendation ranking", () => {
     }
   });
 
+  it("keeps touched articles out of the active rerank window while still updating base scores", () => {
+    const fixture = createProfileFixture();
+    const { actions, db, ranking } = fixture;
+
+    try {
+      actions.record({
+        articleId: "article_liked",
+        type: "open",
+        now: 2_000
+      });
+
+      ranking.recalculateAll();
+
+      expect(activeScore(db, "article_liked")).toBeNull();
+      expect(activeScoreForContext(db, "article_liked", "base")).not.toBeNull();
+      expect(activeScore(db, "article_similar")).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("pauses full ranking chunks at a safe cursor when foreground activity resumes", () => {
     const fixture = createProfileFixture();
     try {

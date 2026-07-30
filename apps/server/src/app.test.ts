@@ -7904,7 +7904,7 @@ describe("server API vertical slice", () => {
     }
   });
 
-  it("keeps the latest active rerank window first and backfills underfilled recommended pages", async () => {
+  it("keeps the latest active rerank window first and backfills stale active before base", async () => {
     const db = createEmptyDatabase();
     const feeds = new SqliteFeedRepository(db);
     const articles = new SqliteArticleRepository(db);
@@ -7979,6 +7979,7 @@ describe("server API vertical slice", () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_active_new",
+        "article_active_old",
         "article_base_only",
         "article_unranked"
       ]);

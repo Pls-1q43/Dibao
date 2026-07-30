@@ -30,6 +30,7 @@ type ArticleRankingCandidateDbRow = {
   feedOpenRate: number;
   feedFavoriteRate: number;
   feedNotInterestedRate: number;
+  stateRowExists: 0 | 1;
   read: 0 | 1;
   favorited: 0 | 1;
   liked: 0 | 1;
@@ -434,6 +435,7 @@ export class SqliteRankingRepository implements RankingRepository {
               coalesce(fs.open_rate, 0) as feedOpenRate,
               coalesce(fs.favorite_rate, 0) as feedFavoriteRate,
               coalesce(fs.not_interested_rate, 0) as feedNotInterestedRate,
+              case when s.article_id is not null then 1 else 0 end as stateRowExists,
               case when s.read_at is not null then 1 else 0 end as read,
               case when s.favorited_at is not null then 1 else 0 end as favorited,
               case when s.liked_at is not null then 1 else 0 end as liked,
@@ -726,6 +728,7 @@ function mapCandidate(row: ArticleRankingCandidateDbRow): ArticleRankingCandidat
     feedOpenRate: row.feedOpenRate,
     feedFavoriteRate: row.feedFavoriteRate,
     feedNotInterestedRate: row.feedNotInterestedRate,
+    stateRowExists: row.stateRowExists === 1,
     state: {
       read: row.read === 1,
       favorited: row.favorited === 1,
