@@ -2209,6 +2209,18 @@
   gap: var(--space-2);
 }
 
+.panelTitleGroup {
+  min-width: 0;
+}
+
+.articleTitleLine {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .articleFilterBar {
   min-height: 38px;
   display: inline-flex;
@@ -3029,6 +3041,194 @@
   color: var(--color-danger);
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+
+.recommendationInventoryControl {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.recommendationInventoryButton {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--color-paper) 88%, var(--color-surface-subtle));
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.recommendationInventoryButton:hover,
+.recommendationInventoryButton:focus-visible {
+  border-color: var(--color-line-strong);
+  color: var(--color-ink);
+}
+
+.recommendationInventoryButton strong {
+  color: var(--color-ink);
+  font-size: 11px;
+  font-weight: var(--weight-bold);
+}
+
+.recommendationInventoryDot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-muted);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.72);
+}
+
+.recommendationInventoryAvailable .recommendationInventoryDot {
+  background: var(--color-pine);
+}
+
+.recommendationInventoryEmpty .recommendationInventoryDot {
+  background: var(--color-danger);
+}
+
+.recommendationInventoryRanking .recommendationInventoryDot {
+  background: #315f9f;
+}
+
+.recommendationInventoryLoading .recommendationInventoryDot {
+  background: #8b6f2a;
+}
+
+.recommendationInventoryUnavailable .recommendationInventoryDot {
+  background: var(--color-faint);
+}
+
+.recommendationInventoryPopover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 25;
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  gap: var(--space-3);
+  border: var(--border-default);
+  border-left: 3px solid var(--color-pine);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.recommendationInventoryHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.recommendationInventoryHeader h3 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: var(--text-base);
+  line-height: 1.35;
+}
+
+.recommendationInventoryEyebrow {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recommendationInventorySummary,
+.recommendationInventoryNotice,
+.recommendationInventoryWarning {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.recommendationInventorySummary {
+  color: var(--color-muted);
+}
+
+.recommendationInventoryNotice {
+  border-left: 2px solid #315f9f;
+  padding: var(--space-2) var(--space-3);
+  background: #e2eaf6;
+  color: #284c7d;
+}
+
+.recommendationInventoryWarning {
+  border-left: 2px solid var(--color-danger);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.recommendationInventoryMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.recommendationInventoryMetrics div,
+.recommendationInventoryMeta div {
+  min-width: 0;
+}
+
+.recommendationInventoryMetrics dt,
+.recommendationInventoryMeta dt {
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.recommendationInventoryMetrics dd,
+.recommendationInventoryMeta dd {
+  margin: 2px 0 0;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.recommendationInventoryMeta {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  border-top: var(--border-subtle);
+  padding-top: var(--space-2);
+}
+
+.recommendationInventorySystem {
+  display: grid;
+  gap: var(--space-2);
+  border-top: var(--border-subtle);
+  padding-top: var(--space-2);
+}
+
+.recommendationInventorySystem h4 {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.recommendationInventoryOverlay {
+  display: none;
 }
 
 .recommendationStatusBar {
@@ -3946,6 +4146,11 @@
     min-width: 0;
   }
 
+  .articleTitleLine {
+    max-width: 58vw;
+    gap: 6px;
+  }
+
   .panelHeader h2 {
     overflow: hidden;
     font-size: 17px;
@@ -3967,6 +4172,44 @@
   .panelHeaderActions {
     flex: 0 1 auto;
     gap: 6px;
+  }
+
+  .recommendationInventoryButton {
+    min-height: 24px;
+    max-width: 122px;
+    padding-inline: 7px;
+    font-size: 10px;
+  }
+
+  .recommendationInventoryButton span:not(.recommendationInventoryDot) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .recommendationInventoryOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 34;
+    display: block;
+    border: 0;
+    padding: 0;
+    background: rgb(32 36 33 / 0.18);
+  }
+
+  .recommendationInventoryPopover {
+    position: fixed;
+    inset: auto var(--space-3) calc(72px + env(safe-area-inset-bottom, 0px));
+    z-index: 35;
+    width: auto;
+    max-height: min(72vh, 560px);
+    overflow: auto;
+    border-left-width: 0;
+    border-top: 3px solid var(--color-pine);
+    padding: var(--space-4);
+  }
+
+  .recommendationInventoryMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .panelHeaderActions .count {

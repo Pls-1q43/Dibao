@@ -53,7 +53,8 @@ import {
   type JobStatus,
   type PluginJobType,
   type JobType,
-  type ProfileSignalCountRow
+  type ProfileSignalCountRow,
+  type RecommendedArticleInventory
 } from "@dibao/db";
 import { cosineSimilarity, profileAlgorithmDefaults } from "@dibao/ranking";
 import { dibaoVersion, type ApiError } from "@dibao/shared";
@@ -296,6 +297,10 @@ type ArticleQuery = {
   sort?: string;
 };
 
+type RecommendationInventoryQuery = ArticleQuery & {
+  loadedCount?: string;
+};
+
 type SearchQuery = {
   q?: string;
   scope?: string;
@@ -413,6 +418,29 @@ type RecommendationStatusQuery = {
   includeClusterItems?: string;
   clusterItemLimit?: string;
   clusterDetailLevel?: string;
+};
+
+type RecommendationInventoryState = "available" | "empty" | "ranking";
+
+type RecommendationInventoryResponse = {
+  status: RecommendationInventoryState;
+  activeRankContext: string;
+  latestRerankWindowId: string | null;
+  eligibleCount: number;
+  sortedCount: number;
+  remainingSortedCount: number;
+  latestActiveCount: number;
+  staleActiveCount: number;
+  fallbackCount: number;
+  baseFallbackCount: number;
+  unrankedFallbackCount: number;
+  loadedCount: number;
+  rankingJob: {
+    queued: number;
+    running: number;
+  };
+  lastRankedAt: string | null;
+  updatedAt: string;
 };
 
 type RecommendationMergeCandidateQuery = {
@@ -1002,6 +1030,18 @@ export function buildServer(options: BuildServerOptions = {}) {
   let backgroundStartupTimer: NodeJS.Timeout | null = null;
   let stopJobWakeWatcher: (() => void) | null = null;
   let backgroundServicesStarted = false;
+  let recommendationInventorySubscriberId = 0;
+  let recommendationInventoryHeartbeatTimer: NodeJS.Timeout | null = null;
+  const recommendationInventorySubscribers = new Map<
+    number,
+    {
+      input: ArticleListInput;
+      loadedCount: number;
+      send: (payload: RecommendationInventoryResponse) => void;
+      heartbeat: () => void;
+      close: () => void;
+    }
+  >();
 
   const jobRunner = new JobRunner({
     jobs,
@@ -1079,6 +1119,12 @@ export function buildServer(options: BuildServerOptions = {}) {
     maxJobsPerDrain: options.jobRunnerMaxJobsPerDrain,
     onEvent: (event) => {
       app.log.info(jobRunnerEventLog(event), "job.runner");
+      if (
+        event.job.type === RANKING_RECALCULATE_JOB_TYPE ||
+        event.job.type === BEHAVIOR_EVENT_PROJECT_JOB_TYPE
+      ) {
+        broadcastRecommendationInventory("ranking job event");
+      }
     },
     beforeRun: (job) => {
       if (foregroundQuietWindowMs <= 0 || !isForegroundDeferrableJobType(job.type)) {
@@ -1357,6 +1403,50 @@ export function buildServer(options: BuildServerOptions = {}) {
     );
   }
 
+  function getRecommendationInventoryResponse(
+    input: ArticleListInput,
+    loadedCount: number
+  ): RecommendationInventoryResponse {
+    const inventory = articles.getRecommendedInventory({
+      ...input,
+      view: "recommended",
+      includeUnreadCount: false,
+      rankContext: rankingService.getActiveRankContext()
+    });
+    const rankingJob = {
+      queued: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "queued"),
+      running: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "running")
+    };
+    return mapRecommendationInventory(inventory, loadedCount, rankingJob, options.now?.() ?? Date.now());
+  }
+
+  function ensureRecommendationInventoryHeartbeat(): void {
+    if (recommendationInventoryHeartbeatTimer) {
+      return;
+    }
+    recommendationInventoryHeartbeatTimer = setInterval(() => {
+      for (const subscriber of recommendationInventorySubscribers.values()) {
+        subscriber.heartbeat();
+      }
+    }, 25_000);
+    recommendationInventoryHeartbeatTimer.unref?.();
+  }
+
+  function broadcastRecommendationInventory(reason: string): void {
+    if (recommendationInventorySubscribers.size === 0) {
+      return;
+    }
+    for (const subscriber of recommendationInventorySubscribers.values()) {
+      try {
+        subscriber.send(
+          getRecommendationInventoryResponse(subscriber.input, subscriber.loadedCount)
+        );
+      } catch (error) {
+        app.log.warn({ error, reason }, "recommendation.inventory.broadcast_failed");
+      }
+    }
+  }
+
   function startBackgroundServices(): void {
     if (!backgroundJobs) {
       return;
@@ -1506,6 +1596,14 @@ export function buildServer(options: BuildServerOptions = {}) {
     retentionCleanupScheduler.stop();
     feedRefreshScheduler.stop();
     jobRunner.stop();
+    for (const subscriber of recommendationInventorySubscribers.values()) {
+      subscriber.close();
+    }
+    recommendationInventorySubscribers.clear();
+    if (recommendationInventoryHeartbeatTimer) {
+      clearInterval(recommendationInventoryHeartbeatTimer);
+      recommendationInventoryHeartbeatTimer = null;
+    }
     if (stopJobWakeWatcher) {
       stopJobWakeWatcher();
       stopJobWakeWatcher = null;
@@ -1944,6 +2042,94 @@ export function buildServer(options: BuildServerOptions = {}) {
       return sendPluginError(reply, error);
     }
   });
+
+  app.get<{ Querystring: RecommendationInventoryQuery }>(
+    "/api/recommendation/inventory",
+    async (request, reply) => {
+      const parsed = parseRecommendationInventoryQuery(request.query, options.now);
+      if (!parsed.ok) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
+      }
+
+      return {
+        data: getRecommendationInventoryResponse(parsed.input, parsed.loadedCount)
+      };
+    }
+  );
+
+  app.get<{ Querystring: RecommendationInventoryQuery }>(
+    "/api/recommendation/inventory/events",
+    (request, reply) => {
+      const parsed = parseRecommendationInventoryQuery(request.query, options.now);
+      if (!parsed.ok) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
+      }
+
+      const subscriberId = recommendationInventorySubscriberId + 1;
+      recommendationInventorySubscriberId = subscriberId;
+      let closed = false;
+
+      function removeSubscriber(): void {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        recommendationInventorySubscribers.delete(subscriberId);
+        if (
+          recommendationInventorySubscribers.size === 0 &&
+          recommendationInventoryHeartbeatTimer
+        ) {
+          clearInterval(recommendationInventoryHeartbeatTimer);
+          recommendationInventoryHeartbeatTimer = null;
+        }
+      }
+
+      function send(payload: RecommendationInventoryResponse): void {
+        if (closed) {
+          return;
+        }
+        try {
+          reply.raw.write(`event: inventory\ndata: ${JSON.stringify(payload)}\n\n`);
+        } catch (error) {
+          app.log.warn({ error }, "recommendation.inventory.sse_write_failed");
+          removeSubscriber();
+        }
+      }
+
+      function heartbeat(): void {
+        if (closed) {
+          return;
+        }
+        try {
+          reply.raw.write(`: ${Date.now()}\n\n`);
+        } catch (error) {
+          app.log.warn({ error }, "recommendation.inventory.sse_heartbeat_failed");
+          removeSubscriber();
+        }
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      });
+      request.raw.on("close", removeSubscriber);
+      recommendationInventorySubscribers.set(subscriberId, {
+        input: parsed.input,
+        loadedCount: parsed.loadedCount,
+        send,
+        heartbeat,
+        close: () => {
+          removeSubscriber();
+          reply.raw.end();
+        }
+      });
+      ensureRecommendationInventoryHeartbeat();
+      send(getRecommendationInventoryResponse(parsed.input, parsed.loadedCount));
+    }
+  );
 
   app.get<{ Querystring: RecommendationStatusQuery }>(
     "/api/recommendation/status",
@@ -3351,6 +3537,10 @@ function isForegroundActivityRoute(pathname: string): boolean {
       pathname.endsWith(".css") ||
       pathname.endsWith(".webmanifest")
     );
+  }
+
+  if (pathname === "/api/recommendation/inventory/events") {
+    return false;
   }
 
   return (
@@ -5310,6 +5500,105 @@ function parseArticleQuery(
   }
 
   return { ok: true, input };
+}
+
+function parseRecommendationInventoryQuery(
+  query: RecommendationInventoryQuery,
+  now: (() => number) | undefined
+):
+  | { ok: true; input: ArticleListInput; loadedCount: number }
+  | { ok: false; message: string; details?: unknown } {
+  if (query.view !== undefined && query.view !== "recommended") {
+    return {
+      ok: false,
+      message: "view must be recommended",
+      details: { field: "view" }
+    };
+  }
+
+  const loadedCount = parseLoadedCount(query.loadedCount);
+  if (loadedCount === null) {
+    return {
+      ok: false,
+      message: "loadedCount must be a non-negative integer",
+      details: { field: "loadedCount" }
+    };
+  }
+
+  const parsed = parseArticleQuery(
+    {
+      ...query,
+      view: "recommended",
+      cursor: undefined,
+      includeUnreadCount: "false",
+      limit: undefined
+    },
+    now
+  );
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  return {
+    ok: true,
+    input: {
+      ...parsed.input,
+      view: "recommended",
+      includeUnreadCount: false,
+      cursor: undefined,
+      offset: undefined,
+      limit: undefined
+    },
+    loadedCount
+  };
+}
+
+function parseLoadedCount(value: string | undefined): number | null {
+  if (value === undefined) {
+    return 0;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100_000) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function mapRecommendationInventory(
+  inventory: RecommendedArticleInventory,
+  loadedCount: number,
+  rankingJob: { queued: number; running: number },
+  now: number
+): RecommendationInventoryResponse {
+  const normalizedLoadedCount = Math.max(0, Math.trunc(loadedCount));
+  const fallbackCount = inventory.baseFallbackCount + inventory.unrankedFallbackCount;
+  const remainingSortedCount = Math.max(0, inventory.sortedCount - normalizedLoadedCount);
+  const hasRankingJob = rankingJob.queued + rankingJob.running > 0;
+  const status: RecommendationInventoryState = hasRankingJob
+    ? "ranking"
+    : remainingSortedCount > 0
+      ? "available"
+      : "empty";
+
+  return {
+    status,
+    activeRankContext: inventory.rankContext,
+    latestRerankWindowId: inventory.latestRerankWindowId,
+    eligibleCount: inventory.eligibleCount,
+    sortedCount: inventory.sortedCount,
+    remainingSortedCount,
+    latestActiveCount: inventory.latestActiveCount,
+    staleActiveCount: inventory.staleActiveCount,
+    fallbackCount,
+    baseFallbackCount: inventory.baseFallbackCount,
+    unrankedFallbackCount: inventory.unrankedFallbackCount,
+    loadedCount: normalizedLoadedCount,
+    rankingJob,
+    lastRankedAt: timestampToIso(inventory.lastRankedAt),
+    updatedAt: timestampToIsoValue(now)
+  };
 }
 
 function parseSearchQuery(query: SearchQuery):

@@ -1,6 +1,6 @@
 import type { CSSProperties, FormEvent, MouseEvent, RefObject, SyntheticEvent } from "react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchState, ArticleState, ArticleTimeWindow, ArticleView, FavoriteArticleSort, Feed, FeedDiagnosticItem, FeedFolder, PluginContributions, RankExplanation, RankExplanationReason, ReaderCommandMarkScopeReadPreviewResponse, ReaderSettings, ReadLaterArticleSort, RecommendationStatus } from "../api.js";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchState, ArticleState, ArticleTimeWindow, ArticleView, FavoriteArticleSort, Feed, FeedDiagnosticItem, FeedFolder, PluginContributions, RankExplanation, RankExplanationReason, ReaderCommandMarkScopeReadPreviewResponse, ReaderSettings, ReadLaterArticleSort, RecommendationInventory, RecommendationInventoryStatus, RecommendationStatus } from "../api.js";
 import { useI18n, type Dictionary, type NavigationItemKey } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { articleInteractionStatusForState } from "../articleListState.js";
@@ -155,6 +155,7 @@ export function ArticleListPanel(props: {
   isArticlesLoading: boolean;
   isLoadingMore: boolean;
   isMarkingScopeRead: boolean;
+  isRecommendationInventoryLoading?: boolean;
   isRecommendationStatusLoading: boolean;
   listScrollKey?: string;
   loadMoreError: string | null;
@@ -179,6 +180,8 @@ export function ArticleListPanel(props: {
   pluginRowActions?: PluginActionButton[];
   recommendationStatus: RecommendationStatus | null;
   recommendationStatusError: string | null;
+  recommendationInventory?: RecommendationInventory | null;
+  recommendationInventoryError?: string | null;
   readerCommandError: string | null;
   selectedArticleId: string | null;
   selectedFeed: Feed | null;
@@ -355,9 +358,21 @@ export function ArticleListPanel(props: {
       aria-labelledby="articles-title"
     >
       <div className={styles.panelHeader}>
-        <div>
+        <div className={styles.panelTitleGroup}>
           <p className={styles.kicker}>{sourceTitle}</p>
-          <h2 id="articles-title">{t.articles.views[props.articleView]}</h2>
+          <div className={styles.articleTitleLine}>
+            <h2 id="articles-title">{t.articles.views[props.articleView]}</h2>
+            {props.showRecommendationStatus ? (
+              <RecommendationInventoryControl
+                error={props.recommendationInventoryError ?? null}
+                inventory={props.recommendationInventory ?? null}
+                isLoading={Boolean(props.isRecommendationInventoryLoading)}
+                isRecommendationStatusLoading={props.isRecommendationStatusLoading}
+                recommendationStatus={props.recommendationStatus}
+                recommendationStatusError={props.recommendationStatusError}
+              />
+            ) : null}
+          </div>
         </div>
         <div className={styles.panelHeaderActions}>
           <PluginActionButtons
@@ -443,14 +458,6 @@ export function ArticleListPanel(props: {
           />
         </div>
       </div>
-
-      {props.showRecommendationStatus ? (
-        <RecommendationStatusBar
-          error={props.recommendationStatusError}
-          isLoading={props.isRecommendationStatusLoading}
-          status={props.recommendationStatus}
-        />
-      ) : null}
 
       {props.articleError ? <p className={styles.errorText}>{props.articleError}</p> : null}
       {props.articleLoadingNotice ? (
@@ -1241,44 +1248,286 @@ function InfiniteLoadStatus(props: { label: string }) {
   );
 }
 
-function RecommendationStatusBar(props: {
+type RecommendationInventoryDisplayStatus = RecommendationInventoryStatus | "loading" | "unavailable";
+
+function RecommendationInventoryControl(props: {
   error: string | null;
+  inventory: RecommendationInventory | null;
   isLoading: boolean;
-  status: RecommendationStatus | null;
+  isRecommendationStatusLoading: boolean;
+  recommendationStatus: RecommendationStatus | null;
+  recommendationStatusError: string | null;
 }) {
   const { t, formatDate } = useI18n();
-  const statusText = props.error
-    ? t.recommendationStatus.fallback
-    : props.status
-      ? t.recommendationStatus.modes[props.status.mode]
-      : props.isLoading
-        ? t.recommendationStatus.loading
-        : t.recommendationStatus.fallback;
-  const metrics = props.status ? recommendationStatusMetrics(props.status, t, formatDate) : [];
-  const showWarmupNotice = props.status ? hasProfileWarmupWarning(props.status) : false;
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const popoverId = useId();
+  const displayStatus: RecommendationInventoryDisplayStatus = props.inventory
+    ? props.inventory.status
+    : props.isLoading
+      ? "loading"
+      : "unavailable";
+  const statusText = t.recommendationInventory.statuses[displayStatus];
+  const statusSummary = inventoryStatusSummary(displayStatus, props.inventory, t);
+  const statusClass = recommendationInventoryStatusClass(displayStatus);
+  const metrics = props.recommendationStatus
+    ? recommendationStatusMetrics(props.recommendationStatus, t, formatDate)
+    : [];
+  const showWarmupNotice = props.recommendationStatus
+    ? hasProfileWarmupWarning(props.recommendationStatus)
+    : false;
+  const rankingJobCount = props.inventory
+    ? props.inventory.rankingJob.queued + props.inventory.rankingJob.running
+    : 0;
+  const inventoryRows = props.inventory
+    ? [
+        {
+          label: t.recommendationInventory.metrics.remainingSorted,
+          value: formatCompactNumber(props.inventory.remainingSortedCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.sortedTotal,
+          value: formatCompactNumber(props.inventory.sortedCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.latestActive,
+          value: formatCompactNumber(props.inventory.latestActiveCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.staleActive,
+          value: formatCompactNumber(props.inventory.staleActiveCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.loaded,
+          value: formatCompactNumber(props.inventory.loadedCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.fallback,
+          value: formatCompactNumber(props.inventory.fallbackCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.unrankedFallback,
+          value: formatCompactNumber(props.inventory.unrankedFallbackCount)
+        },
+        {
+          label: t.recommendationInventory.metrics.rankingJobs,
+          value: t.recommendationInventory.metrics.rankingJobValue(
+            props.inventory.rankingJob.running,
+            props.inventory.rankingJob.queued
+          )
+        }
+      ]
+    : [];
+
+  function handleMouseEnter() {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (window.matchMedia("(hover: hover) and (min-width: 768px)").matches) {
+      setIsOpen(true);
+    }
+  }
+
+  useEffect(() => {
+    if (!isOpen || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (target instanceof Node && rootRef.current?.contains(target)) {
+        return;
+      }
+      setIsOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen]);
 
   return (
-    <section className={styles.recommendationStatusBar} aria-live="polite">
-      <div>
-        <span className={styles.recommendationStatusLabel}>{t.recommendationStatus.title}</span>
-        <strong>{statusText}</strong>
-      </div>
-      {showWarmupNotice ? (
-        <p className={styles.recommendationStatusNotice}>
-          {t.recommendationStatus.warmupNotice}
-        </p>
+    <div
+      className={styles.recommendationInventoryControl}
+      onMouseEnter={handleMouseEnter}
+      ref={rootRef}
+    >
+      <button
+        aria-controls={isOpen ? popoverId : undefined}
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        aria-label={t.recommendationInventory.open(statusText)}
+        className={classNames(styles.recommendationInventoryButton, statusClass)}
+        onClick={() => setIsOpen(true)}
+        title={statusSummary}
+        type="button"
+      >
+        <span className={styles.recommendationInventoryDot} aria-hidden="true" />
+        <span>{statusText}</span>
+        {props.inventory ? (
+          <strong>{formatCompactNumber(props.inventory.remainingSortedCount)}</strong>
+        ) : null}
+      </button>
+
+      {isOpen ? (
+        <button
+          aria-label={t.recommendationInventory.close}
+          className={styles.recommendationInventoryOverlay}
+          onClick={() => setIsOpen(false)}
+          type="button"
+        />
       ) : null}
-      {metrics.length > 0 ? (
-        <dl className={styles.recommendationStatusMetrics}>
-          {metrics.map((metric) => (
-            <div key={metric}>
-              <dd>{metric}</dd>
+      <section
+        aria-labelledby={`${popoverId}-title`}
+        className={styles.recommendationInventoryPopover}
+        hidden={!isOpen}
+        id={popoverId}
+        role="dialog"
+      >
+        <div className={styles.recommendationInventoryHeader}>
+          <div>
+            <span className={styles.recommendationInventoryEyebrow}>
+              {t.recommendationInventory.eyebrow}
+            </span>
+            <h3 id={`${popoverId}-title`}>{statusText}</h3>
+          </div>
+          <button
+            aria-label={t.recommendationInventory.close}
+            className={styles.iconButton}
+            onClick={() => setIsOpen(false)}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        <p className={styles.recommendationInventorySummary}>{statusSummary}</p>
+        {props.error ? (
+          <p className={styles.recommendationInventoryWarning}>{props.error}</p>
+        ) : null}
+        {props.inventory && props.inventory.remainingSortedCount <= 0 ? (
+          <p className={styles.recommendationInventoryWarning}>
+            {rankingJobCount > 0
+              ? t.recommendationInventory.rankingNotice
+              : t.recommendationInventory.emptyNotice}
+          </p>
+        ) : null}
+        {inventoryRows.length > 0 ? (
+          <dl className={styles.recommendationInventoryMetrics}>
+            {inventoryRows.map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {props.inventory ? (
+          <dl className={styles.recommendationInventoryMeta}>
+            <div>
+              <dt>{t.recommendationInventory.metrics.rankContext}</dt>
+              <dd>{props.inventory.activeRankContext}</dd>
             </div>
-          ))}
-        </dl>
-      ) : null}
-    </section>
+            <div>
+              <dt>{t.recommendationInventory.metrics.lastRankedAt}</dt>
+              <dd>
+                {props.inventory.lastRankedAt
+                  ? formatDate(props.inventory.lastRankedAt)
+                  : t.recommendationStatus.metrics.unknown}
+              </dd>
+            </div>
+            <div>
+              <dt>{t.recommendationInventory.metrics.updatedAt}</dt>
+              <dd>{formatDate(props.inventory.updatedAt)}</dd>
+            </div>
+          </dl>
+        ) : null}
+        {showWarmupNotice ? (
+          <p className={styles.recommendationInventoryNotice}>
+            {t.recommendationStatus.warmupNotice}
+          </p>
+        ) : null}
+        {props.recommendationStatusError ? (
+          <p className={styles.recommendationInventoryNotice}>
+            {props.recommendationStatusError}
+          </p>
+        ) : null}
+        {props.isRecommendationStatusLoading ? (
+          <p className={styles.recommendationInventoryNotice}>
+            {t.recommendationStatus.loading}
+          </p>
+        ) : null}
+        {metrics.length > 0 ? (
+          <div className={styles.recommendationInventorySystem}>
+            <h4>{t.recommendationInventory.systemTitle}</h4>
+            <dl className={styles.recommendationStatusMetrics}>
+              {metrics.map((metric) => (
+                <div key={metric}>
+                  <dd>{metric}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ) : null}
+      </section>
+    </div>
   );
+}
+
+function recommendationInventoryStatusClass(status: RecommendationInventoryDisplayStatus): string {
+  switch (status) {
+    case "available":
+      return styles.recommendationInventoryAvailable;
+    case "empty":
+      return styles.recommendationInventoryEmpty;
+    case "ranking":
+      return styles.recommendationInventoryRanking;
+    case "loading":
+      return styles.recommendationInventoryLoading;
+    case "unavailable":
+    default:
+      return styles.recommendationInventoryUnavailable;
+  }
+}
+
+function inventoryStatusSummary(
+  status: RecommendationInventoryDisplayStatus,
+  inventory: RecommendationInventory | null,
+  t: Dictionary
+): string {
+  if (!inventory) {
+    return status === "loading"
+      ? t.recommendationInventory.summaries.loading
+      : t.recommendationInventory.summaries.unavailable;
+  }
+  switch (status) {
+    case "available":
+      return t.recommendationInventory.summaries.available(
+        inventory.remainingSortedCount,
+        inventory.sortedCount
+      );
+    case "ranking":
+      return t.recommendationInventory.summaries.ranking(
+        inventory.remainingSortedCount,
+        inventory.rankingJob.running,
+        inventory.rankingJob.queued
+      );
+    case "empty":
+      return t.recommendationInventory.summaries.empty(inventory.fallbackCount);
+    case "loading":
+      return t.recommendationInventory.summaries.loading;
+    case "unavailable":
+    default:
+      return t.recommendationInventory.summaries.unavailable;
+  }
 }
 
 function hasProfileWarmupWarning(status: RecommendationStatus): boolean {

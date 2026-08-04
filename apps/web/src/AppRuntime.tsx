@@ -37,6 +37,7 @@ import {
   type RankExplanationReason,
   type ReadLaterArticleSort,
   type ReaderSettings,
+  type RecommendationInventory,
   type RecommendationStatus,
   type RecommendationClusterItem,
   type RecommendationClusterMergeCandidate,
@@ -329,6 +330,8 @@ export function App() {
   const [recommendationStatus, setRecommendationStatus] = useState<RecommendationStatus | null>(
     null
   );
+  const [recommendationInventory, setRecommendationInventory] =
+    useState<RecommendationInventory | null>(null);
   const [allRecommendationClusters, setAllRecommendationClusters] = useState<
     RecommendationClusterItem[]
   >([]);
@@ -347,7 +350,11 @@ export function App() {
   const [updatingClusterLexicon, setUpdatingClusterLexicon] = useState(false);
   const [updatingMergeCandidateId, setUpdatingMergeCandidateId] = useState<string | null>(null);
   const [isRecommendationStatusLoading, setIsRecommendationStatusLoading] = useState(false);
+  const [isRecommendationInventoryLoading, setIsRecommendationInventoryLoading] = useState(false);
   const [recommendationStatusError, setRecommendationStatusError] = useState<string | null>(null);
+  const [recommendationInventoryError, setRecommendationInventoryError] = useState<string | null>(
+    null
+  );
   const [feedUrl, setFeedUrl] = useState("");
   const [feedDiscovery, setFeedDiscovery] = useState<FeedDiscoveryResponse | null>(null);
   const [feedDiscoveryError, setFeedDiscoveryError] = useState<string | null>(null);
@@ -1116,6 +1123,9 @@ export function App() {
       setRecommendationStatus(null);
       setIsRecommendationStatusLoading(false);
       setRecommendationStatusError(null);
+      setRecommendationInventory(null);
+      setIsRecommendationInventoryLoading(false);
+      setRecommendationInventoryError(null);
     }
     setDetailError(null);
     setExplanationError(null);
@@ -1411,6 +1421,97 @@ export function App() {
     currentArticleView,
     loadRecommendationStatus,
     loadRecommendationSummaryStatus
+  ]);
+
+  useEffect(() => {
+    if (
+      appStage.type !== "reader" ||
+      appPage.type !== "reader" ||
+      currentArticleView !== "recommended"
+    ) {
+      setRecommendationInventory(null);
+      setRecommendationInventoryError(null);
+      setIsRecommendationInventoryLoading(false);
+      return;
+    }
+
+    const input = {
+      feedId: selectedFeed?.id ?? null,
+      folderId: selectedFolder?.id ?? null,
+      unreadOnly,
+      timeWindow,
+      loadedCount: articles.length
+    };
+    let disposed = false;
+    setIsRecommendationInventoryLoading(true);
+    setRecommendationInventoryError(null);
+
+    void dibaoApi
+      .getRecommendationInventory(input)
+      .then((inventory) => {
+        if (disposed) {
+          return;
+        }
+        setRecommendationInventory(inventory);
+        setRecommendationInventoryError(null);
+      })
+      .catch((error) => {
+        if (disposed) {
+          return;
+        }
+        setRecommendationInventory(null);
+        setRecommendationInventoryError(userMessageForError(error, t.errors.api));
+      })
+      .finally(() => {
+        if (!disposed) {
+          setIsRecommendationInventoryLoading(false);
+        }
+      });
+
+    if (typeof EventSource === "undefined") {
+      return () => {
+        disposed = true;
+      };
+    }
+
+    const source = new EventSource(dibaoApi.recommendationInventoryEventsUrl(input));
+    const handleInventory = (event: MessageEvent<string>) => {
+      if (disposed) {
+        return;
+      }
+      try {
+        const inventory = JSON.parse(event.data) as RecommendationInventory;
+        setRecommendationInventory(inventory);
+        setRecommendationInventoryError(null);
+        setIsRecommendationInventoryLoading(false);
+      } catch {
+        setRecommendationInventoryError(t.recommendationInventory.connectionError);
+      }
+    };
+    source.addEventListener("inventory", handleInventory as EventListener);
+    source.onerror = () => {
+      if (!disposed) {
+        setIsRecommendationInventoryLoading(false);
+        setRecommendationInventoryError(t.recommendationInventory.connectionError);
+      }
+    };
+
+    return () => {
+      disposed = true;
+      source.removeEventListener("inventory", handleInventory as EventListener);
+      source.close();
+    };
+  }, [
+    appPage.type,
+    appStage.type,
+    articles.length,
+    currentArticleView,
+    selectedFeed?.id,
+    selectedFolder?.id,
+    t.errors.api,
+    t.recommendationInventory.connectionError,
+    timeWindow,
+    unreadOnly
   ]);
 
   useEffect(() => {
@@ -3525,6 +3626,12 @@ export function App() {
               recommendationStatusError={
                 currentArticleView === "recommended" ? recommendationStatusError : null
               }
+              recommendationInventory={
+                currentArticleView === "recommended" ? recommendationInventory : null
+              }
+              recommendationInventoryError={
+                currentArticleView === "recommended" ? recommendationInventoryError : null
+              }
               readerCommandError={readerCommandError}
               selectedArticleId={selectedArticleId}
               selectedFeed={selectedFeed}
@@ -3532,6 +3639,7 @@ export function App() {
               showRecommendationStatus={currentArticleView === "recommended"}
               showQuickFilters={supportsQuickFilters(currentArticleView)}
               isRecommendationStatusLoading={isRecommendationStatusLoading}
+              isRecommendationInventoryLoading={isRecommendationInventoryLoading}
               timeWindow={timeWindow}
               unreadCount={unreadCount}
               unreadOnly={unreadOnly}

@@ -672,6 +672,66 @@ describe("web API client", () => {
     ]);
   });
 
+  it("fetches recommendation inventory and builds the event stream URL", async () => {
+    const calls: string[] = [];
+    const api = createDibaoApi(async (input) => {
+      calls.push(String(input));
+
+      return new Response(
+        JSON.stringify({
+          data: {
+            status: "available",
+            activeRankContext: "rec_v3:test",
+            latestRerankWindowId: "window:new",
+            eligibleCount: 12,
+            sortedCount: 8,
+            remainingSortedCount: 3,
+            latestActiveCount: 5,
+            staleActiveCount: 3,
+            fallbackCount: 4,
+            baseFallbackCount: 2,
+            unrankedFallbackCount: 2,
+            loadedCount: 5,
+            rankingJob: {
+              queued: 0,
+              running: 0
+            },
+            lastRankedAt: "2026-05-14T08:11:00.000Z",
+            updatedAt: "2026-05-14T08:12:00.000Z"
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    });
+
+    await expect(
+      api.getRecommendationInventory({
+        folderId: "folder_design",
+        unreadOnly: true,
+        timeWindow: "7d",
+        loadedCount: 5
+      })
+    ).resolves.toMatchObject({
+      status: "available",
+      remainingSortedCount: 3
+    });
+    expect(
+      api.recommendationInventoryEventsUrl({
+        feedId: "feed_1",
+        timeWindow: "24h",
+        loadedCount: 10
+      })
+    ).toBe("/api/recommendation/inventory/events?feedId=feed_1&timeWindow=24h&loadedCount=10");
+    expect(calls).toEqual([
+      "/api/recommendation/inventory?folderId=folder_design&unreadOnly=true&timeWindow=7d&loadedCount=5"
+    ]);
+  });
+
   it("calls feed and folder management endpoints", async () => {
     const calls: Array<{ path: string; method: string | undefined; body: unknown }> = [];
     const api = createDibaoApi(async (input, init) => {

@@ -2330,6 +2330,87 @@ describe("db package", () => {
     }
   });
 
+  it("counts recommended inventory by active, stale, base fallback, and unranked fallback segments", () => {
+    const db = openDatabase(tempDatabasePath(), { migrate: true });
+    try {
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      feeds.upsert({
+        id: "feed_inventory",
+        title: "Inventory Feed",
+        feedUrl: "https://example.com/inventory.xml",
+        now: 1000
+      });
+
+      for (const id of [
+        "base_only",
+        "active_new",
+        "active_old",
+        "active_read",
+        "unranked"
+      ]) {
+        articles.upsert({
+          id: `article_${id}`,
+          feedId: "feed_inventory",
+          url: `https://example.com/${id}`,
+          title: id,
+          publishedAt: 1000,
+          discoveredAt: 1000,
+          dedupeKey: id,
+          now: 1000
+        });
+      }
+
+      insertRank(db, "article_base_only", 0.5, 2000);
+      insertRank(db, "article_active_new", 0.9, 4000, "active_inventory", {
+        rerankWindowId: "active:new",
+        rerankPosition: 1
+      });
+      insertRank(db, "article_active_old", 0.8, 3000, "active_inventory", {
+        rerankWindowId: "active:old",
+        rerankPosition: 1
+      });
+      insertRank(db, "article_active_read", 0.7, 4000, "active_inventory", {
+        rerankWindowId: "active:new",
+        rerankPosition: 2
+      });
+      articles.markArticleIdsRead(["article_active_read"], 5000);
+
+      expect(
+        articles.getRecommendedInventory({
+          view: "recommended",
+          rankContext: "active_inventory"
+        })
+      ).toMatchObject({
+        rankContext: "active_inventory",
+        latestRerankWindowId: "active:new",
+        eligibleCount: 5,
+        latestActiveCount: 2,
+        staleActiveCount: 1,
+        sortedCount: 3,
+        baseFallbackCount: 1,
+        unrankedFallbackCount: 1,
+        lastRankedAt: 4000
+      });
+      expect(
+        articles.getRecommendedInventory({
+          view: "recommended",
+          rankContext: "active_inventory",
+          unreadOnly: true
+        })
+      ).toMatchObject({
+        eligibleCount: 4,
+        latestActiveCount: 1,
+        staleActiveCount: 1,
+        sortedCount: 2,
+        baseFallbackCount: 1,
+        unrankedFallbackCount: 1
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("caps underfilled active recommended fallback pages at 20 items", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {

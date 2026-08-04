@@ -1180,6 +1180,48 @@ export const zhCN = {
       unknown: "暂无"
     }
   },
+  recommendationInventory: {
+    eyebrow: "推荐库存",
+    close: "关闭推荐库存",
+    connectionError: "推荐库存状态暂时断开，稍后会自动重连。",
+    emptyNotice:
+      "已排序库存已经读完。继续加载时会使用备用序列，相关性可能不佳；也可以等待后端排序任务完成。",
+    rankingNotice:
+      "后端正在排序。若已排序库存耗尽，继续加载会临时使用备用序列；等待排序完成后库存会自动更新。",
+    systemTitle: "系统摘要",
+    open: (status: string) => `查看推荐库存：${status}`,
+    statuses: {
+      available: "有库存",
+      empty: "无库存",
+      ranking: "排序中",
+      loading: "读取中",
+      unavailable: "未知"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `当前推荐序列还有 ${remaining} 条已排序库存，总已排序 ${total} 条。`,
+      empty: (fallback: number) =>
+        `当前推荐序列没有剩余已排序库存；备用序列约 ${fallback} 条，相关性可能不佳。`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `后端排序任务运行 ${running} 个、排队 ${queued} 个；当前剩余已排序库存 ${remaining} 条。`,
+      loading: "正在读取推荐库存。",
+      unavailable: "推荐库存状态暂不可用。"
+    },
+    metrics: {
+      remainingSorted: "剩余已排序",
+      sortedTotal: "已排序总量",
+      latestActive: "最新排序",
+      staleActive: "旧排序",
+      loaded: "已加载",
+      fallback: "备用序列",
+      unrankedFallback: "未排序备用",
+      rankingJobs: "排序任务",
+      rankContext: "排序上下文",
+      lastRankedAt: "最近排序",
+      updatedAt: "状态更新",
+      rankingJobValue: (running: number, queued: number) => `运行 ${running} · 排队 ${queued}`
+    }
+  },
   reader: {
     originalLink: "原文",
     backToList: "返回列表",
@@ -2501,6 +2543,48 @@ export const enUS = {
       unknown: "Unavailable"
     }
   },
+  recommendationInventory: {
+    eyebrow: "Ranked stock",
+    close: "Close recommendation inventory",
+    connectionError: "Recommendation inventory is disconnected for now; Dibao will reconnect.",
+    emptyNotice:
+      "The ranked inventory has been exhausted. Loading more will use the fallback sequence, which may be less relevant; you can wait for backend ranking to finish.",
+    rankingNotice:
+      "Backend ranking is running. If ranked inventory runs out, loading more will temporarily use the fallback sequence; the stock updates automatically when ranking finishes.",
+    systemTitle: "System summary",
+    open: (status: string) => `View recommendation inventory: ${status}`,
+    statuses: {
+      available: "In stock",
+      empty: "No stock",
+      ranking: "Ranking",
+      loading: "Loading",
+      unavailable: "Unknown"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `This recommendation sequence has ${remaining} ranked articles remaining out of ${total} ranked articles.`,
+      empty: (fallback: number) =>
+        `No ranked articles remain in this sequence. About ${fallback} fallback articles are available and may be less relevant.`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `Backend ranking has ${running} running and ${queued} queued jobs; ${remaining} ranked articles remain.`,
+      loading: "Loading recommendation inventory.",
+      unavailable: "Recommendation inventory is unavailable."
+    },
+    metrics: {
+      remainingSorted: "Ranked remaining",
+      sortedTotal: "Ranked total",
+      latestActive: "Latest ranked",
+      staleActive: "Older ranked",
+      loaded: "Loaded",
+      fallback: "Fallback",
+      unrankedFallback: "Unranked fallback",
+      rankingJobs: "Ranking jobs",
+      rankContext: "Rank context",
+      lastRankedAt: "Last ranked",
+      updatedAt: "Updated",
+      rankingJobValue: (running: number, queued: number) => `${running} running · ${queued} queued`
+    }
+  },
   reader: {
     originalLink: "Original",
     backToList: "Back to list",
@@ -3816,6 +3900,48 @@ export const jaJP = {
       clusters: (positive: number, negative: number) => `クラスター +${positive} / -${negative}`,
       lastUpdate: (ranking: string, profile: string) => `Rank ${ranking} · Profile ${profile}`,
       unknown: "不明"
+    }
+  },
+  recommendationInventory: {
+    eyebrow: "おすすめ在庫",
+    close: "おすすめ在庫を閉じる",
+    connectionError: "おすすめ在庫の接続が一時的に切れています。自動的に再接続します。",
+    emptyNotice:
+      "並び替え済みの在庫を読み切りました。さらに読み込むと予備の並び順を使うため、関連性が低くなる可能性があります。バックエンドの並び替え完了を待つこともできます。",
+    rankingNotice:
+      "バックエンドで並び替え中です。並び替え済み在庫がなくなると、一時的に予備の並び順を使います。完了後、在庫は自動更新されます。",
+    systemTitle: "システム概要",
+    open: (status: string) => `おすすめ在庫を見る：${status}`,
+    statuses: {
+      available: "在庫あり",
+      empty: "在庫なし",
+      ranking: "並び替え中",
+      loading: "読み込み中",
+      unavailable: "不明"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `現在のおすすめ列には、並び替え済み記事が残り ${remaining} 件あります。並び替え済み合計は ${total} 件です。`,
+      empty: (fallback: number) =>
+        `現在のおすすめ列には、並び替え済み記事が残っていません。予備の記事は約 ${fallback} 件ありますが、関連性が低い可能性があります。`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `バックエンドの並び替えは実行中 ${running} 件、待機中 ${queued} 件です。並び替え済み在庫は残り ${remaining} 件です。`,
+      loading: "おすすめ在庫を読み込んでいます。",
+      unavailable: "おすすめ在庫を取得できません。"
+    },
+    metrics: {
+      remainingSorted: "残り並び替え済み",
+      sortedTotal: "並び替え済み合計",
+      latestActive: "最新並び替え",
+      staleActive: "古い並び替え",
+      loaded: "読み込み済み",
+      fallback: "予備列",
+      unrankedFallback: "未ソート予備",
+      rankingJobs: "並び替えジョブ",
+      rankContext: "Rank context",
+      lastRankedAt: "最終並び替え",
+      updatedAt: "状態更新",
+      rankingJobValue: (running: number, queued: number) => `実行 ${running} · 待機 ${queued}`
     }
   },
   reader: {

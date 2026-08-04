@@ -11,6 +11,7 @@ import type {
   ArticleListTiming,
   ArticleRetentionCandidateRow,
   ArticleRetentionCleanupResult,
+  RecommendedArticleInventory,
   ArticleRow,
   ArticleScope,
   ArticleSearchInput,
@@ -116,6 +117,7 @@ export interface ArticleRepository {
     limit?: number;
   }): ArticleRetentionCandidateRow[];
   list(input?: ArticleListInput): ArticleListResult;
+  getRecommendedInventory(input: ArticleListInput & { rankContext: string }): RecommendedArticleInventory;
   markArticleIdsRead(articleIds: string[], now: number): number;
   search(input: ArticleSearchInput): ArticleSearchResult;
   upsert(input: UpsertArticleInput): ArticleRow;
@@ -548,6 +550,142 @@ export class SqliteArticleRepository implements ArticleRepository {
       nextCursor,
       unreadCount,
       timing
+    };
+  }
+
+  getRecommendedInventory(
+    input: ArticleListInput & { rankContext: string }
+  ): RecommendedArticleInventory {
+    const rankContext = input.rankContext;
+    const latestRerankWindowId =
+      rankContext === BASE_RANK_CONTEXT ? null : this.latestRerankWindowId(rankContext);
+    const conditions = [
+      "a.deleted_at is null",
+      "a.status != 'deleted'",
+      "s.hidden_at is null",
+      "s.not_interested_at is null"
+    ];
+    const filterParams: unknown[] = [];
+
+    if (input.feedId) {
+      conditions.push("a.feed_id = ?");
+      filterParams.push(input.feedId);
+    }
+
+    if (input.folderId) {
+      conditions.push("f.folder_id = ?");
+      filterParams.push(input.folderId);
+    }
+
+    if (typeof input.todayStartAt === "number" && typeof input.todayEndAt === "number") {
+      conditions.push("coalesce(a.published_at, a.discovered_at) >= ?");
+      filterParams.push(input.todayStartAt);
+      conditions.push("coalesce(a.published_at, a.discovered_at) < ?");
+      filterParams.push(input.todayEndAt);
+    }
+
+    if (input.status === "read") {
+      conditions.push("(s.read_at is not null or coalesce(s.reading_progress, 0) >= 0.9)");
+    } else if (input.status === "unread") {
+      conditions.push(unreadArticleCondition());
+    }
+
+    if (input.unreadOnly && input.status !== "unread") {
+      conditions.push(unreadArticleCondition());
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          with eligible as (
+            select a.id
+            ${baseArticleFilterFrom()}
+            where ${conditions.join(" and ")}
+          )
+          select
+            count(*) as eligibleCount,
+            coalesce(sum(case when active.article_id is not null then 1 else 0 end), 0) as sortedCount,
+            coalesce(
+              sum(
+                case
+                  when active.article_id is not null
+                    and (? is null or active.rerank_window_id = ?)
+                  then 1
+                  else 0
+                end
+              ),
+              0
+            ) as latestActiveCount,
+            coalesce(
+              sum(
+                case
+                  when active.article_id is not null
+                    and ? is not null
+                    and (active.rerank_window_id is null or active.rerank_window_id != ?)
+                  then 1
+                  else 0
+                end
+              ),
+              0
+            ) as staleActiveCount,
+            coalesce(
+              sum(
+                case
+                  when active.article_id is null and base.article_id is not null then 1
+                  else 0
+                end
+              ),
+              0
+            ) as baseFallbackCount,
+            coalesce(
+              sum(
+                case
+                  when active.article_id is null and base.article_id is null then 1
+                  else 0
+                end
+              ),
+              0
+            ) as unrankedFallbackCount,
+            max(active.calculated_at) as lastRankedAt
+          from eligible e
+          left join article_rank_scores active
+            on active.article_id = e.id
+            and active.rank_context = ?
+          left join article_rank_scores base
+            on base.article_id = e.id
+            and base.rank_context = ?
+        `
+      )
+      .get(
+        ...filterParams,
+        latestRerankWindowId,
+        latestRerankWindowId,
+        latestRerankWindowId,
+        latestRerankWindowId,
+        rankContext,
+        BASE_RANK_CONTEXT
+      ) as
+      | {
+          eligibleCount: number;
+          sortedCount: number;
+          latestActiveCount: number;
+          staleActiveCount: number;
+          baseFallbackCount: number;
+          unrankedFallbackCount: number;
+          lastRankedAt: number | null;
+        }
+      | undefined;
+
+    return {
+      rankContext,
+      latestRerankWindowId,
+      eligibleCount: row?.eligibleCount ?? 0,
+      latestActiveCount: row?.latestActiveCount ?? 0,
+      staleActiveCount: row?.staleActiveCount ?? 0,
+      sortedCount: row?.sortedCount ?? 0,
+      baseFallbackCount: row?.baseFallbackCount ?? 0,
+      unrankedFallbackCount: row?.unrankedFallbackCount ?? 0,
+      lastRankedAt: row?.lastRankedAt ?? null
     };
   }
 

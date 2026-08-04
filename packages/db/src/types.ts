@@ -991,6 +991,18 @@ export type ArticleListResult = {
   timing?: ArticleListTiming;
 };
 
+export type RecommendedArticleInventory = {
+  rankContext: string;
+  latestRerankWindowId: string | null;
+  eligibleCount: number;
+  latestActiveCount: number;
+  staleActiveCount: number;
+  sortedCount: number;
+  baseFallbackCount: number;
+  unrankedFallbackCount: number;
+  lastRankedAt: number | null;
+};
+
 export type ArticleListTiming = {
   unreadCountMs: number;
   rankCandidateMs: number;

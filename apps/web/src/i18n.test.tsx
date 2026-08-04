@@ -497,7 +497,7 @@ describe("web i18n", () => {
     expect(articlePanel).toContain('aria-pressed="true"');
   });
 
-  it("renders recommendation status with diagnostics metrics", () => {
+  it("renders recommendation inventory status trigger with popover diagnostics", () => {
     const html = renderToStaticMarkup(
       <DibaoI18nProvider>
         <ArticleListPanel
@@ -560,6 +560,27 @@ describe("web i18n", () => {
               }
             ]
           }}
+          recommendationInventory={{
+            status: "available",
+            activeRankContext: "rec_v3:test",
+            latestRerankWindowId: "window:new",
+            eligibleCount: 8,
+            sortedCount: 6,
+            remainingSortedCount: 4,
+            latestActiveCount: 5,
+            staleActiveCount: 1,
+            fallbackCount: 2,
+            baseFallbackCount: 1,
+            unrankedFallbackCount: 1,
+            loadedCount: 2,
+            rankingJob: {
+              queued: 0,
+              running: 0
+            },
+            lastRankedAt: "2026-05-14T08:11:00.000Z",
+            updatedAt: "2026-05-14T08:12:00.000Z"
+          }}
+          recommendationInventoryError={null}
           recommendationStatusError={null}
           readerCommandError={null}
           selectedArticleId={null}
@@ -574,8 +595,10 @@ describe("web i18n", () => {
       </DibaoI18nProvider>
     );
 
-    expect(html).toContain("推荐状态");
-    expect(html).toContain("Embedding 生成中");
+    expect(html).toContain("推荐库存");
+    expect(html).toContain("有库存");
+    expect(html).toContain("剩余已排序");
+    expect(html).toContain("系统摘要");
     expect(html).toContain("行为 3");
     expect(html).toContain("Coverage 50%");
     expect(html).toContain("兴趣簇 +1 / -0");

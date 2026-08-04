@@ -2958,6 +2958,155 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("reports recommendation inventory counts and remaining ranked stock", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    createActiveEmbeddingDiagnosticsFixture(db, { providerTestStatus: "success" });
+    feeds.upsert({
+      id: "feed_inventory",
+      title: "Inventory Feed",
+      feedUrl: "https://example.com/inventory.xml",
+      now: 1000
+    });
+    for (const id of ["active_new", "active_old", "base_only", "unranked"]) {
+      articles.upsert({
+        id: `article_${id}`,
+        feedId: "feed_inventory",
+        url: `https://example.com/inventory/${id}`,
+        title: id,
+        discoveredAt: 2000,
+        dedupeKey: id,
+        now: 2000
+      });
+    }
+    insertRankForContext(db, {
+      articleId: "article_active_new",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.9,
+      calculatedAt: 5000,
+      rerankWindowId: "window:new",
+      rerankPosition: 1
+    });
+    insertRankForContext(db, {
+      articleId: "article_active_old",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.8,
+      calculatedAt: 4000,
+      rerankWindowId: "window:old",
+      rerankPosition: 1
+    });
+    insertRank(db, "article_base_only", 0.7, 3000);
+
+    const app = buildServer({ db, logger: false, now: () => 6000 });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?unreadOnly=true&loadedCount=1"
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          status: "available",
+          activeRankContext: TEST_ACTIVE_RANK_CONTEXT,
+          latestRerankWindowId: "window:new",
+          eligibleCount: 4,
+          sortedCount: 2,
+          remainingSortedCount: 1,
+          latestActiveCount: 1,
+          staleActiveCount: 1,
+          fallbackCount: 2,
+          baseFallbackCount: 1,
+          unrankedFallbackCount: 1,
+          loadedCount: 1,
+          rankingJob: {
+            queued: 0,
+            running: 0
+          },
+          lastRankedAt: "1970-01-01T00:00:05.000Z",
+          updatedAt: "1970-01-01T00:00:06.000Z"
+        }
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("marks recommendation inventory as ranking while ranking jobs are queued", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    const jobs = new SqliteJobRepository(db);
+    createActiveEmbeddingDiagnosticsFixture(db, { providerTestStatus: "success" });
+    feeds.upsert({
+      id: "feed_inventory_ranking",
+      title: "Inventory Ranking Feed",
+      feedUrl: "https://example.com/inventory-ranking.xml",
+      now: 1000
+    });
+    articles.upsert({
+      id: "article_inventory_ranking",
+      feedId: "feed_inventory_ranking",
+      url: "https://example.com/inventory-ranking",
+      title: "Inventory ranking",
+      discoveredAt: 2000,
+      dedupeKey: "inventory-ranking",
+      now: 2000
+    });
+    insertRankForContext(db, {
+      articleId: "article_inventory_ranking",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.9,
+      calculatedAt: 5000,
+      rerankWindowId: "window:new",
+      rerankPosition: 1
+    });
+    jobs.enqueue({
+      id: "job_inventory_ranking",
+      type: RANKING_RECALCULATE_JOB_TYPE,
+      now: 6000
+    });
+    const app = buildServer({ db, logger: false, now: () => 7000 });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?loadedCount=1"
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          status: "ranking",
+          remainingSortedCount: 0,
+          rankingJob: {
+            queued: 1,
+            running: 0
+          }
+        }
+      });
+
+      const invalid = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?loadedCount=-1"
+      });
+      expect(invalid.statusCode, invalid.body).toBe(400);
+      expect(invalid.json()).toMatchObject({
+        error: {
+          code: "VALIDATION_ERROR",
+          details: {
+            field: "loadedCount"
+          }
+        }
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("keeps profile warmup active for open-only behavior", async () => {
     const db = createEmptyDatabase();
     const feeds = new SqliteFeedRepository(db);
