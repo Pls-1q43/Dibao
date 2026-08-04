@@ -1319,15 +1319,6 @@ function RecommendationInventoryControl(props: {
       ]
     : [];
 
-  function handleMouseEnter() {
-    if (typeof window === "undefined") {
-      return;
-    }
-    if (window.matchMedia("(hover: hover) and (min-width: 768px)").matches) {
-      setIsOpen(true);
-    }
-  }
-
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") {
       return;
@@ -1356,18 +1347,14 @@ function RecommendationInventoryControl(props: {
   }, [isOpen]);
 
   return (
-    <div
-      className={styles.recommendationInventoryControl}
-      onMouseEnter={handleMouseEnter}
-      ref={rootRef}
-    >
+    <div className={styles.recommendationInventoryControl} ref={rootRef}>
       <button
         aria-controls={isOpen ? popoverId : undefined}
         aria-expanded={isOpen}
         aria-haspopup="dialog"
         aria-label={t.recommendationInventory.open(statusText)}
         className={classNames(styles.recommendationInventoryButton, statusClass)}
-        onClick={() => setIsOpen(true)}
+        onClick={() => setIsOpen((open) => !open)}
         title={statusSummary}
         type="button"
       >
@@ -1379,105 +1366,106 @@ function RecommendationInventoryControl(props: {
       </button>
 
       {isOpen ? (
-        <button
-          aria-label={t.recommendationInventory.close}
-          className={styles.recommendationInventoryOverlay}
-          onClick={() => setIsOpen(false)}
-          type="button"
-        />
-      ) : null}
-      <section
-        aria-labelledby={`${popoverId}-title`}
-        className={styles.recommendationInventoryPopover}
-        hidden={!isOpen}
-        id={popoverId}
-        role="dialog"
-      >
-        <div className={styles.recommendationInventoryHeader}>
-          <div>
-            <span className={styles.recommendationInventoryEyebrow}>
-              {t.recommendationInventory.eyebrow}
-            </span>
-            <h3 id={`${popoverId}-title`}>{statusText}</h3>
-          </div>
+        <>
           <button
             aria-label={t.recommendationInventory.close}
-            className={styles.iconButton}
+            className={styles.recommendationInventoryOverlay}
             onClick={() => setIsOpen(false)}
             type="button"
+          />
+          <section
+            aria-labelledby={`${popoverId}-title`}
+            className={styles.recommendationInventoryPopover}
+            id={popoverId}
+            role="dialog"
           >
-            ×
-          </button>
-        </div>
-        <p className={styles.recommendationInventorySummary}>{statusSummary}</p>
-        {props.error ? (
-          <p className={styles.recommendationInventoryWarning}>{props.error}</p>
-        ) : null}
-        {props.inventory && props.inventory.remainingSortedCount <= 0 ? (
-          <p className={styles.recommendationInventoryWarning}>
-            {rankingJobCount > 0
-              ? t.recommendationInventory.rankingNotice
-              : t.recommendationInventory.emptyNotice}
-          </p>
-        ) : null}
-        {inventoryRows.length > 0 ? (
-          <dl className={styles.recommendationInventoryMetrics}>
-            {inventoryRows.map((row) => (
-              <div key={row.label}>
-                <dt>{row.label}</dt>
-                <dd>{row.value}</dd>
+            <div className={styles.recommendationInventoryHeader}>
+              <div>
+                <span className={styles.recommendationInventoryEyebrow}>
+                  {t.recommendationInventory.eyebrow}
+                </span>
+                <h3 id={`${popoverId}-title`}>{statusText}</h3>
               </div>
-            ))}
-          </dl>
-        ) : null}
-        {props.inventory ? (
-          <dl className={styles.recommendationInventoryMeta}>
-            <div>
-              <dt>{t.recommendationInventory.metrics.rankContext}</dt>
-              <dd>{props.inventory.activeRankContext}</dd>
+              <button
+                aria-label={t.recommendationInventory.close}
+                className={styles.iconButton}
+                onClick={() => setIsOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
             </div>
-            <div>
-              <dt>{t.recommendationInventory.metrics.lastRankedAt}</dt>
-              <dd>
-                {props.inventory.lastRankedAt
-                  ? formatDate(props.inventory.lastRankedAt)
-                  : t.recommendationStatus.metrics.unknown}
-              </dd>
-            </div>
-            <div>
-              <dt>{t.recommendationInventory.metrics.updatedAt}</dt>
-              <dd>{formatDate(props.inventory.updatedAt)}</dd>
-            </div>
-          </dl>
-        ) : null}
-        {showWarmupNotice ? (
-          <p className={styles.recommendationInventoryNotice}>
-            {t.recommendationStatus.warmupNotice}
-          </p>
-        ) : null}
-        {props.recommendationStatusError ? (
-          <p className={styles.recommendationInventoryNotice}>
-            {props.recommendationStatusError}
-          </p>
-        ) : null}
-        {props.isRecommendationStatusLoading ? (
-          <p className={styles.recommendationInventoryNotice}>
-            {t.recommendationStatus.loading}
-          </p>
-        ) : null}
-        {metrics.length > 0 ? (
-          <div className={styles.recommendationInventorySystem}>
-            <h4>{t.recommendationInventory.systemTitle}</h4>
-            <dl className={styles.recommendationStatusMetrics}>
-              {metrics.map((metric) => (
-                <div key={metric}>
-                  <dd>{metric}</dd>
+            <p className={styles.recommendationInventorySummary}>{statusSummary}</p>
+            {props.error ? (
+              <p className={styles.recommendationInventoryWarning}>{props.error}</p>
+            ) : null}
+            {props.inventory && props.inventory.remainingSortedCount <= 0 ? (
+              <p className={styles.recommendationInventoryWarning}>
+                {rankingJobCount > 0
+                  ? t.recommendationInventory.rankingNotice
+                  : t.recommendationInventory.emptyNotice}
+              </p>
+            ) : null}
+            {inventoryRows.length > 0 ? (
+              <dl className={styles.recommendationInventoryMetrics}>
+                {inventoryRows.map((row) => (
+                  <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+            {props.inventory ? (
+              <dl className={styles.recommendationInventoryMeta}>
+                <div>
+                  <dt>{t.recommendationInventory.metrics.rankContext}</dt>
+                  <dd>{props.inventory.activeRankContext}</dd>
                 </div>
-              ))}
-            </dl>
-          </div>
-        ) : null}
-      </section>
+                <div>
+                  <dt>{t.recommendationInventory.metrics.lastRankedAt}</dt>
+                  <dd>
+                    {props.inventory.lastRankedAt
+                      ? formatDate(props.inventory.lastRankedAt)
+                      : t.recommendationStatus.metrics.unknown}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.recommendationInventory.metrics.updatedAt}</dt>
+                  <dd>{formatDate(props.inventory.updatedAt)}</dd>
+                </div>
+              </dl>
+            ) : null}
+            {showWarmupNotice ? (
+              <p className={styles.recommendationInventoryNotice}>
+                {t.recommendationStatus.warmupNotice}
+              </p>
+            ) : null}
+            {props.recommendationStatusError ? (
+              <p className={styles.recommendationInventoryNotice}>
+                {props.recommendationStatusError}
+              </p>
+            ) : null}
+            {props.isRecommendationStatusLoading ? (
+              <p className={styles.recommendationInventoryNotice}>
+                {t.recommendationStatus.loading}
+              </p>
+            ) : null}
+            {metrics.length > 0 ? (
+              <div className={styles.recommendationInventorySystem}>
+                <h4>{t.recommendationInventory.systemTitle}</h4>
+                <dl className={styles.recommendationStatusMetrics}>
+                  {metrics.map((metric) => (
+                    <div key={metric}>
+                      <dd>{metric}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            ) : null}
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }

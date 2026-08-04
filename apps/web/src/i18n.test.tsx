@@ -497,7 +497,7 @@ describe("web i18n", () => {
     expect(articlePanel).toContain('aria-pressed="true"');
   });
 
-  it("renders recommendation inventory status trigger with popover diagnostics", () => {
+  it("renders recommendation inventory status trigger collapsed by default", () => {
     const html = renderToStaticMarkup(
       <DibaoI18nProvider>
         <ArticleListPanel
@@ -595,14 +595,16 @@ describe("web i18n", () => {
       </DibaoI18nProvider>
     );
 
-    expect(html).toContain("推荐库存");
+    expect(html).toContain("查看推荐库存：有库存");
+    expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("有库存");
-    expect(html).toContain("剩余已排序");
-    expect(html).toContain("系统摘要");
-    expect(html).toContain("行为 3");
-    expect(html).toContain("Coverage 50%");
-    expect(html).toContain("兴趣簇 +1 / -0");
-    expect(html).toContain(
+    expect(html).toContain("<strong>4</strong>");
+    expect(html).not.toContain("剩余已排序");
+    expect(html).not.toContain("系统摘要");
+    expect(html).not.toContain("行为 3");
+    expect(html).not.toContain("Coverage 50%");
+    expect(html).not.toContain("兴趣簇 +1 / -0");
+    expect(html).not.toContain(
       "当前用户行为正在积累中，推荐可能不准确，建议在“最新”视图中当做普通 RSS 阅读器正常使用。"
     );
   });
