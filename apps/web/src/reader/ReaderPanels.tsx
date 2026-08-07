@@ -1360,9 +1360,6 @@ function RecommendationInventoryControl(props: {
       >
         <span className={styles.recommendationInventoryDot} aria-hidden="true" />
         <span>{statusText}</span>
-        {props.inventory ? (
-          <strong>{formatCompactNumber(props.inventory.remainingSortedCount)}</strong>
-        ) : null}
       </button>
 
       {isOpen ? (

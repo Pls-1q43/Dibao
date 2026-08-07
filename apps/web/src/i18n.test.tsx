@@ -598,7 +598,7 @@ describe("web i18n", () => {
     expect(html).toContain("查看推荐库存：有库存");
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("有库存");
-    expect(html).toContain("<strong>4</strong>");
+    expect(html).not.toContain("<strong>4</strong>");
     expect(html).not.toContain("剩余已排序");
     expect(html).not.toContain("系统摘要");
     expect(html).not.toContain("行为 3");
