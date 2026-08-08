@@ -116,3 +116,50 @@ jobs:
             dibao_sentry_config=${{ env.DIBAO_SENTRY_CONFIG_FILE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify published image Sentry config
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
+          else
+            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
+          fi
+
+          docker pull --platform linux/amd64 "$image_ref"
+          docker run --rm --platform linux/amd64 "$image_ref" node --input-type=module - <<'NODE'
+          import { readFileSync, readdirSync } from "node:fs";
+          import { join } from "node:path";
+
+          const runtime = JSON.parse(readFileSync("/app/.dibao/sentry.json", "utf8"));
+          const assetsDir = "/app/apps/web/dist/assets";
+          const jsBundle = readdirSync(assetsDir)
+            .filter((file) => file.endsWith(".js"))
+            .map((file) => readFileSync(join(assetsDir, file), "utf8"))
+            .join("\n");
+
+          const runtimeReport = {
+            hasDsn: Boolean(String(runtime.dsn ?? "").trim()),
+            hasOrg: Boolean(String(runtime.org ?? "").trim()),
+            hasProject: Boolean(String(runtime.project ?? "").trim())
+          };
+          const browserReport = {
+            hasDsn: Boolean(runtime.dsn && jsBundle.includes(runtime.dsn)),
+            hasOrg: Boolean(runtime.org && jsBundle.includes(runtime.org)),
+            hasProject: Boolean(runtime.project && jsBundle.includes(runtime.project))
+          };
+
+          console.log("Runtime Sentry config:", runtimeReport);
+          console.log("Browser Sentry config:", browserReport);
+
+          if (
+            !runtimeReport.hasDsn ||
+            !runtimeReport.hasOrg ||
+            !runtimeReport.hasProject ||
+            !browserReport.hasDsn ||
+            !browserReport.hasOrg ||
+            !browserReport.hasProject
+          ) {
+            throw new Error("Published image is missing required Sentry config.");
+          }
+          NODE
