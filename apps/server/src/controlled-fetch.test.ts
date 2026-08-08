@@ -120,6 +120,46 @@ describe("controlledFetchText", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("strips sensitive headers and rewrites POST bodies on cross-origin redirects", async () => {
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) =>
+      url === "https://example.com/hook"
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "https://other.example/final" }
+          })
+        : new Response("ok", { status: 200 })
+    );
+
+    await expect(
+      controlledFetchText("https://example.com/hook", {
+        fetcher,
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret",
+          "x-api-key": "secret-key",
+          "content-type": "application/json",
+          "x-test": "kept"
+        },
+        body: JSON.stringify({ ok: true }),
+        maxBytes: 100,
+        resolveHostname: publicResolver
+      })
+    ).resolves.toMatchObject({ body: "ok" });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const firstInit = fetcher.mock.calls[0]?.[1];
+    expect(firstInit?.method).toBe("POST");
+    expect(firstInit?.body).toBe(JSON.stringify({ ok: true }));
+    const redirectedInit = fetcher.mock.calls[1]?.[1];
+    const redirectedHeaders = new Headers(redirectedInit?.headers);
+    expect(redirectedInit?.method).toBe("GET");
+    expect(redirectedInit?.body).toBeUndefined();
+    expect(redirectedHeaders.get("authorization")).toBeNull();
+    expect(redirectedHeaders.get("x-api-key")).toBeNull();
+    expect(redirectedHeaders.get("content-type")).toBeNull();
+    expect(redirectedHeaders.get("x-test")).toBe("kept");
+  });
+
   it("blocks hostnames that resolve to private IP addresses", async () => {
     await expect(
       controlledFetchText("https://private.example/feed.xml", {
@@ -148,6 +188,46 @@ describe("controlledFetchText", () => {
           resolveHostname: async () => ["127.0.0.1"]
         })
       ).resolves.toMatchObject({ body: "pinned" });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("sends method, headers, and body through the pinned default transport", async () => {
+    let received: { method: string | undefined; contentType: string | undefined; body: string } | null = null;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) {
+        body += String(chunk);
+      }
+      received = {
+        method: request.method,
+        contentType: request.headers["content-type"],
+        body
+      };
+      response.writeHead(201, { "content-type": "text/plain" });
+      response.end("created");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const result = await controlledFetchText(`http://post.example.invalid:${port}/submit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ok: true }),
+        allowCidrs: ["127.0.0.1/32"],
+        maxBytes: 100,
+        resolveHostname: async () => ["127.0.0.1"]
+      });
+
+      expect(result.response.status).toBe(201);
+      expect(result.body).toBe("created");
+      expect(received).toEqual({
+        method: "POST",
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true })
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }

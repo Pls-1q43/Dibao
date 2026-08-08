@@ -29,8 +29,9 @@ import type {
   PluginScheduleRow
 } from "@dibao/db";
 import {
-  assertControlledFetchTarget,
-  controlledFetchText
+  controlledFetchText,
+  type ControlledFetcher,
+  type HostnameResolver
 } from "./controlled-fetch.js";
 import type {
   FullContentPluginExtractionInput,
@@ -283,7 +284,8 @@ export type PluginServiceOptions = {
   getActiveRankContext: () => string;
   officialPluginsDir?: string;
   pluginDataDir?: string;
-  fetcher?: typeof fetch;
+  fetcher?: ControlledFetcher;
+  resolveHostname?: HostnameResolver;
   enableUserPluginInstall?: boolean;
   trustedPublicKeys?: Record<string, string>;
   secretKey?: string;
@@ -457,7 +459,7 @@ type PluginArticleStateDbRow = {
 
 export class PluginService {
   private readonly now: () => number;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher: ControlledFetcher | undefined;
   private readonly enableUserPluginInstall: boolean;
   private readonly trustedPublicKeys: Record<string, string>;
   private readonly secretCodec: PluginSecretCodec;
@@ -471,7 +473,7 @@ export class PluginService {
 
   constructor(private readonly options: PluginServiceOptions) {
     this.now = options.now ?? Date.now;
-    this.fetcher = options.fetcher ?? fetch;
+    this.fetcher = options.fetcher;
     this.enableUserPluginInstall =
       options.enableUserPluginInstall ??
       readBooleanEnv("DIBAO_ENABLE_UNTRUSTED_PLUGINS") ??
@@ -1555,7 +1557,8 @@ export class PluginService {
   private async pluginFetch(input: PluginOutboundFetchInput) {
     return await performPluginFetch({
       input: normalizeOutboundFetchInput(input),
-      fetcher: this.fetcher
+      fetcher: this.fetcher,
+      resolveHostname: this.options.resolveHostname
     });
   }
 
@@ -1700,7 +1703,8 @@ export class PluginService {
           body: request.body,
           timeoutMs: request.timeoutMs
         },
-        fetcher: this.fetcher
+        fetcher: this.fetcher,
+        resolveHostname: this.options.resolveHostname
       });
       const durationMs = Math.max(this.now() - startedAt, 0);
       const responseJson = JSON.stringify(redactedFetchResponse(response));
@@ -2158,7 +2162,8 @@ export class PluginService {
         fetcher: this.fetcher,
         headers: { accept: "application/json, application/octet-stream, */*;q=0.8" },
         maxBytes,
-        timeoutMs: PLUGIN_OUTBOUND_TIMEOUT_MS
+        timeoutMs: PLUGIN_OUTBOUND_TIMEOUT_MS,
+        resolveHostname: this.options.resolveHostname
       });
       if (!result.response.ok) {
         throw new PluginServiceError(
@@ -3455,63 +3460,38 @@ function normalizeHeaderName(name: string): string {
 
 async function performPluginFetch(input: {
   input: Required<PluginOutboundFetchInput>;
-  fetcher: typeof fetch;
-  redirects?: number;
+  fetcher?: ControlledFetcher;
+  resolveHostname?: HostnameResolver;
 }): Promise<{ ok: boolean; status: number; headers: Record<string, string>; bodyText: string }> {
-  const redirects = input.redirects ?? 0;
   const body = encodePluginRequestBody(input.input.body);
   if (body && Buffer.byteLength(body, "utf8") > PLUGIN_OUTBOUND_MAX_REQUEST_BYTES) {
     throw new PluginServiceError(400, "VALIDATION_ERROR", "Plugin request body is too large");
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.input.timeoutMs);
   try {
-    await assertControlledFetchTarget(input.input.url);
-    const response = await input.fetcher(input.input.url, {
+    const result = await controlledFetchText(input.input.url, {
+      fetcher: input.fetcher,
       method: input.input.method,
       headers: {
         ...input.input.headers,
         ...(body ? { "content-type": input.input.headers["content-type"] ?? "application/json" } : {})
       },
       body: body ?? undefined,
-      redirect: "manual",
-      signal: controller.signal
+      maxBytes: PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES,
+      timeoutMs: input.input.timeoutMs,
+      maxRedirects: PLUGIN_OUTBOUND_MAX_REDIRECTS,
+      resolveHostname: input.resolveHostname
     });
-    const location = response.headers.get("location");
-    if (isRedirectStatus(response.status) && location) {
-      if (redirects >= PLUGIN_OUTBOUND_MAX_REDIRECTS) {
-        throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin request exceeded redirect limit");
-      }
-      return await performPluginFetch({
-        input: {
-          ...input.input,
-          url: normalizePluginOutboundUrl(new URL(location, input.input.url).toString())
-        },
-        fetcher: input.fetcher,
-        redirects: redirects + 1
-      });
-    }
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES) {
-      throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin response is too large");
-    }
-    const bodyText = await response.text();
-    if (Buffer.byteLength(bodyText, "utf8") > PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES) {
-      throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin response is too large");
-    }
     return {
-      ok: response.ok,
-      status: response.status,
-      headers: redactHeaders(Object.fromEntries(response.headers.entries())),
-      bodyText
+      ok: result.response.ok,
+      status: result.response.status,
+      headers: redactHeaders(Object.fromEntries(result.response.headers.entries())),
+      bodyText: result.body
     };
   } catch (error) {
     if (error instanceof PluginServiceError) {
       throw error;
     }
     throw new PluginServiceError(502, "PROVIDER_ERROR", redactText(errorMessage(error)));
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -3520,10 +3500,6 @@ function encodePluginRequestBody(body: unknown): string | null {
     return null;
   }
   return typeof body === "string" ? body : JSON.stringify(body);
-}
-
-function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function parseDeliveryStoredRequest(value: string): PluginDeliveryStoredRequest {

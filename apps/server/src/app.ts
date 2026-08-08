@@ -134,6 +134,7 @@ import {
   writeForegroundActivitySignal
 } from "./foreground-activity.js";
 import { FullContentExtractionService } from "./full-content-extraction-service.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
 import {
   InterestClusterLabelService,
   InterestClusterLabelServiceError,
@@ -507,6 +508,7 @@ type BuildServerOptions = {
   fullContentFetcher?: typeof fetch;
   latestReleaseFetcher?: typeof fetch;
   pluginFetcher?: typeof fetch;
+  fetchResolveHostname?: HostnameResolver;
   enableUserPluginInstall?: boolean;
   pluginTrustedPublicKeys?: Record<string, string>;
   officialPluginsDir?: string;
@@ -580,7 +582,8 @@ export function buildServer(options: BuildServerOptions = {}) {
   const fullContentExtractor = new FullContentExtractionService({
     fetcher: options.fullContentFetcher,
     pluginExtractor: async (input) => pluginServiceForFullContent?.extractFullContent(input) ?? null,
-    onFetchWarning
+    onFetchWarning,
+    resolveHostname: options.fetchResolveHostname
   });
   const embeddingAdapters = {
     openai_compatible: new OpenAiCompatibleEmbeddingAdapter({
@@ -707,6 +710,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     pluginDataDir: options.pluginDataDir,
     secretKey: options.pluginSecretKey,
     fetcher: options.pluginFetcher,
+    resolveHostname: options.fetchResolveHostname,
     enableUserPluginInstall: options.enableUserPluginInstall,
     trustedPublicKeys: options.pluginTrustedPublicKeys,
     now: options.now,
@@ -861,6 +865,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     fetcher: options.feedFetcher,
     fullContentExtractor,
     onFetchWarning,
+    resolveHostname: options.fetchResolveHostname,
     now: options.now
   });
   const feedFullContentService = new FeedFullContentService({
@@ -871,7 +876,8 @@ export function buildServer(options: BuildServerOptions = {}) {
   const feedDiscoveryService = new FeedDiscoveryService({
     feeds,
     fetcher: options.feedFetcher,
-    onFetchWarning
+    onFetchWarning,
+    resolveHostname: options.fetchResolveHostname
   });
   const feedHealthService = new FeedHealthService({
     feeds,

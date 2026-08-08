@@ -13,6 +13,9 @@ import {
   FeedRefreshService,
   type FeedFetchResponse
 } from "./feed-refresh-service.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
+
+const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
 
 describe("FeedRefreshService full content maintenance", () => {
   it("keeps feed_only refreshes on feed content and does not fetch article URLs", async () => {
@@ -27,6 +30,7 @@ describe("FeedRefreshService full content maintenance", () => {
         articles,
         fullContentExtractor: extractor,
         fetcher: feedFetcher(fixtureRss()),
+        resolveHostname: publicTestResolver,
         now: () => 1000
       });
 
@@ -75,6 +79,7 @@ describe("FeedRefreshService full content maintenance", () => {
         articles,
         fullContentExtractor: extractor,
         fetcher: feedFetcher(fixtureRss()),
+        resolveHostname: publicTestResolver,
         now: () => 1000
       });
 

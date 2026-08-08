@@ -2,7 +2,8 @@ import {
   controlledFetchText,
   fullContentFetchMaxBytes,
   type ControlledFetcher,
-  type FetchPrivacyWarning
+  type FetchPrivacyWarning,
+  type HostnameResolver
 } from "./controlled-fetch.js";
 
 export type FullContentExtractionStatus = "success" | "failed" | "skipped";
@@ -37,6 +38,7 @@ export type FullContentExtractionServiceOptions = {
     input: FullContentPluginExtractionInput
   ) => Promise<FullContentPluginExtractionResult | null>;
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
+  resolveHostname?: HostnameResolver;
 };
 
 const DEFAULT_MIN_TEXT_LENGTH = 200;
@@ -68,7 +70,8 @@ export class FullContentExtractionService {
           "user-agent": "DibaoFullContentFetcher/0.1"
         },
         maxBytes: fullContentFetchMaxBytes(),
-        onWarning: this.options.onFetchWarning
+        onWarning: this.options.onFetchWarning,
+        resolveHostname: this.options.resolveHostname
       });
       const response = result.response;
       const rawHtml = result.body;

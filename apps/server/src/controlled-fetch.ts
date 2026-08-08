@@ -30,7 +30,9 @@ export type FetchPrivacyWarning = {
 
 export type ControlledFetchTextOptions = {
   fetcher?: ControlledFetcher;
+  method?: RequestInit["method"];
   headers?: RequestInit["headers"];
+  body?: RequestInit["body"];
   timeoutMs?: number;
   maxBytes?: number;
   allowPrivateNetwork?: boolean;
@@ -70,6 +72,9 @@ export async function controlledFetchText(
   let timedOut = false;
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let currentUrl = url;
+  let currentMethod = options.method;
+  let currentHeaders = options.headers;
+  let currentBody = options.body;
   let response: ControlledFetchResponse | null = null;
   let closeResponseTransport: (() => Promise<void>) | null = null;
 
@@ -85,7 +90,9 @@ export async function controlledFetchText(
     for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
       const target = await resolveAllowedFetchTarget(currentUrl, privacyPolicy, options.onWarning);
       const attemptPromise = fetchControlledTarget(currentUrl, {
-        headers: options.headers,
+        method: currentMethod,
+        headers: currentHeaders,
+        body: currentBody,
         redirect: "manual",
         signal: controller.signal
       }, target, options.fetcher);
@@ -107,8 +114,20 @@ export async function controlledFetchText(
             `Fetch exceeded ${maxRedirects} redirects`
           );
         }
-        currentUrl = new URL(location, responseUrl).toString();
-        await resolveAllowedFetchTarget(currentUrl, privacyPolicy, options.onWarning);
+        const nextUrl = new URL(location, responseUrl).toString();
+        await resolveAllowedFetchTarget(nextUrl, privacyPolicy, options.onWarning);
+        const redirectRequest = redirectedRequest({
+          status: response.status,
+          fromUrl: responseUrl,
+          toUrl: nextUrl,
+          method: currentMethod,
+          headers: currentHeaders,
+          body: currentBody
+        });
+        currentUrl = nextUrl;
+        currentMethod = redirectRequest.method;
+        currentHeaders = redirectRequest.headers;
+        currentBody = redirectRequest.body;
         continue;
       }
       break;
@@ -543,6 +562,52 @@ function applyCidrMask(value: bigint, bits: number, maxBits: number): bigint {
 
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function redirectedRequest(input: {
+  status: number;
+  fromUrl: string;
+  toUrl: string;
+  method: RequestInit["method"] | undefined;
+  headers: RequestInit["headers"] | undefined;
+  body: RequestInit["body"] | undefined;
+}): {
+  method: RequestInit["method"] | undefined;
+  headers: RequestInit["headers"] | undefined;
+  body: RequestInit["body"] | undefined;
+} {
+  const normalizedMethod = String(input.method ?? "GET").toUpperCase();
+  const shouldRewriteToGet =
+    (input.status === 303 && normalizedMethod !== "HEAD") ||
+    ((input.status === 301 || input.status === 302) && normalizedMethod === "POST");
+  const crossOrigin = new URL(input.fromUrl).origin !== new URL(input.toUrl).origin;
+  let headers = input.headers;
+
+  if (crossOrigin || shouldRewriteToGet) {
+    const rewritten = new Headers(headers);
+    if (crossOrigin) {
+      for (const name of Array.from(rewritten.keys())) {
+        if (isSensitiveRedirectHeader(name)) {
+          rewritten.delete(name);
+        }
+      }
+    }
+    if (shouldRewriteToGet) {
+      rewritten.delete("content-length");
+      rewritten.delete("content-type");
+    }
+    headers = rewritten;
+  }
+
+  return {
+    method: shouldRewriteToGet ? "GET" : input.method,
+    headers,
+    body: shouldRewriteToGet ? undefined : input.body
+  };
+}
+
+function isSensitiveRedirectHeader(name: string): boolean {
+  return /authorization|cookie|api[-_]?key|token|secret|signature/iu.test(name);
 }
 
 function isAbortError(error: unknown): boolean {

@@ -19,7 +19,8 @@ import {
   feedFetchMaxBytes,
   type ControlledFetcher,
   type ControlledFetchResponse,
-  type FetchPrivacyWarning
+  type FetchPrivacyWarning,
+  type HostnameResolver
 } from "./controlled-fetch.js";
 import type { FullContentExtractionService } from "./full-content-extraction-service.js";
 
@@ -70,17 +71,18 @@ export type FeedRefreshServiceOptions = {
   fetcher?: FeedFetcher;
   fullContentExtractor?: Pick<FullContentExtractionService, "extract">;
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
+  resolveHostname?: HostnameResolver;
   now?: () => number;
 };
 
 const FEED_WRITE_BATCH_SIZE = 10;
 
 export class FeedRefreshService {
-  private readonly fetcher: FeedFetcher;
+  private readonly fetcher: FeedFetcher | undefined;
   private readonly now: () => number;
 
   constructor(private readonly options: FeedRefreshServiceOptions) {
-    this.fetcher = options.fetcher ?? defaultFeedFetcher;
+    this.fetcher = options.fetcher;
     this.now = options.now ?? Date.now;
   }
 
@@ -127,7 +129,8 @@ export class FeedRefreshService {
           accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
         },
         maxBytes: feedFetchMaxBytes(),
-        onWarning: this.options.onFetchWarning
+        onWarning: this.options.onFetchWarning,
+        resolveHostname: this.options.resolveHostname
       });
     } catch (error) {
       throw new FeedIngestionError("PROVIDER_ERROR", 502, "Feed fetch failed", {
@@ -342,8 +345,6 @@ export class FeedRefreshService {
     };
   }
 }
-
-const defaultFeedFetcher: FeedFetcher = async (url, init) => fetch(url, init);
 
 function chunkItems<T>(items: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];

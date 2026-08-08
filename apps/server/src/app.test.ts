@@ -24,6 +24,7 @@ import {
 import { signPluginPackage } from "@dibao/plugin-sdk";
 import { parseOpml } from "@dibao/rss";
 import { buildServer as buildRealServer, getHealth } from "./app.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
 import type { FeedFetcher } from "./feed-refresh-service.js";
 import { JobRunner } from "./job-runner.js";
 import {
@@ -43,6 +44,7 @@ import {
 
 const tempDirs: string[] = [];
 const TEST_ACTIVE_RANK_CONTEXT = `${RECOMMENDATION_ALGORITHM_VERSION}:embedding:cocoon_5:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
+const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -53,6 +55,7 @@ afterEach(() => {
 function buildServer(options: Parameters<typeof buildRealServer>[0] = {}) {
   return buildRealServer({
     authRequired: false,
+    fetchResolveHostname: publicTestResolver,
     ...options
   });
 }

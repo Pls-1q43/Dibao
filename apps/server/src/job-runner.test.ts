@@ -35,6 +35,7 @@ import {
 import { FeedRefreshService, type FeedFetcher } from "./feed-refresh-service.js";
 import { DeferredJobRun, JobRunner } from "./job-runner.js";
 import { JobHistoryCleanupScheduler } from "./job-history-cleanup-scheduler.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
 import {
   ProfileDecayJobService,
   PROFILE_DECAY_JOB_TYPE
@@ -51,6 +52,7 @@ import {
 } from "./retention-cleanup-job-service.js";
 
 const tempDirs: string[] = [];
+const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -621,6 +623,7 @@ describe("job runner foundation", () => {
         fetcher: fixtureFetcher({
           "https://example.com/retention.xml": retentionFixtureRss
         }),
+        resolveHostname: publicTestResolver,
         now: () => now
       });
 
@@ -747,6 +750,7 @@ describe("job runner foundation", () => {
         fetcher: fixtureFetcher({
           "https://example.com/success.xml": fixtureRss
         }),
+        resolveHostname: publicTestResolver,
         now: () => 3000
       });
       const refreshJobs = new FeedRefreshJobService({
