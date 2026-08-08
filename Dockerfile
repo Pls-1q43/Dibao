@@ -49,7 +49,7 @@ FROM --platform=$TARGETPLATFORM node:22-bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.licenses="BUSL-1.1" \
   com.dibao.license.change-license="Apache-2.0" \
-  com.dibao.license.change-date="2030-07-12"
+  com.dibao.license.change-date="2030-08-08"
 
 ENV NODE_ENV=production \
   DIBAO_HOST=0.0.0.0 \
