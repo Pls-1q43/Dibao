@@ -1339,6 +1339,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     const pathname = parseRequestPathname(request.url);
     recordForegroundApiActivity(request, pathname);
 
+    if (pathname && isApiPath(pathname)) {
+      reply.header("Cache-Control", "no-store");
+    }
+
     if (pathname && !isApiPath(pathname)) {
       return;
     }
@@ -3322,6 +3326,14 @@ function registerWebStaticRoutes(
       const assetPath = resolveStaticAssetPath(webDistDir, pathname);
       if (assetPath) {
         return sendStaticFile(reply, request.method, assetPath);
+      }
+
+      if (pathname === "/service-worker.js") {
+        const serviceWorkerPath = resolveStaticAssetPath(webDistDir, "/sw.js");
+        if (serviceWorkerPath) {
+          return sendStaticFile(reply, request.method, serviceWorkerPath);
+        }
+        return reply.status(404).type("text/plain; charset=utf-8").send("Not found");
       }
 
       const indexPath = resolveStaticAssetPath(webDistDir, "/index.html");

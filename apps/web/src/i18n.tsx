@@ -95,6 +95,8 @@ export const zhCN = {
   },
   auth: {
     loading: "正在检查登录状态",
+    setupStatusLoading: "正在读取实例状态",
+    retry: "重新检查",
     setupTitle: "设置用户名和访问密码",
     setupBody: "这是单用户自托管实例。设置用户名和访问密码后即可进入阅读器。",
     loginTitle: "登录邸报",
@@ -114,6 +116,7 @@ export const zhCN = {
     passwordRequired: "请输入访问密码。",
     errors: {
       session: "无法读取登录状态。",
+      setupStatus: "无法读取实例状态。",
       logout: "退出登录失败。"
     }
   },
@@ -1463,6 +1466,8 @@ export const enUS = {
   },
   auth: {
     loading: "Checking your session",
+    setupStatusLoading: "Checking instance status",
+    retry: "Retry check",
     setupTitle: "Create your account",
     setupBody: "This self-hosted instance has one user. Create a username and password to protect it.",
     loginTitle: "Log in to Dibao",
@@ -1482,6 +1487,7 @@ export const enUS = {
     passwordRequired: "Enter your password.",
     errors: {
       session: "Could not check your session.",
+      setupStatus: "Could not read instance status.",
       logout: "Log out failed."
     }
   },
@@ -2822,6 +2828,8 @@ export const jaJP = {
   },
   auth: {
     loading: "ログイン状態を確認しています",
+    setupStatusLoading: "インスタンス状態を確認しています",
+    retry: "再確認",
     setupTitle: "ユーザー名とアクセスパスワードを設定",
     setupBody: "これは単一ユーザー向けのセルフホスト環境です。ユーザー名とアクセスパスワードを設定すると、リーダーを開けます。",
     loginTitle: "邸報にログイン",
@@ -2841,6 +2849,7 @@ export const jaJP = {
     passwordRequired: "アクセスパスワードを入力してください。",
     errors: {
       session: "ログイン状態を取得できませんでした。",
+      setupStatus: "インスタンス状態を取得できませんでした。",
       logout: "ログアウトに失敗しました。"
     }
   },

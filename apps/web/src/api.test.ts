@@ -6,6 +6,7 @@ describe("web API client", () => {
   it("calls auth endpoints with same-origin credentials", async () => {
     const calls: Array<{
       body: unknown;
+      cache: RequestCache | undefined;
       credentials: RequestCredentials | undefined;
       method: string | undefined;
       path: string;
@@ -14,6 +15,7 @@ describe("web API client", () => {
       calls.push({
         path: String(input),
         method: init?.method,
+        cache: init?.cache,
         credentials: init?.credentials,
         body: init?.body ? JSON.parse(String(init.body)) : null
       });
@@ -54,12 +56,14 @@ describe("web API client", () => {
       {
         path: "/api/auth/session",
         method: undefined,
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       },
       {
         path: "/api/auth/setup",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           username: "Pls",
@@ -69,6 +73,7 @@ describe("web API client", () => {
       {
         path: "/api/auth/login",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           username: "Pls",
@@ -78,6 +83,7 @@ describe("web API client", () => {
       {
         path: "/api/auth/password",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           currentPassword: "correct horse battery",
@@ -87,12 +93,14 @@ describe("web API client", () => {
       {
         path: "/api/auth/logout-all",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       },
       {
         path: "/api/auth/logout",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       }

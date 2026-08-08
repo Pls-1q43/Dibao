@@ -265,6 +265,51 @@ describe("web i18n", () => {
     expect(loginHtml).toContain("Invalid password");
   });
 
+  it("renders localized auth loading errors with retry actions", () => {
+    const zhHtml = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <AuthGatePanel
+          error="无法连接实例"
+          isSubmitting={false}
+          mode="loading"
+          onRetryLoading={() => undefined}
+        />
+      </DibaoI18nProvider>
+    );
+    const enHtml = renderToStaticMarkup(
+      <DibaoI18nProvider locale="en-US">
+        <AuthGatePanel
+          error="Network unavailable"
+          isSubmitting={false}
+          loadingLabel={dictionaries["en-US"].auth.setupStatusLoading}
+          mode="loading"
+          onRetryLoading={() => undefined}
+          retryLoadingLabel={dictionaries["en-US"].auth.retry}
+        />
+      </DibaoI18nProvider>
+    );
+    const jaHtml = renderToStaticMarkup(
+      <DibaoI18nProvider locale="ja-JP">
+        <AuthGatePanel
+          error="ネットワークに接続できません"
+          isSubmitting={false}
+          mode="loading"
+          onRetryLoading={() => undefined}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(zhHtml).toContain("正在检查登录状态");
+    expect(zhHtml).toContain("无法连接实例");
+    expect(zhHtml).toContain("重新检查");
+    expect(enHtml).toContain("Checking instance status");
+    expect(enHtml).toContain("Network unavailable");
+    expect(enHtml).toContain("Retry check");
+    expect(jaHtml).toContain("ログイン状態を確認しています");
+    expect(jaHtml).toContain("ネットワークに接続できません");
+    expect(jaHtml).toContain("再確認");
+  });
+
   it("renders first-run wizard with provider configuration and skip fallback", () => {
     const welcomeHtml = renderToStaticMarkup(
       <DibaoI18nProvider>

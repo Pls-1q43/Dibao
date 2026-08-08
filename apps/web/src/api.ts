@@ -1286,6 +1286,7 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
 
     const response = await fetcher(path, {
       ...init,
+      cache: init.cache ?? "no-store",
       credentials: init.credentials ?? "same-origin",
       headers
     });
@@ -1312,6 +1313,7 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
   async function requestText(path: string, init: RequestInit = {}): Promise<string> {
     const response = await fetcher(path, {
       ...init,
+      cache: init.cache ?? "no-store",
       credentials: init.credentials ?? "same-origin",
       headers: {
         accept: "application/xml, text/xml, */*",

@@ -152,6 +152,7 @@ const ARTICLE_STATE_OVERLAY_STORAGE_KEY = "dibao:article-state-overlay:v1";
 const ARTICLE_STATE_OVERLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTICLE_STATE_OVERLAY_LIMIT = 500;
 const AUTH_GATE_RETRY_DELAYS_MS = [500, 1500, 3000, 5000, 10_000, 30_000] as const;
+const AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT = 1;
 
 function authGateRetryDelayMs(attempt: number): number {
   return AUTH_GATE_RETRY_DELAYS_MS[
@@ -263,6 +264,7 @@ export function App() {
   const initialSearchForm = useMemo(() => searchFormFromLocation(), []);
   const initialArticleStateOverlay = useMemo(() => readArticleStateOverlay(), []);
   const [appStage, setAppStage] = useState<AppStage>({ type: "auth-loading" });
+  const [authGateRetryToken, setAuthGateRetryToken] = useState(0);
   const [authUsername, setAuthUsername] = useState<string | null>(null);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -698,6 +700,12 @@ export function App() {
     articleRequestVersion.current += 1;
   }, [setLocale]);
 
+  const handleRetryAuthGate = useCallback(() => {
+    setAuthError(null);
+    setAppStage({ type: "auth-loading" });
+    setAuthGateRetryToken((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -717,9 +725,13 @@ export function App() {
             setAppStage(nextStage);
           }
           return;
-        } catch {
+        } catch (error) {
           if (!cancelled) {
-            setAuthError(null);
+            setAuthError(
+              attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
+                ? `${t.auth.errors.session} ${userMessageForError(error, t.errors.api)}`
+                : null
+            );
             setAppStage({ type: "auth-loading" });
           }
           await delay(authGateRetryDelayMs(attempt));
@@ -732,7 +744,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [resetReaderState, t.errors.api]);
+  }, [authGateRetryToken, resetReaderState, t.auth.errors.session, t.errors.api]);
 
   useEffect(() => {
     function updateOnlineStatus() {
@@ -783,9 +795,13 @@ export function App() {
             setAppStage(nextStage);
           }
           return;
-        } catch {
+        } catch (error) {
           if (!cancelled) {
-            setAuthError(null);
+            setAuthError(
+              attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
+                ? `${t.auth.errors.setupStatus} ${userMessageForError(error, t.errors.api)}`
+                : null
+            );
             setAppStage({ type: "setup-status-loading" });
           }
           await delay(authGateRetryDelayMs(attempt));
@@ -798,7 +814,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [appStage.type, resetReaderState, t.errors.api]);
+  }, [
+    appStage.type,
+    authGateRetryToken,
+    resetReaderState,
+    t.auth.errors.setupStatus,
+    t.errors.api
+  ]);
 
   useEffect(() => {
     if (appStage.type !== "derived-data-upgrade") {
@@ -3079,7 +3101,16 @@ export function App() {
     return (
       <main className={styles.authShell}>
         {pwaStatusBanner}
-        <AuthGatePanel error={authError} isSubmitting={false} mode="loading" />
+        <AuthGatePanel
+          error={authError}
+          isSubmitting={false}
+          loadingLabel={
+            appStage.type === "setup-status-loading" ? t.auth.setupStatusLoading : t.auth.loading
+          }
+          mode="loading"
+          onRetryLoading={handleRetryAuthGate}
+          retryLoadingLabel={t.auth.retry}
+        />
       </main>
     );
   }

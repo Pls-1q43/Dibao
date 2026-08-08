@@ -212,6 +212,10 @@ describe("server API vertical slice", () => {
         method: "HEAD",
         url: "/reader/latest"
       });
+      const legacyServiceWorker = await app.inject({
+        method: "GET",
+        url: "/service-worker.js"
+      });
 
       expect(root.statusCode, root.body).toBe(200);
       expect(root.headers["content-type"]).toContain("text/html");
@@ -226,6 +230,8 @@ describe("server API vertical slice", () => {
       expect(spaRoute.body).toContain("Dibao shell");
       expect(head.statusCode, head.body).toBe(200);
       expect(head.body).toBe("");
+      expect(legacyServiceWorker.statusCode, legacyServiceWorker.body).toBe(404);
+      expect(legacyServiceWorker.body).not.toContain("Dibao shell");
     } finally {
       await app.close();
       db.close();
@@ -1355,6 +1361,10 @@ describe("server API vertical slice", () => {
         method: "GET",
         url: "/sw.js"
       });
+      const legacyServiceWorker = await app.inject({
+        method: "GET",
+        url: "/service-worker.js"
+      });
       const searchRoute = await app.inject({
         method: "GET",
         url: "/search"
@@ -1385,6 +1395,12 @@ describe("server API vertical slice", () => {
       expect(serviceWorker.headers["content-type"]).toMatch(/javascript/);
       expect(serviceWorker.headers["cache-control"]).toBe("no-cache, no-store, must-revalidate");
       expect(serviceWorker.body).toContain("fetch");
+      expect(legacyServiceWorker.statusCode, legacyServiceWorker.body).toBe(200);
+      expect(legacyServiceWorker.headers["content-type"]).toMatch(/javascript/);
+      expect(legacyServiceWorker.headers["cache-control"]).toBe(
+        "no-cache, no-store, must-revalidate"
+      );
+      expect(legacyServiceWorker.body).toContain("fetch");
 
       expect(searchRoute.statusCode, searchRoute.body).toBe(200);
       expect(searchRoute.body).toContain("Dibao shell");
@@ -1455,6 +1471,7 @@ describe("server API vertical slice", () => {
 
       expect(response.statusCode, response.body).toBe(404);
       expect(response.headers["content-type"]).toContain("application/json");
+      expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.json()).toMatchObject({
         error: {
           code: "NOT_FOUND"
@@ -1481,6 +1498,7 @@ describe("server API vertical slice", () => {
       });
 
       expect(response.statusCode, response.body).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.json()).toEqual({
         data: {
           setupCompleted: false,
@@ -1520,6 +1538,7 @@ describe("server API vertical slice", () => {
         password: "correct horse battery"
       });
       expect(setup.statusCode, setup.body).toBe(200);
+      expect(setup.headers["cache-control"]).toBe("no-store");
       expect(setup.json()).toEqual({
         data: {
           ok: true
@@ -1556,6 +1575,7 @@ describe("server API vertical slice", () => {
         }
       });
       expect(session.statusCode, session.body).toBe(200);
+      expect(session.headers["cache-control"]).toBe("no-store");
       expect(session.json()).toEqual({
         data: {
           setupCompleted: true,
@@ -1590,12 +1610,14 @@ describe("server API vertical slice", () => {
         url: "/api/system/health"
       });
       expect(health.statusCode, health.body).toBe(200);
+      expect(health.headers["cache-control"]).toBe("no-store");
 
       const protectedResponse = await app.inject({
         method: "GET",
         url: "/api/feeds"
       });
       expect(protectedResponse.statusCode, protectedResponse.body).toBe(401);
+      expect(protectedResponse.headers["cache-control"]).toBe("no-store");
       expect(protectedResponse.json()).toMatchObject({
         error: {
           code: "UNAUTHORIZED"
@@ -1876,6 +1898,7 @@ describe("server API vertical slice", () => {
         url: "/api/setup/status"
       });
       expect(anonymous.statusCode, anonymous.body).toBe(401);
+      expect(anonymous.headers["cache-control"]).toBe("no-store");
       expect(anonymous.json()).toMatchObject({
         error: {
           code: "UNAUTHORIZED"
@@ -1895,6 +1918,7 @@ describe("server API vertical slice", () => {
       });
 
       expect(status.statusCode, status.body).toBe(200);
+      expect(status.headers["cache-control"]).toBe("no-store");
       expect(status.json()).toEqual({
         data: {
           setupCompleted: true,

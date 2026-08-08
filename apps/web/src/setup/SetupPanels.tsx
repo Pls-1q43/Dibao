@@ -75,9 +75,12 @@ export function SetupWelcomePanel(props: { onStart: () => void }) {
 export function AuthGatePanel(props: {
   error?: string | null;
   isSubmitting: boolean;
+  loadingLabel?: string;
   mode: AuthMode | "loading";
+  onRetryLoading?: () => void;
   onTelemetryEnabledChange?: (enabled: boolean) => void;
   onSubmit?: (mode: AuthMode, username: string, password: string) => void;
+  retryLoadingLabel?: string;
   telemetryEnabled?: boolean;
 }) {
   const { t } = useI18n();
@@ -94,8 +97,13 @@ export function AuthGatePanel(props: {
             <small>{t.common.brandSubtitle}</small>
           </span>
         </div>
-        <p>{t.auth.loading}</p>
+        <p>{props.loadingLabel ?? t.auth.loading}</p>
         {props.error ? <p className={styles.errorText}>{props.error}</p> : null}
+        {props.error && props.onRetryLoading ? (
+          <button className={styles.secondaryButton} onClick={props.onRetryLoading} type="button">
+            {props.retryLoadingLabel ?? t.auth.retry}
+          </button>
+        ) : null}
       </section>
     );
   }
