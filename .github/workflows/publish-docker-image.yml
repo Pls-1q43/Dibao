@@ -187,7 +187,7 @@ jobs:
 
           cleanup() {
             docker rm -f "$fresh_name" "$old_name" "$new_name" >/dev/null 2>&1 || true
-            rm -rf "$fresh_data" "$upgrade_data"
+            sudo rm -rf "$fresh_data" "$upgrade_data"
           }
           trap cleanup EXIT
 
@@ -213,23 +213,38 @@ jobs:
             docker exec "$name" node -e 'const Database = require("better-sqlite3"); const db = new Database("/data/dibao.sqlite", { readonly: true }); const row = db.prepare("select version, name from schema_migrations order by version desc limit 1").get(); console.log(`${row.version} ${row.name}`); db.close();'
           }
 
+          wait_latest_migration() {
+            local name="$1"
+            local expected="$2"
+            local upgrade_url="${3:-}"
+            for _ in $(seq 1 90); do
+              if [ -n "$upgrade_url" ]; then
+                curl -fsS "$upgrade_url/api/system/upgrade/status" >/dev/null 2>&1 || true
+              fi
+              local latest
+              latest="$(latest_migration "$name" 2>/dev/null || true)"
+              if [ "$latest" = "$expected" ]; then
+                echo "Latest migration for $name: $latest"
+                return 0
+              fi
+              sleep 2
+            done
+            docker logs "$name" --tail 250 || true
+            echo "::error::Container $name did not reach migration $expected."
+            return 1
+          }
+
           docker run -d --name "$fresh_name" -p 18081:8080 -v "$fresh_data:/data" "$image_ref"
           wait_health "$fresh_name" "http://127.0.0.1:18081" "0.3.0"
-          fresh_latest="$(latest_migration "$fresh_name")"
-          echo "Fresh install latest migration: $fresh_latest"
-          test "$fresh_latest" = "026 recommendation_v3_memory"
+          wait_latest_migration "$fresh_name" "026 recommendation_v3_memory"
           docker rm -f "$fresh_name"
 
           docker pull "$previous_image"
           docker run -d --name "$old_name" -p 18082:8080 -v "$upgrade_data:/data" "$previous_image"
           wait_health "$old_name" "http://127.0.0.1:18082" "0.2.1"
-          old_latest="$(latest_migration "$old_name")"
-          echo "Previous release latest migration: $old_latest"
-          test "$old_latest" = "025 recommended_rank_sort_index"
+          wait_latest_migration "$old_name" "025 recommended_rank_sort_index"
           docker rm -f "$old_name"
 
           docker run -d --name "$new_name" -p 18083:8080 -v "$upgrade_data:/data" "$image_ref"
           wait_health "$new_name" "http://127.0.0.1:18083" "0.3.0"
-          upgraded_latest="$(latest_migration "$new_name")"
-          echo "Upgrade latest migration: $upgraded_latest"
-          test "$upgraded_latest" = "026 recommendation_v3_memory"
+          wait_latest_migration "$new_name" "026 recommendation_v3_memory" "http://127.0.0.1:18083"
