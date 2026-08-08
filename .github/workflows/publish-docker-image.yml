@@ -149,8 +149,12 @@ jobs:
             hasProject: Boolean(runtime.project && jsBundle.includes(runtime.project))
           };
 
-          console.log("Runtime Sentry config:", runtimeReport);
-          console.log("Browser Sentry config:", browserReport);
+          console.log(
+            `Runtime Sentry config: hasDsn=${runtimeReport.hasDsn} hasOrg=${runtimeReport.hasOrg} hasProject=${runtimeReport.hasProject}`
+          );
+          console.log(
+            `Browser Sentry config: hasDsn=${browserReport.hasDsn} hasOrg=${browserReport.hasOrg} hasProject=${browserReport.hasProject}`
+          );
 
           if (
             !runtimeReport.hasDsn ||
