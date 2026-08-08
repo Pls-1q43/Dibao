@@ -127,7 +127,7 @@ jobs:
           fi
 
           docker pull --platform linux/amd64 "$image_ref"
-          docker run --rm --platform linux/amd64 "$image_ref" node --input-type=module - <<'NODE'
+          docker run -i --rm --platform linux/amd64 "$image_ref" node --input-type=module - <<'NODE'
           import { readFileSync, readdirSync } from "node:fs";
           import { join } from "node:path";
 
