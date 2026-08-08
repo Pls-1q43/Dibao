@@ -7,10 +7,7 @@ import type {
   MarkScopeReadCommandResult,
   ReaderCommandEventRepository
 } from "@dibao/db";
-import {
-  RANKING_RECALCULATE_ARTICLE_LIMIT,
-  type RankingRecalculateJobService
-} from "./ranking-job-service.js";
+import type { RankingRecalculateJobService } from "./ranking-job-service.js";
 
 export class ReaderCommandServiceError extends Error {
   constructor(
@@ -67,7 +64,7 @@ export class ReaderCommandService {
         createdAt: now
       });
 
-      this.enqueueRankingUpdate(result.markedReadCount, audit.sampleArticleIds);
+      this.enqueueRankingUpdate(result.markedReadCount);
 
       return result;
     });
@@ -82,16 +79,13 @@ export class ReaderCommandService {
     };
   }
 
-  private enqueueRankingUpdate(markedReadCount: number, sampleArticleIds: string[]): void {
+  private enqueueRankingUpdate(markedReadCount: number): void {
     if (!this.options.rankingJobs || markedReadCount === 0) {
       return;
     }
 
-    if (markedReadCount <= RANKING_RECALCULATE_ARTICLE_LIMIT) {
-      this.options.rankingJobs.enqueueArticles(sampleArticleIds);
-      return;
-    }
-
+    // The bounded active window decides which candidates remain relevant; a
+    // broad mark-read command must not resurrect a full-history ranking loop.
     this.options.rankingJobs.enqueueAll();
   }
 }

@@ -99,7 +99,9 @@ export class GeminiEmbeddingAdapter implements EmbeddingProviderAdapter {
         body: JSON.stringify({
           requests: texts.map((text) => ({
             model,
-            outputDimensionality: provider.dimension,
+            ...(shouldRequestGeminiOutputDimensionality(provider.model)
+              ? { outputDimensionality: provider.dimension }
+              : {}),
             content: {
               parts: [{ text }]
             }
@@ -144,6 +146,11 @@ function embeddingEndpoint(provider: EmbeddingProviderConfig, model: string): st
 function modelResourceName(model: string): string {
   const trimmed = model.trim().replace(/^\/+/u, "");
   return trimmed.startsWith("models/") ? trimmed : `models/${trimmed}`;
+}
+
+function shouldRequestGeminiOutputDimensionality(model: string): boolean {
+  const normalized = model.trim().toLowerCase().replace(/^models\//u, "");
+  return normalized.startsWith("gemini-embedding-") || normalized === "text-embedding-004";
 }
 
 function parseGeminiEmbeddingResponse(

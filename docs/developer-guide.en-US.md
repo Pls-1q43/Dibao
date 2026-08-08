@@ -22,7 +22,7 @@ Local planning notes, execution logs, temporary validation evidence, and machine
 
 ## Development Flow
 
-`0.2` is the active line for the plugin system and next-version feature work. Ordinary feature work, UI iteration, recommendation changes, and plugin-system work should target `0.2`. The `0.1` line is only for stable-line maintenance fixes.
+`0.3` is the active line for next-version feature work. Ordinary feature work, UI iteration, recommendation changes, and plugin-system work should target `0.3`. The `0.2` line is only for stable-line maintenance fixes.
 
 Recommended validation:
 

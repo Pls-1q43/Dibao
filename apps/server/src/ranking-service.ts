@@ -104,6 +104,9 @@ export type RankingSettingsSnapshot = {
   localLearningShadowMode: boolean;
   explorationEnabled: boolean;
   evaluationEnabled: boolean;
+  recentHistoryMode?: "disabled" | "shadow" | "active";
+  crossSessionFatigueMode?: "disabled" | "shadow" | "active";
+  learnedExplorationMode?: "disabled" | "shadow" | "active";
 };
 
 export type RecommendationRankingServiceOptions = {
@@ -147,8 +150,16 @@ type LexicalFeature = {
   bm25Recent: number;
   positiveOverlap: number;
   negativeOverlap: number;
+  topicNegativePenalty: number;
   titleKeywordMatch: number;
   matchedTerms: Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent" }>;
+};
+
+type ProfileTerm = {
+  term: string;
+  polarity: "positive" | "negative";
+  scope: "long" | "recent";
+  weight: number;
 };
 
 type RecentIntentVector = {
@@ -157,6 +168,19 @@ type RecentIntentVector = {
   weight: number;
   eventCount: number;
   updatedAt: number;
+};
+
+type RecentBehaviorVector = {
+  polarity: "positive" | "negative";
+  vector: number[];
+  weight: number;
+  createdAt: number;
+};
+
+type ExposureFatigueCounts = {
+  feeds: Map<string, number>;
+  families: Map<string, number>;
+  duplicateGroups: Map<string, number>;
 };
 
 type DuplicateFeature = {
@@ -195,6 +219,8 @@ type V2Score = {
   duplicatePenalty: number;
   diversityPenalty: number;
   explorationBonus: number;
+  recentHistoryScore: number;
+  fatiguePenalty: number;
   explorationEligible: boolean;
   explorationBucket: string | null;
   explorationReason: string | null;
@@ -211,8 +237,8 @@ type V2Score = {
   matchedFamilyCount: number;
 };
 
-const RECOMMENDATION_ALGORITHM_VERSION = "rec_v3";
-const RECOMMENDATION_FEATURE_SCHEMA_VERSION = 3;
+export const RECOMMENDATION_ALGORITHM_VERSION = "rec_v3";
+export const RECOMMENDATION_FEATURE_SCHEMA_VERSION = 4;
 const MMR_WINDOW_LIMIT = 500;
 const DEFAULT_RANKING_CHUNK_TIME_BUDGET_MS = 2_000;
 const RANKING_TIME_BUDGET_RESUME_DELAY_MS = 5_000;
@@ -381,6 +407,14 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const recentIntent = activeIndexId ? this.recentIntentVectorsFor(activeIndexId) : [];
+    // Shadow telemetry must not make a normal recommendation refresh do another
+    // candidate-by-behaviour vector pass. Shadow evaluation belongs to an
+    // explicitly scheduled diagnostic path; only an active module pays this
+    // ranking cost.
+    const recentBehavior =
+      activeIndexId && settings.recentHistoryMode === "active"
+        ? this.recentBehaviorVectorsFor(activeIndexId)
+        : [];
     if (timeBudgetExceeded()) {
       return timeBudgetPauseResult();
     }
@@ -397,6 +431,10 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       return timeBudgetPauseResult();
     }
     const ftrlModel = this.ftrlModel();
+    const explorationBucketSamples =
+      settings.learnedExplorationMode === "active"
+        ? this.explorationBucketSamples()
+        : new Map<string, number>();
     const duplicateStats = duplicateStatsFor(candidates, duplicateFeatures);
     const rerankWindowId = `${activeRankContext}:${now}`;
     const scored: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }> = [];
@@ -496,15 +534,16 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       processed += 1;
       lastProcessedArticleId = candidate.articleId;
 
-      if (!activeIndexId) {
+      if (!activeIndexId || !isActiveRecommendationCandidate(candidate)) {
         continue;
       }
 
-      const score = calculateV2Score({
+      const baseV2Score = calculateV2Score({
         candidate,
         now,
         clusters,
         recentIntent,
+        recentBehavior,
         settings,
         baseScore: baseScore.score,
         duplicateCount: duplicateStats.get(candidate.articleId) ?? 1,
@@ -513,10 +552,31 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         source: sourceFeatures.get(candidate.feedId) ?? emptySourceFeature(),
         ftrlModel
       });
-      scored.push({ candidate, score });
+      scored.push({ candidate, score: baseV2Score });
     }
 
-    const reranked = rerankCanonicalWindow(scored, settings, MMR_WINDOW_LIMIT);
+    const scoredWithFatigue = (() => {
+      if (settings.crossSessionFatigueMode !== "active") {
+        return scored;
+      }
+      const exposureFatigue = this.exposureFatigueFor(scored, duplicateFeatures, now);
+      return scored.map(({ candidate, score }) => ({
+        candidate,
+        score: applyExposureFatigue(
+          score,
+          candidate,
+          duplicateFeatures.get(candidate.articleId) ?? emptyDuplicateFeature(),
+          exposureFatigue,
+          settings
+        )
+      }));
+    })();
+    const reranked = rerankCanonicalWindow(
+      scoredWithFatigue,
+      settings,
+      MMR_WINDOW_LIMIT,
+      explorationBucketSamples
+    );
     const rankScores: UpsertArticleRankScoreInput[] = [];
     const explanations: UpsertArticleRankExplanationInput[] = [];
     for (const item of reranked) {
@@ -539,6 +599,8 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
         duplicatePenalty: item.score.duplicatePenalty,
         diversityPenalty: item.score.diversityPenalty,
         explorationBonus: item.score.explorationBonus,
+        explorationBucketKey: item.score.wasExploration ? item.score.explorationBucket : null,
+        wasExploration: item.score.wasExploration,
         pendingEmbeddingScore: item.score.pendingEmbeddingScore,
         exposurePenalty: item.score.exposurePenalty,
         preRerankScore: item.score.preRerankScore,
@@ -684,6 +746,22 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       and f.enabled = 1
       and s.hidden_at is null
       and s.not_interested_at is null
+      and s.read_at is null
+      and coalesce(s.reading_progress, 0) < 0.9
+      and not (
+        exists (
+          select 1
+          from behavior_events ignored
+          where ignored.article_id = a.id
+            and ignored.event_type = 'impression'
+            and ignored.event_weight < 0
+        )
+        and coalesce(s.reading_progress, 0) = 0
+        and s.last_opened_at is null
+        and s.favorited_at is null
+        and s.liked_at is null
+        and s.read_later_at is null
+      )
     `;
 
     add(
@@ -872,7 +950,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     polarity: "positive" | "negative";
     scopes: Array<"long" | "recent">;
     limit: number;
-  }): Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent"; weight: number }> {
+  }): ProfileTerm[] {
     const db = this.options.db;
     if (!db || input.scopes.length === 0) {
       return [];
@@ -892,12 +970,7 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
           limit ?
         `
       )
-      .all(input.polarity, ...input.scopes, input.limit) as Array<{
-      term: string;
-      polarity: "positive" | "negative";
-      scope: "long" | "recent";
-      weight: number;
-    }>;
+      .all(input.polarity, ...input.scopes, input.limit) as ProfileTerm[];
   }
 
   private lexicalFeaturesFor(
@@ -913,15 +986,20 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     }
 
     const ids = candidates.map((candidate) => candidate.articleId);
-    const positiveLong = this.profileTerms({ polarity: "positive", scopes: ["long"], limit: 24 });
-    const positiveRecent = this.profileTerms({ polarity: "positive", scopes: ["recent"], limit: 24 });
+    const positiveLong = filterPositiveLexicalTerms(
+      this.profileTerms({ polarity: "positive", scopes: ["long"], limit: 48 })
+    ).slice(0, 24);
+    const positiveRecent = filterPositiveLexicalTerms(
+      this.profileTerms({ polarity: "positive", scopes: ["recent"], limit: 48 })
+    ).slice(0, 24);
     const negativeTerms = this.profileTerms({
       polarity: "negative",
       scopes: ["long", "recent"],
-      limit: 32
+      limit: 64
     });
+    const financeMarketNegativeActive = hasFinanceMarketNegativeProfile(negativeTerms);
     const applyBm25 = (
-      terms: Array<{ term: string; polarity: "positive" | "negative"; scope: "long" | "recent"; weight: number }>,
+      terms: ProfileTerm[],
       field: "bm25Positive" | "bm25Recent"
     ) => {
       const query = sanitizeFtsQuery(terms.map((term) => term.term).join(" "));
@@ -977,6 +1055,16 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       }
       feature.positiveOverlap = clamp(Math.log1p(positiveWeight) / Math.log1p(20), 0, 1);
       feature.negativeOverlap = clamp(Math.log1p(negativeWeight) / Math.log1p(20), 0, 1);
+      feature.topicNegativePenalty = financeMarketNegativeActive
+        ? financeMarketNegativePenalty(title, text)
+        : 0;
+      if (feature.topicNegativePenalty > 0) {
+        matched.push({
+          term: "finance-market",
+          polarity: "negative",
+          scope: "long"
+        });
+      }
       feature.matchedTerms = matched.slice(0, 12);
       result.set(candidate.articleId, feature);
     }
@@ -1019,6 +1107,107 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
       eventCount: row.eventCount,
       updatedAt: row.updatedAt
     }));
+  }
+
+  private recentBehaviorVectorsFor(embeddingIndexId: string): RecentBehaviorVector[] {
+    const db = this.options.db;
+    if (!db) {
+      return [];
+    }
+    const rows = db
+      .prepare(
+        `
+          select be.event_type as eventType, be.metadata_json as metadataJson, be.created_at as createdAt,
+            ae.vector_blob as vectorBlob
+          from behavior_events be
+          join article_embeddings ae on ae.article_id = be.article_id and ae.embedding_index_id = ?
+          where ae.vector_blob is not null
+            and (
+              be.event_type in ('favorite', 'like', 'read_later', 'read_complete', 'hide', 'not_interested')
+              or (be.event_type = 'read_progress' and coalesce(json_extract(be.metadata_json, '$.progress'), 0) >= 0.75)
+            )
+          order by be.created_at desc, be.id desc
+          limit 50
+        `
+      )
+      .all(embeddingIndexId) as Array<{
+      eventType: string;
+      metadataJson: string | null;
+      createdAt: number;
+      vectorBlob: Buffer;
+    }>;
+    return rows.map((row) => ({
+      polarity: row.eventType === "hide" || row.eventType === "not_interested" ? "negative" : "positive",
+      vector: fromVectorBlob(row.vectorBlob),
+      weight: recentBehaviorWeight(row.eventType, row.metadataJson),
+      createdAt: row.createdAt
+    }));
+  }
+
+  private exposureFatigueFor(
+    scored: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }>,
+    duplicateFeatures: Map<string, DuplicateFeature>,
+    now: number
+  ): ExposureFatigueCounts {
+    const result: ExposureFatigueCounts = {
+      feeds: new Map(),
+      families: new Map(),
+      duplicateGroups: new Map()
+    };
+    const db = this.options.db;
+    if (!db || scored.length === 0) {
+      return result;
+    }
+    const feedIds = uniqueStrings(scored.map(({ candidate }) => candidate.feedId));
+    const familyIds = uniqueStrings(
+      scored.map(({ score }) => score.primaryFamilyId).filter((id): id is string => id !== null)
+    );
+    const duplicateGroupIds = uniqueStrings(
+      scored
+        .map(({ candidate }) => duplicateFeatures.get(candidate.articleId)?.groupId ?? null)
+        .filter((id): id is string => id !== null)
+    );
+    const cutoff = now - 7 * 86_400_000;
+    this.collectExposureCounts("feed_id", feedIds, cutoff, result.feeds);
+    this.collectExposureCounts("interest_family_id", familyIds, cutoff, result.families);
+    this.collectExposureCounts("duplicate_group_id", duplicateGroupIds, cutoff, result.duplicateGroups);
+    return result;
+  }
+
+  private collectExposureCounts(
+    column: "feed_id" | "interest_family_id" | "duplicate_group_id",
+    ids: string[],
+    cutoff: number,
+    target: Map<string, number>
+  ): void {
+    const db = this.options.db;
+    if (!db || ids.length === 0) {
+      return;
+    }
+    const rows = db
+      .prepare(
+        `
+          select ${column} as id, count(*) as count
+          from recommendation_exposures
+          where exposed_at >= ? and ${column} in (${ids.map(() => "?").join(", ")})
+          group by ${column}
+        `
+      )
+      .all(cutoff, ...ids) as Array<{ id: string; count: number }>;
+    for (const row of rows) {
+      target.set(row.id, row.count);
+    }
+  }
+
+  private explorationBucketSamples(): Map<string, number> {
+    const db = this.options.db;
+    if (!db) {
+      return new Map();
+    }
+    const rows = db
+      .prepare(`select bucket_key as bucketKey, alpha, beta from exploration_buckets`)
+      .all() as Array<{ bucketKey: string; alpha: number; beta: number }>;
+    return new Map(rows.map((row) => [row.bucketKey, sampleBeta(row.alpha, row.beta)]));
   }
 
   private duplicateFeaturesFor(
@@ -1465,6 +1654,47 @@ function recentIntentMatchesFor(
   return { positive, negative };
 }
 
+function recentBehaviorMatchesFor(
+  candidate: ArticleRankingCandidateRow,
+  recentBehavior: RecentBehaviorVector[],
+  now: number
+): { positive: number; negative: number } {
+  if (!candidate.vectorBlob || recentBehavior.length === 0) {
+    return { positive: 0, negative: 0 };
+  }
+  const vector = fromVectorBlob(candidate.vectorBlob);
+  let positive = 0;
+  let negative = 0;
+  for (const behavior of recentBehavior) {
+    const ageHours = Math.max(0, (now - behavior.createdAt) / 3_600_000);
+    const value =
+      Math.max(0, cosineSimilarity(vector, behavior.vector)) *
+      behavior.weight *
+      Math.pow(0.5, ageHours / 24);
+    if (behavior.polarity === "positive") {
+      positive = Math.max(positive, value);
+    } else {
+      negative = Math.max(negative, value);
+    }
+  }
+  return { positive: clamp(positive, 0, 1), negative: clamp(negative, 0, 1) };
+}
+
+function recentBehaviorWeight(eventType: string, metadataJson: string | null): number {
+  if (eventType === "like" || eventType === "favorite") return 1;
+  if (eventType === "read_later" || eventType === "read_complete") return 0.85;
+  if (eventType === "hide" || eventType === "not_interested") return 1;
+  if (eventType === "read_progress") {
+    try {
+      const metadata = JSON.parse(metadataJson ?? "{}") as { progress?: unknown };
+      return typeof metadata.progress === "number" && metadata.progress >= 0.9 ? 0.8 : 0.55;
+    } catch {
+      return 0.55;
+    }
+  }
+  return 0.5;
+}
+
 function ftrlFeaturesFor(input: {
   semanticScore: number;
   negativePenalty: number;
@@ -1486,7 +1716,7 @@ function ftrlFeaturesFor(input: {
       semantic: clamp(input.semanticScore / 0.68, 0, 1),
       semantic_negative: clamp(Math.abs(input.negativePenalty) / 0.5, 0, 1),
       bm25: clamp(input.bm25Score / 0.14, 0, 1),
-      keyword_negative: clamp(Math.abs(input.keywordNegativePenalty) / 0.12, 0, 1),
+      keyword_negative: clamp(Math.abs(input.keywordNegativePenalty) / 0.32, 0, 1),
       freshness: clamp(input.freshness / 0.2, 0, 1),
       source: clamp((input.sourceScore + 0.14) / 0.28, 0, 1),
       source_confidence: clamp(input.source.sourceConfidence, 0, 1),
@@ -1517,6 +1747,10 @@ function rankContextFor(input: { hasEmbedding: boolean; cocoonLevel: number }): 
   return `${RECOMMENDATION_ALGORITHM_VERSION}:${input.hasEmbedding ? "embedding" : "base"}:cocoon_${input.cocoonLevel}:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
 }
 
+function isActiveRecommendationCandidate(candidate: ArticleRankingCandidateRow): boolean {
+  return !candidate.stateRowExists;
+}
+
 function cocoonParameters(level: number) {
   const c = clamp((level - 1) / 9, 0, 1);
   return {
@@ -1541,6 +1775,7 @@ function calculateV2Score(input: {
   now: number;
   clusters: ClusterVector[];
   recentIntent: RecentIntentVector[];
+  recentBehavior: RecentBehaviorVector[];
   settings: RankingSettingsSnapshot;
   baseScore: number;
   duplicateCount: number;
@@ -1557,6 +1792,13 @@ function calculateV2Score(input: {
   );
   const matches = interestMatchesFor(candidate, input.clusters);
   const recentMatches = recentIntentMatchesFor(candidate, input.recentIntent);
+  const recentBehaviorMatches = recentBehaviorMatchesFor(candidate, input.recentBehavior, input.now);
+  const recentHistoryScore = clamp(
+    recentBehaviorMatches.positive * 0.08 - recentBehaviorMatches.negative * 0.08,
+    -0.08,
+    0.08
+  );
+  const activeRecentHistoryScore = input.settings.recentHistoryMode === "active" ? recentHistoryScore : 0;
   const semanticScore = clamp(
     matches.positiveInterestMatch * 0.42 * params.personalizationStrength +
       recentMatches.positive * 0.18 * params.recentIntentStrength,
@@ -1585,7 +1827,11 @@ function calculateV2Score(input: {
     ) *
     0.12 *
     params.keywordProfileStrength;
-  const keywordNegativePenalty = -input.lexical.negativeOverlap * 0.12;
+  const keywordNegativePenalty = -clamp(
+    input.lexical.negativeOverlap * 0.12 + input.lexical.topicNegativePenalty,
+    0,
+    0.32
+  );
   const freshness = freshnessScore(ageHours, 0.18, profileAlgorithmDefaults.freshnessHalfLifeHours) *
     params.freshnessWeight;
   const pendingEmbeddingScore =
@@ -1615,6 +1861,7 @@ function calculateV2Score(input: {
     keywordNegativePenalty +
     duplicatePenalty +
     exposurePenalty +
+    activeRecentHistoryScore +
     explorationBonus;
   const ftrlFeatures = ftrlFeaturesFor({
     semanticScore,
@@ -1658,11 +1905,13 @@ function calculateV2Score(input: {
     freshnessScore: roundScore(freshness),
     stateScore: roundScore(stateScore),
     diversityScore: 0,
-    penaltyScore: roundScore(negativePenalty + keywordNegativePenalty + duplicatePenalty + exposurePenalty),
+    penaltyScore: roundScore(negativePenalty + keywordNegativePenalty + duplicatePenalty + exposurePenalty + Math.min(0, activeRecentHistoryScore)),
     negativePenalty: roundScore(negativePenalty + keywordNegativePenalty),
     duplicatePenalty: roundScore(duplicatePenalty),
     diversityPenalty: 0,
     explorationBonus: roundScore(explorationBonus),
+    recentHistoryScore: roundScore(recentHistoryScore),
+    fatiguePenalty: 0,
     explorationEligible: exploration.eligible,
     explorationBucket: exploration.bucket,
     explorationReason: exploration.reason,
@@ -1677,6 +1926,36 @@ function calculateV2Score(input: {
     primaryFamilyMaturity: roundScore(matches.primaryFamilyMaturity),
     primaryFamilyDominanceRatio: roundScore(matches.primaryFamilyDominanceRatio),
     matchedFamilyCount: matches.matchedFamilyCount
+  };
+}
+
+function applyExposureFatigue(
+  score: V2Score,
+  candidate: ArticleRankingCandidateRow,
+  duplicate: DuplicateFeature,
+  fatigue: ExposureFatigueCounts,
+  settings: RankingSettingsSnapshot
+): V2Score {
+  if (candidate.state.favorited || candidate.state.liked || candidate.state.readLater) {
+    return score;
+  }
+  const duplicatePenalty = duplicate.groupId
+    ? -Math.min(0.06, (fatigue.duplicateGroups.get(duplicate.groupId) ?? 0) * 0.015)
+    : 0;
+  const familyPenalty = score.primaryFamilyId
+    ? -Math.min(0.03, (fatigue.families.get(score.primaryFamilyId) ?? 0) * 0.006)
+    : 0;
+  const sourcePenalty = -Math.min(0.015, (fatigue.feeds.get(candidate.feedId) ?? 0) * 0.003);
+  const fatiguePenalty = roundScore(duplicatePenalty + familyPenalty + sourcePenalty);
+  if (settings.crossSessionFatigueMode !== "active") {
+    return { ...score, fatiguePenalty };
+  }
+  return {
+    ...score,
+    score: roundScore(clamp(score.score + fatiguePenalty, 0, 1)),
+    preRerankScore: roundScore(clamp(score.preRerankScore + fatiguePenalty, 0, 1)),
+    penaltyScore: roundScore(score.penaltyScore + fatiguePenalty),
+    fatiguePenalty
   };
 }
 
@@ -1732,12 +2011,156 @@ function normalizeForTermMatch(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
+const GENERIC_POSITIVE_PROFILE_TERMS = new Set([
+  "article",
+  "articles",
+  "comment",
+  "comments",
+  "point",
+  "points",
+  "news",
+  "page",
+  "front page",
+  "show hn",
+  "ask hn",
+  "作者",
+  "原创",
+  "编辑",
+  "来源",
+  "阅读",
+  "点击",
+  "以下文章来源于",
+  "引领未来商业与生活新知"
+]);
+
+const FINANCE_MARKET_MARKERS = [
+  "a股",
+  "港股",
+  "美股",
+  "股市",
+  "股票",
+  "个股",
+  "证券",
+  "券商",
+  "基金",
+  "债券",
+  "沪指",
+  "恒指",
+  "上证",
+  "深证",
+  "深成指",
+  "创业板",
+  "科创50",
+  "三大指数",
+  "两市成交",
+  "午间休盘",
+  "上一交易日",
+  "交易日",
+  "每股",
+  "发售价",
+  "发行价",
+  "港元",
+  "市值",
+  "财报",
+  "营收",
+  "净利润",
+  "开盘",
+  "收盘",
+  "涨停",
+  "跌停",
+  "板块领涨",
+  "板块领跌",
+  "纳指",
+  "道指",
+  "标普",
+  "wall street",
+  "stock",
+  "stocks",
+  "shares",
+  "share price",
+  "price target",
+  "trading",
+  "shorted",
+  "short interest",
+  "earnings",
+  "revenue",
+  "pre market",
+  "after hours",
+  "ipo",
+  "nasdaq",
+  "dow",
+  "s p",
+  "market moving"
+];
+
+function filterPositiveLexicalTerms(terms: ProfileTerm[]): ProfileTerm[] {
+  return terms.filter((term) => !isGenericPositiveProfileTerm(term.term));
+}
+
+function isGenericPositiveProfileTerm(term: string): boolean {
+  const normalized = normalizeForTermMatch(term);
+  if (!normalized) {
+    return true;
+  }
+  if (GENERIC_POSITIVE_PROFILE_TERMS.has(normalized)) {
+    return true;
+  }
+  return normalized.length === 1;
+}
+
+function hasFinanceMarketNegativeProfile(negativeTerms: ProfileTerm[]): boolean {
+  let markerCount = 0;
+  let markerWeight = 0;
+  for (const term of negativeTerms) {
+    if (financeMarketMarkerScore(normalizeForTermMatch(term.term)) <= 0) {
+      continue;
+    }
+    markerCount += 1;
+    markerWeight += Math.max(0, term.weight);
+  }
+  return markerCount >= 2 || markerWeight >= 16;
+}
+
+function financeMarketNegativePenalty(title: string, text: string): number {
+  const titleScore = financeMarketMarkerScore(title);
+  const textScore = financeMarketMarkerScore(text);
+  if (titleScore <= 0 && textScore <= 0) {
+    return 0;
+  }
+  return clamp(titleScore * 0.22 + Math.max(0, textScore - titleScore) * 0.1, 0.08, 0.26);
+}
+
+function financeMarketMarkerScore(text: string): number {
+  if (!text) {
+    return 0;
+  }
+  let score = 0;
+  for (const marker of FINANCE_MARKET_MARKERS) {
+    if (normalizedTextIncludesMarker(text, marker)) {
+      score += marker.length >= 4 ? 0.35 : 0.22;
+    }
+  }
+  return clamp(score, 0, 1);
+}
+
+function normalizedTextIncludesMarker(text: string, marker: string): boolean {
+  if (/^[a-z0-9 ]+$/.test(marker)) {
+    return new RegExp(`(?:^| )${escapeRegExp(marker)}(?: |$)`).test(text);
+  }
+  return text.includes(marker);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function emptyLexicalFeature(): LexicalFeature {
   return {
     bm25Positive: 0,
     bm25Recent: 0,
     positiveOverlap: 0,
     negativeOverlap: 0,
+    topicNegativePenalty: 0,
     titleKeywordMatch: 0,
     matchedTerms: []
   };
@@ -1834,7 +2257,8 @@ function normalizeTitle(title: string): string {
 function rerankCanonicalWindow(
   items: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score }>,
   settings: RankingSettingsSnapshot,
-  limit: number
+  limit: number,
+  explorationBucketSamples: Map<string, number> = new Map()
 ): Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }> {
   const params = cocoonParameters(settings.cocoonLevel);
   const remaining = items
@@ -1905,12 +2329,13 @@ function rerankCanonicalWindow(
     });
   }
 
-  return applyExplorationSlots(selected, settings);
+  return applyExplorationSlots(selected, settings, explorationBucketSamples);
 }
 
 function applyExplorationSlots(
   selected: Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }>,
-  settings: RankingSettingsSnapshot
+  settings: RankingSettingsSnapshot,
+  explorationBucketSamples: Map<string, number> = new Map()
 ): Array<{ candidate: ArticleRankingCandidateRow; score: V2Score; position: number }> {
   if (!settings.explorationEnabled || selected.length === 0) {
     return selected;
@@ -1936,7 +2361,14 @@ function applyExplorationSlots(
         !item.candidate.state.hidden &&
         !item.candidate.state.notInterested
     )
-    .sort((left, right) => explorationSeedScore(left, settings) - explorationSeedScore(right, settings));
+    .sort((left, right) => {
+      if (settings.learnedExplorationMode === "active") {
+        const leftSample = explorationBucketSamples.get(left.score.explorationBucket ?? "") ?? 0.5;
+        const rightSample = explorationBucketSamples.get(right.score.explorationBucket ?? "") ?? 0.5;
+        return rightSample - leftSample || explorationSeedScore(left, settings) - explorationSeedScore(right, settings);
+      }
+      return explorationSeedScore(left, settings) - explorationSeedScore(right, settings);
+    });
 
   const next = selected.slice();
   const slotPositions = maxTop20Slots === 2 ? [10, 20] : [20];
@@ -1981,6 +2413,30 @@ function explorationSeedScore(
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   }
   return hash / 0xffffffff;
+}
+
+function sampleBeta(alpha: number, beta: number): number {
+  const left = sampleGamma(Math.max(alpha, 0.001));
+  const right = sampleGamma(Math.max(beta, 0.001));
+  return left / Math.max(left + right, Number.EPSILON);
+}
+
+function sampleGamma(shape: number): number {
+  if (shape < 1) {
+    return sampleGamma(shape + 1) * Math.pow(Math.random(), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    const normal = Math.sqrt(-2 * Math.log(Math.max(Math.random(), Number.EPSILON))) *
+      Math.cos(2 * Math.PI * Math.random());
+    const value = 1 + c * normal;
+    if (value <= 0) continue;
+    const cube = value * value * value;
+    const uniform = Math.random();
+    if (uniform < 1 - 0.0331 * normal * normal * normal * normal) return d * cube;
+    if (Math.log(uniform) < 0.5 * normal * normal + d * (1 - cube + Math.log(cube))) return d * cube;
+  }
 }
 
 function explanationPayloadFor(

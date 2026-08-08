@@ -157,12 +157,6 @@ export class RecommendationMaintenanceScheduler {
       this.enqueueEmbeddingHealth(enqueued);
     }
 
-    if (
-      this.isDue("ranking_recalculate_hourly", ONE_HOUR_MS) &&
-      this.hasMaintenanceOutputCompletedAfter(this.lastEnqueuedAt("ranking_recalculate_hourly") ?? 0)
-    ) {
-      this.enqueue("ranking_recalculate_hourly", () => this.options.maintenance.enqueueRecalculate(), enqueued);
-    }
   }
 
   private enqueueDailyWork(
@@ -211,9 +205,6 @@ export class RecommendationMaintenanceScheduler {
         () => this.options.maintenance.enqueueClusterAutoMerge(),
         enqueued
       );
-    }
-    if (this.isDue("ranking_recalculate_daily", ONE_DAY_MS)) {
-      this.enqueue("ranking_recalculate_daily", () => this.options.maintenance.enqueueRecalculate(), enqueued);
     }
   }
 
@@ -357,8 +348,6 @@ const ALL_TASK_KEYS = [
   "cluster_merge_diagnostics_daily",
   "interest_family_daily",
   "cluster_auto_merge_daily",
-  "ranking_recalculate_hourly",
-  "ranking_recalculate_daily",
   "evaluation_weekly",
   "embedding_health_hourly"
 ] as const;

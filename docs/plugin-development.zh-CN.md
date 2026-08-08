@@ -98,6 +98,7 @@ Beta：
 - `database.defineTable` 便捷 API
 - `ranking.*`
 - `articles.snapshot/openableSummary/countDiscovered`
+- `fullContent.extractor`
 - diagnostics / recommendation transparency 类能力
 
 Beta API 可在 0.2.x 中调整字段或语义。长期插件应把持久 schema 写成 manifest migrations，而不是只依赖 `database.defineTable`。
@@ -126,6 +127,19 @@ export default {
 ```
 
 启用插件时邸报会预激活 server entry。激活失败会让插件保持 `failed`；禁用插件会停止贡献点并取消该插件未完成任务。缺失 task handler 的插件任务会延后重试，表现为可恢复的 plugin-paused 语义，而不是普通永久失败。
+
+## 全文抓取器（Beta）
+
+在 `contributes.fullContentExtractors` 声明 `id`、`title` 和可选 `order`，并在激活时注册同名 handler。已启用抓取器按 `order` 升序先于内置提取运行；返回格式错误、为空或正文过短时，会安全回退到内置提取器。
+
+```js
+ctx.fullContent.register("site-selector", ({ articleUrl, html, contentType }) => {
+  if (!contentType.includes("html") || !html.includes("article-body")) return null;
+  return { contentHtml: "<p>...</p>", contentText: "...", excerpt: "..." };
+});
+```
+
+handler 只会收到已下载的页面内容；应返回已规范化的安全阅读 HTML 与文本，不应自行发起网络请求，并须尽快完成。超时会自动回退到内置提取器。
 
 ## 数据、Secrets 和 Deliveries
 

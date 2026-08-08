@@ -265,6 +265,51 @@ describe("web i18n", () => {
     expect(loginHtml).toContain("Invalid password");
   });
 
+  it("renders localized auth loading errors with retry actions", () => {
+    const zhHtml = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <AuthGatePanel
+          error="无法连接实例"
+          isSubmitting={false}
+          mode="loading"
+          onRetryLoading={() => undefined}
+        />
+      </DibaoI18nProvider>
+    );
+    const enHtml = renderToStaticMarkup(
+      <DibaoI18nProvider locale="en-US">
+        <AuthGatePanel
+          error="Network unavailable"
+          isSubmitting={false}
+          loadingLabel={dictionaries["en-US"].auth.setupStatusLoading}
+          mode="loading"
+          onRetryLoading={() => undefined}
+          retryLoadingLabel={dictionaries["en-US"].auth.retry}
+        />
+      </DibaoI18nProvider>
+    );
+    const jaHtml = renderToStaticMarkup(
+      <DibaoI18nProvider locale="ja-JP">
+        <AuthGatePanel
+          error="ネットワークに接続できません"
+          isSubmitting={false}
+          mode="loading"
+          onRetryLoading={() => undefined}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(zhHtml).toContain("正在检查登录状态");
+    expect(zhHtml).toContain("无法连接实例");
+    expect(zhHtml).toContain("重新检查");
+    expect(enHtml).toContain("Checking instance status");
+    expect(enHtml).toContain("Network unavailable");
+    expect(enHtml).toContain("Retry check");
+    expect(jaHtml).toContain("ログイン状態を確認しています");
+    expect(jaHtml).toContain("ネットワークに接続できません");
+    expect(jaHtml).toContain("再確認");
+  });
+
   it("renders first-run wizard with provider configuration and skip fallback", () => {
     const welcomeHtml = renderToStaticMarkup(
       <DibaoI18nProvider>
@@ -497,7 +542,7 @@ describe("web i18n", () => {
     expect(articlePanel).toContain('aria-pressed="true"');
   });
 
-  it("renders recommendation status with diagnostics metrics", () => {
+  it("renders recommendation inventory status trigger collapsed by default", () => {
     const html = renderToStaticMarkup(
       <DibaoI18nProvider>
         <ArticleListPanel
@@ -560,6 +605,27 @@ describe("web i18n", () => {
               }
             ]
           }}
+          recommendationInventory={{
+            status: "available",
+            activeRankContext: "rec_v3:test",
+            latestRerankWindowId: "window:new",
+            eligibleCount: 8,
+            sortedCount: 6,
+            remainingSortedCount: 4,
+            latestActiveCount: 5,
+            staleActiveCount: 1,
+            fallbackCount: 2,
+            baseFallbackCount: 1,
+            unrankedFallbackCount: 1,
+            loadedCount: 2,
+            rankingJob: {
+              queued: 0,
+              running: 0
+            },
+            lastRankedAt: "2026-05-14T08:11:00.000Z",
+            updatedAt: "2026-05-14T08:12:00.000Z"
+          }}
+          recommendationInventoryError={null}
           recommendationStatusError={null}
           readerCommandError={null}
           selectedArticleId={null}
@@ -574,12 +640,16 @@ describe("web i18n", () => {
       </DibaoI18nProvider>
     );
 
-    expect(html).toContain("推荐状态");
-    expect(html).toContain("Embedding 生成中");
-    expect(html).toContain("行为 3");
-    expect(html).toContain("Coverage 50%");
-    expect(html).toContain("兴趣簇 +1 / -0");
-    expect(html).toContain(
+    expect(html).toContain("查看推荐库存：有库存");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("有库存");
+    expect(html).not.toContain("<strong>4</strong>");
+    expect(html).not.toContain("剩余已排序");
+    expect(html).not.toContain("系统摘要");
+    expect(html).not.toContain("行为 3");
+    expect(html).not.toContain("Coverage 50%");
+    expect(html).not.toContain("兴趣簇 +1 / -0");
+    expect(html).not.toContain(
       "当前用户行为正在积累中，推荐可能不准确，建议在“最新”视图中当做普通 RSS 阅读器正常使用。"
     );
   });
@@ -684,6 +754,7 @@ describe("web i18n", () => {
           onCloseExplanation={() => undefined}
           onOpenExplanation={() => undefined}
           onReadProgress={() => undefined}
+          onRetryDetail={() => undefined}
           pendingAction={null}
           readerSettings={defaultAppSettings.reader}
         />
@@ -693,6 +764,37 @@ describe("web i18n", () => {
     expect(html).toContain("Design Feed");
     expect(html).toContain("2026");
     expect(html).toContain("Reporter");
+    expect(html).toContain("返回列表");
+    expect(html).toContain("原文");
+  });
+
+  it("renders a localized retry action when article detail loading fails", () => {
+    const html = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <ArticleDetailPanel
+          actionError={null}
+          article={null}
+          articleView="latest"
+          detailError="请求超时"
+          explanation={null}
+          explanationError={null}
+          isDetailLoading={false}
+          isExplanationLoading={false}
+          isExplanationOpen={false}
+          onArticleAction={() => undefined}
+          onBackToList={() => undefined}
+          onCloseExplanation={() => undefined}
+          onOpenExplanation={() => undefined}
+          onReadProgress={() => undefined}
+          onRetryDetail={() => undefined}
+          pendingAction={null}
+          readerSettings={defaultAppSettings.reader}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(html).toContain("请求超时");
+    expect(html).toContain("重新加载");
   });
 
   it("only renders row recommendation explain actions for personalized views", () => {
@@ -1138,6 +1240,7 @@ describe("web i18n", () => {
     expect(html).toContain("修改密码");
     expect(html).toContain("查看算法透明说明");
     expect(html).toContain("稍后读中的文章读完后，自动移出稍后读");
+    expect(html).toContain("无限加载：滚动到列表底部时自动加载下一批文章");
     expect(html).toContain("type=\"range\"");
     expect(html).toContain("兴趣簇上限");
     expect(html).toContain("低配 VPS：24 / 16");
@@ -1152,7 +1255,7 @@ describe("web i18n", () => {
     expect(html).toContain("保留天数");
     expect(html).toContain("retention.retentionDays");
     expect(html).toContain("关于");
-    expect(html).toContain("v0.2.1");
+    expect(html).toContain("v0.3.0");
     expect(html).toContain("评论尸");
     expect(html).toContain("https://x.com/JeffreyCalm");
     expect(html).toContain("https://1q43.blog");

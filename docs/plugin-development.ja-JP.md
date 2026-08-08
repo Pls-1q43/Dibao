@@ -89,6 +89,7 @@ Beta:
 - `database.defineTable`
 - `ranking.*`
 - `articles.snapshot/openableSummary/countDiscovered`
+- `fullContent.extractor`
 - diagnostics / recommendation transparency APIs
 
 Beta API は 0.2.x 中に field や semantics が変わる可能性があります。長期運用する plugin は durable schema を manifest migrations で管理してください。
@@ -117,6 +118,19 @@ export default {
 ```
 
 有効化時に server entry は pre-activate されます。失敗すると plugin は `failed` のままです。無効化すると contribution は停止し、未完了 plugin jobs は cancel されます。task handler がない場合は永久失敗ではなく、復旧可能な defer として扱われます。
+
+## Full Content Extractor（Beta）
+
+`contributes.fullContentExtractors` に `id`、`title`、任意の `order` を宣言し、activate 時に同じ ID の handler を登録します。有効な extractor は `order` 昇順で built-in extractor より先に実行されます。形式不正、空、または短すぎる結果は built-in extractor へ安全に fallback します。
+
+```js
+ctx.fullContent.register("site-selector", ({ articleUrl, html, contentType }) => {
+  if (!contentType.includes("html") || !html.includes("article-body")) return null;
+  return { contentHtml: "<p>...</p>", contentText: "...", excerpt: "..." };
+});
+```
+
+handler に渡されるのはダウンロード済みのページ内容だけです。正規化済みの安全な reader HTML と text を返し、自身で network request を行わず、速やかに完了してください。timeout 時は built-in extractor に fallback します。
 
 ## Data、Secrets、Deliveries
 

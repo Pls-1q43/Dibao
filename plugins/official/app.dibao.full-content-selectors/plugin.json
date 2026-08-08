@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 1,
+  "id": "app.dibao.full-content-selectors",
+  "name": "Full Content Selectors",
+  "version": "0.1.0",
+  "publisher": "Dibao",
+  "dibao": {
+    "minVersion": "0.3.0",
+    "maxVersion": "<0.4.0"
+  },
+  "entry": {
+    "server": "server/index.mjs"
+  },
+  "capabilities": [],
+  "contributes": {
+    "fullContentExtractors": [
+      {
+        "id": "balanced-readable-selectors",
+        "title": "Balanced readable selectors",
+        "order": 10
+      }
+    ]
+  }
+}

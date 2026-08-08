@@ -215,6 +215,12 @@ export type BulkArticleActionResponse = {
   }>;
 };
 
+export type RecommendationExposureBatch = {
+  clientSessionId: string;
+  articleIds: string[];
+  exposedAt?: number;
+};
+
 export type RankExplanationReasonType =
   | "interest"
   | "source"
@@ -384,6 +390,7 @@ export type AppSettings = {
   behavior: {
     markScrolledArticlesIgnored: boolean;
     removeReadLaterOnReadComplete: boolean;
+    infiniteArticleLoading: boolean;
   };
   telemetry: {
     enabled: boolean;
@@ -449,6 +456,7 @@ export type UpdateSettingsInput = {
   behavior?: {
     markScrolledArticlesIgnored?: boolean;
     removeReadLaterOnReadComplete?: boolean;
+    infiniteArticleLoading?: boolean;
   };
   telemetry?: {
     enabled?: boolean;
@@ -927,12 +935,54 @@ export type RecommendationStatus = {
     base: number;
     active: number;
   };
+  memory?: {
+    snapshot: {
+      schemaVersion: number;
+      embeddingIndexId: string | null;
+      generatedAt: string | null;
+      sourceWatermark: number;
+    } | null;
+    crossSessionFatigueMode: "disabled" | "shadow" | "active";
+    recentHistoryMode: "disabled" | "shadow" | "active";
+    learnedExplorationMode: "disabled" | "shadow" | "active";
+  };
   lastProfileUpdate: string | null;
   lastRankingUpdate: string | null;
   warnings: Array<{
     code: string;
     message: string;
   }>;
+};
+
+export type RecommendationInventoryStatus = "available" | "empty" | "ranking";
+
+export type RecommendationInventory = {
+  status: RecommendationInventoryStatus;
+  activeRankContext: string;
+  latestRerankWindowId: string | null;
+  eligibleCount: number;
+  sortedCount: number;
+  remainingSortedCount: number;
+  latestActiveCount: number;
+  staleActiveCount: number;
+  fallbackCount: number;
+  baseFallbackCount: number;
+  unrankedFallbackCount: number;
+  loadedCount: number;
+  rankingJob: {
+    queued: number;
+    running: number;
+  };
+  lastRankedAt: string | null;
+  updatedAt: string;
+};
+
+export type RecommendationInventoryInput = {
+  feedId?: string | null;
+  folderId?: string | null;
+  unreadOnly?: boolean;
+  timeWindow?: ArticleTimeWindow;
+  loadedCount?: number;
 };
 
 export type RecommendationTransparency = RecommendationStatus & {
@@ -1123,7 +1173,8 @@ export const defaultAppSettings: AppSettings = {
   },
   behavior: {
     markScrolledArticlesIgnored: true,
-    removeReadLaterOnReadComplete: false
+    removeReadLaterOnReadComplete: false,
+    infiniteArticleLoading: false
   },
   telemetry: {
     enabled: true
@@ -1202,6 +1253,28 @@ type ApiErrorPayload = {
   };
 };
 
+function recommendationInventoryQuery(input: RecommendationInventoryInput): string {
+  const params = new URLSearchParams();
+  if (input.feedId) {
+    params.set("feedId", input.feedId);
+  }
+  if (input.folderId) {
+    params.set("folderId", input.folderId);
+  }
+  if (input.unreadOnly) {
+    params.set("unreadOnly", "true");
+  }
+  if (input.timeWindow && input.timeWindow !== "all") {
+    params.set("timeWindow", input.timeWindow);
+  }
+  if (input.loadedCount !== undefined) {
+    params.set("loadedCount", String(Math.max(0, Math.trunc(input.loadedCount))));
+  }
+
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 export function createDibaoApi(fetcher: ApiFetch = fetch) {
   async function request<T>(path: string, init: RequestInit = {}): Promise<ApiSuccess<T>> {
     const headers = new Headers(init.headers);
@@ -1213,6 +1286,7 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
 
     const response = await fetcher(path, {
       ...init,
+      cache: init.cache ?? "no-store",
       credentials: init.credentials ?? "same-origin",
       headers
     });
@@ -1239,6 +1313,7 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
   async function requestText(path: string, init: RequestInit = {}): Promise<string> {
     const response = await fetcher(path, {
       ...init,
+      cache: init.cache ?? "no-store",
       credentials: init.credentials ?? "same-origin",
       headers: {
         accept: "application/xml, text/xml, */*",
@@ -1690,6 +1765,20 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
           query ? `/api/recommendation/status?${query}` : "/api/recommendation/status"
         )
       ).data;
+    },
+
+    async getRecommendationInventory(
+      input: RecommendationInventoryInput = {}
+    ): Promise<RecommendationInventory> {
+      return (
+        await request<RecommendationInventory>(
+          `/api/recommendation/inventory${recommendationInventoryQuery(input)}`
+        )
+      ).data;
+    },
+
+    recommendationInventoryEventsUrl(input: RecommendationInventoryInput = {}): string {
+      return `/api/recommendation/inventory/events${recommendationInventoryQuery(input)}`;
     },
 
     async getRecommendationTransparency(input?: {
@@ -2207,6 +2296,17 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         headers,
         keepalive: true
       });
+    },
+
+    async recordRecommendationExposures(
+      input: RecommendationExposureBatch
+    ): Promise<{ recorded: number; existing: number }> {
+      return (
+        await request<{ recorded: number; existing: number }>("/api/recommendation/exposures", {
+          method: "POST",
+          body: JSON.stringify(input)
+        })
+      ).data;
     },
 
     async importOpml(file: File): Promise<OpmlImportResponse> {

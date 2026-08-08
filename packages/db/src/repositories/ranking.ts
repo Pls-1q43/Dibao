@@ -30,6 +30,7 @@ type ArticleRankingCandidateDbRow = {
   feedOpenRate: number;
   feedFavoriteRate: number;
   feedNotInterestedRate: number;
+  stateRowExists: 0 | 1;
   read: 0 | 1;
   favorited: 0 | 1;
   liked: 0 | 1;
@@ -356,8 +357,24 @@ export class SqliteRankingRepository implements RankingRepository {
                 and a.status != 'deleted'
                 and s.hidden_at is null
                 and s.not_interested_at is null
+                and s.read_at is null
+                and coalesce(s.reading_progress, 0) < 0.9
                 and f.deleted_at is null
                 and f.enabled = 1
+                and not (
+                  exists (
+                    select 1
+                    from behavior_events ignored
+                    where ignored.article_id = a.id
+                      and ignored.event_type = 'impression'
+                      and ignored.event_weight < 0
+                  )
+                  and coalesce(s.reading_progress, 0) = 0
+                  and s.last_opened_at is null
+                  and s.favorited_at is null
+                  and s.liked_at is null
+                  and s.read_later_at is null
+                )
                 ${articleFilter}
                 ${cursorFilter}
               order by a.id
@@ -418,6 +435,7 @@ export class SqliteRankingRepository implements RankingRepository {
               coalesce(fs.open_rate, 0) as feedOpenRate,
               coalesce(fs.favorite_rate, 0) as feedFavoriteRate,
               coalesce(fs.not_interested_rate, 0) as feedNotInterestedRate,
+              case when s.article_id is not null then 1 else 0 end as stateRowExists,
               case when s.read_at is not null then 1 else 0 end as read,
               case when s.favorited_at is not null then 1 else 0 end as favorited,
               case when s.liked_at is not null then 1 else 0 end as liked,
@@ -491,6 +509,8 @@ export class SqliteRankingRepository implements RankingRepository {
             duplicate_penalty,
             diversity_penalty,
             exploration_bonus,
+            exploration_bucket_key,
+            was_exploration,
             pending_embedding_score,
             exposure_penalty,
             pre_rerank_score,
@@ -502,7 +522,7 @@ export class SqliteRankingRepository implements RankingRepository {
             cocoon_level,
             calculated_at
           )
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(article_id, rank_context) do update set
             embedding_index_id = excluded.embedding_index_id,
             score = excluded.score,
@@ -520,6 +540,8 @@ export class SqliteRankingRepository implements RankingRepository {
             duplicate_penalty = excluded.duplicate_penalty,
             diversity_penalty = excluded.diversity_penalty,
             exploration_bonus = excluded.exploration_bonus,
+            exploration_bucket_key = excluded.exploration_bucket_key,
+            was_exploration = excluded.was_exploration,
             pending_embedding_score = excluded.pending_embedding_score,
             exposure_penalty = excluded.exposure_penalty,
             pre_rerank_score = excluded.pre_rerank_score,
@@ -551,6 +573,8 @@ export class SqliteRankingRepository implements RankingRepository {
         input.duplicatePenalty ?? null,
         input.diversityPenalty ?? null,
         input.explorationBonus ?? null,
+        input.explorationBucketKey ?? null,
+        input.wasExploration ? 1 : 0,
         input.pendingEmbeddingScore ?? null,
         input.exposurePenalty ?? null,
         input.preRerankScore ?? null,
@@ -704,6 +728,7 @@ function mapCandidate(row: ArticleRankingCandidateDbRow): ArticleRankingCandidat
     feedOpenRate: row.feedOpenRate,
     feedFavoriteRate: row.feedFavoriteRate,
     feedNotInterestedRate: row.feedNotInterestedRate,
+    stateRowExists: row.stateRowExists === 1,
     state: {
       read: row.read === 1,
       favorited: row.favorited === 1,

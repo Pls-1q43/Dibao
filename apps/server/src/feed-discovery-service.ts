@@ -8,7 +8,8 @@ import type { FeedRepository } from "@dibao/db";
 import {
   controlledFetchText,
   feedFetchMaxBytes,
-  type FetchPrivacyWarning
+  type FetchPrivacyWarning,
+  type HostnameResolver
 } from "./controlled-fetch.js";
 import type { FeedFetcher, FeedFetchResponse } from "./feed-refresh-service.js";
 
@@ -47,6 +48,7 @@ export type FeedDiscoveryServiceOptions = {
   feeds: Pick<FeedRepository, "findByFeedUrl">;
   fetcher?: FeedFetcher;
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
+  resolveHostname?: HostnameResolver;
 };
 
 export type FeedDiscoveryErrorCode = "VALIDATION_ERROR" | "PROVIDER_ERROR";
@@ -78,10 +80,10 @@ const alternateFeedTypes = new Set([
 const fallbackFeedPaths = ["/feed", "/feed.xml", "/rss", "/rss.xml", "/atom.xml", "/index.xml"];
 
 export class FeedDiscoveryService {
-  private readonly fetcher: FeedFetcher;
+  private readonly fetcher: FeedFetcher | undefined;
 
   constructor(private readonly options: FeedDiscoveryServiceOptions) {
-    this.fetcher = options.fetcher ?? defaultFeedFetcher;
+    this.fetcher = options.fetcher;
   }
 
   async discover(input: FeedDiscoveryInput): Promise<FeedDiscoveryResult> {
@@ -211,7 +213,8 @@ export class FeedDiscoveryService {
             "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8"
         },
         maxBytes: feedFetchMaxBytes(),
-        onWarning: this.options.onFetchWarning
+        onWarning: this.options.onFetchWarning,
+        resolveHostname: this.options.resolveHostname
       });
     } catch (error) {
       throw new FeedDiscoveryError("PROVIDER_ERROR", 502, failureMessage, {
@@ -230,8 +233,6 @@ export class FeedDiscoveryService {
     return { body: result.body };
   }
 }
-
-const defaultFeedFetcher: FeedFetcher = async (url, init) => fetch(url, init);
 
 function normalizeHttpUrl(input: string, field: string): string {
   let normalized: string;

@@ -612,6 +612,7 @@ export type ArticleRankingCandidateRow = {
   feedOpenRate: number;
   feedFavoriteRate: number;
   feedNotInterestedRate: number;
+  stateRowExists: boolean;
   state: ArticleStateSnapshot;
   behaviorProjectionScore: number;
   behaviorEventCount: number;
@@ -639,6 +640,8 @@ export type UpsertArticleRankScoreInput = {
   duplicatePenalty?: number | null;
   diversityPenalty?: number | null;
   explorationBonus?: number | null;
+  explorationBucketKey?: string | null;
+  wasExploration?: boolean;
   pendingEmbeddingScore?: number | null;
   exposurePenalty?: number | null;
   preRerankScore?: number | null;
@@ -667,6 +670,8 @@ export type ArticleRankScoreComponentsRow = {
   duplicatePenalty: number | null;
   diversityPenalty: number | null;
   explorationBonus: number | null;
+  explorationBucketKey?: string | null;
+  wasExploration?: boolean;
   pendingEmbeddingScore: number | null;
   exposurePenalty: number | null;
   preRerankScore: number | null;
@@ -984,6 +989,18 @@ export type ArticleListResult = {
   nextCursor?: ArticleListCursor | null;
   unreadCount: number | null;
   timing?: ArticleListTiming;
+};
+
+export type RecommendedArticleInventory = {
+  rankContext: string;
+  latestRerankWindowId: string | null;
+  eligibleCount: number;
+  latestActiveCount: number;
+  staleActiveCount: number;
+  sortedCount: number;
+  baseFallbackCount: number;
+  unrankedFallbackCount: number;
+  lastRankedAt: number | null;
 };
 
 export type ArticleListTiming = {

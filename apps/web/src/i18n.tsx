@@ -95,6 +95,8 @@ export const zhCN = {
   },
   auth: {
     loading: "正在检查登录状态",
+    setupStatusLoading: "正在读取实例状态",
+    retry: "重新检查",
     setupTitle: "设置用户名和访问密码",
     setupBody: "这是单用户自托管实例。设置用户名和访问密码后即可进入阅读器。",
     loginTitle: "登录邸报",
@@ -114,6 +116,7 @@ export const zhCN = {
     passwordRequired: "请输入访问密码。",
     errors: {
       session: "无法读取登录状态。",
+      setupStatus: "无法读取实例状态。",
       logout: "退出登录失败。"
     }
   },
@@ -396,6 +399,7 @@ export const zhCN = {
         algorithmTransparencyLink: "查看算法透明说明",
         markScrolledArticlesIgnored: "滚过未打开文章后，将其标记为已忽略并移出未读",
         removeReadLaterOnReadComplete: "稍后读中的文章读完后，自动移出稍后读",
+        infiniteArticleLoading: "无限加载：滚动到列表底部时自动加载下一批文章",
         cocoonLevel: "信息茧房水平",
         cocoonLevelHint: "1 表示更开放、更分散、更探索；10 表示更贴合、更稳定、更少扰动。所有级别都只在订阅源内排序，并始终尊重去重和明确负反馈。",
         interestClusterLimits: {
@@ -636,6 +640,7 @@ export const zhCN = {
     },
     loadMore: "加载更多",
     loadingMore: "加载中",
+    retryLoadMore: "重试加载",
     loadingSlow: "加载似乎比预期时间更长，邸报仍在继续读取。",
     emptyNoFeedsTitle: "还没有订阅源",
     emptyNoFeedsBody: "添加一个 RSS / Atom 源后，文章会出现在这里。",
@@ -1178,9 +1183,52 @@ export const zhCN = {
       unknown: "暂无"
     }
   },
+  recommendationInventory: {
+    eyebrow: "推荐库存",
+    close: "关闭推荐库存",
+    connectionError: "推荐库存状态暂时断开，稍后会自动重连。",
+    emptyNotice:
+      "已排序库存已经读完。继续加载时会使用备用序列，相关性可能不佳；也可以等待后端排序任务完成。",
+    rankingNotice:
+      "后端正在排序。若已排序库存耗尽，继续加载会临时使用备用序列；等待排序完成后库存会自动更新。",
+    systemTitle: "系统摘要",
+    open: (status: string) => `查看推荐库存：${status}`,
+    statuses: {
+      available: "有库存",
+      empty: "无库存",
+      ranking: "排序中",
+      loading: "读取中",
+      unavailable: "未知"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `当前推荐序列还有 ${remaining} 条已排序库存，总已排序 ${total} 条。`,
+      empty: (fallback: number) =>
+        `当前推荐序列没有剩余已排序库存；备用序列约 ${fallback} 条，相关性可能不佳。`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `后端排序任务运行 ${running} 个、排队 ${queued} 个；当前剩余已排序库存 ${remaining} 条。`,
+      loading: "正在读取推荐库存。",
+      unavailable: "推荐库存状态暂不可用。"
+    },
+    metrics: {
+      remainingSorted: "剩余已排序",
+      sortedTotal: "已排序总量",
+      latestActive: "最新排序",
+      staleActive: "旧排序",
+      loaded: "已加载",
+      fallback: "备用序列",
+      unrankedFallback: "未排序备用",
+      rankingJobs: "排序任务",
+      rankContext: "排序上下文",
+      lastRankedAt: "最近排序",
+      updatedAt: "状态更新",
+      rankingJobValue: (running: number, queued: number) => `运行 ${running} · 排队 ${queued}`
+    }
+  },
   reader: {
     originalLink: "原文",
     backToList: "返回列表",
+    reload: "重新加载",
     selectArticleTitle: "选择一篇文章",
     selectArticleBody: "文章详情会在这里打开。",
     feedOnlyNotice: "当前仅有订阅源摘要。",
@@ -1418,6 +1466,8 @@ export const enUS = {
   },
   auth: {
     loading: "Checking your session",
+    setupStatusLoading: "Checking instance status",
+    retry: "Retry check",
     setupTitle: "Create your account",
     setupBody: "This self-hosted instance has one user. Create a username and password to protect it.",
     loginTitle: "Log in to Dibao",
@@ -1437,6 +1487,7 @@ export const enUS = {
     passwordRequired: "Enter your password.",
     errors: {
       session: "Could not check your session.",
+      setupStatus: "Could not read instance status.",
       logout: "Log out failed."
     }
   },
@@ -1720,6 +1771,7 @@ export const enUS = {
         algorithmTransparencyLink: "View personalization details",
         markScrolledArticlesIgnored: "Mark unopened articles you scroll past as ignored and remove them from unread",
         removeReadLaterOnReadComplete: "Remove Read Later articles after you finish them",
+        infiniteArticleLoading: "Infinite loading: automatically load more articles when you reach the end of a list",
         cocoonLevel: "Cocoon level",
         cocoonLevelHint: "1 is broader and more exploratory; 10 stays closer to your established interests. Every level only ranks articles from your subscribed feeds and still respects deduping and explicit negative feedback.",
         interestClusterLimits: {
@@ -1965,6 +2017,7 @@ export const enUS = {
     },
     loadMore: "Load more",
     loadingMore: "Loading",
+    retryLoadMore: "Retry loading",
     loadingSlow: "Loading is taking longer than expected. Dibao is still reading.",
     emptyNoFeedsTitle: "No feeds yet",
     emptyNoFeedsBody: "Add an RSS / Atom feed and articles will appear here.",
@@ -2496,9 +2549,52 @@ export const enUS = {
       unknown: "Unavailable"
     }
   },
+  recommendationInventory: {
+    eyebrow: "Ranked stock",
+    close: "Close recommendation inventory",
+    connectionError: "Recommendation inventory is disconnected for now; Dibao will reconnect.",
+    emptyNotice:
+      "The ranked inventory has been exhausted. Loading more will use the fallback sequence, which may be less relevant; you can wait for backend ranking to finish.",
+    rankingNotice:
+      "Backend ranking is running. If ranked inventory runs out, loading more will temporarily use the fallback sequence; the stock updates automatically when ranking finishes.",
+    systemTitle: "System summary",
+    open: (status: string) => `View recommendation inventory: ${status}`,
+    statuses: {
+      available: "In stock",
+      empty: "No stock",
+      ranking: "Ranking",
+      loading: "Loading",
+      unavailable: "Unknown"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `This recommendation sequence has ${remaining} ranked articles remaining out of ${total} ranked articles.`,
+      empty: (fallback: number) =>
+        `No ranked articles remain in this sequence. About ${fallback} fallback articles are available and may be less relevant.`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `Backend ranking has ${running} running and ${queued} queued jobs; ${remaining} ranked articles remain.`,
+      loading: "Loading recommendation inventory.",
+      unavailable: "Recommendation inventory is unavailable."
+    },
+    metrics: {
+      remainingSorted: "Ranked remaining",
+      sortedTotal: "Ranked total",
+      latestActive: "Latest ranked",
+      staleActive: "Older ranked",
+      loaded: "Loaded",
+      fallback: "Fallback",
+      unrankedFallback: "Unranked fallback",
+      rankingJobs: "Ranking jobs",
+      rankContext: "Rank context",
+      lastRankedAt: "Last ranked",
+      updatedAt: "Updated",
+      rankingJobValue: (running: number, queued: number) => `${running} running · ${queued} queued`
+    }
+  },
   reader: {
     originalLink: "Original",
     backToList: "Back to list",
+    reload: "Reload",
     selectArticleTitle: "Select an article",
     selectArticleBody: "Article details will open here.",
     feedOnlyNotice: "Only the feed summary is available.",
@@ -2732,6 +2828,8 @@ export const jaJP = {
   },
   auth: {
     loading: "ログイン状態を確認しています",
+    setupStatusLoading: "インスタンス状態を確認しています",
+    retry: "再確認",
     setupTitle: "ユーザー名とアクセスパスワードを設定",
     setupBody: "これは単一ユーザー向けのセルフホスト環境です。ユーザー名とアクセスパスワードを設定すると、リーダーを開けます。",
     loginTitle: "邸報にログイン",
@@ -2751,6 +2849,7 @@ export const jaJP = {
     passwordRequired: "アクセスパスワードを入力してください。",
     errors: {
       session: "ログイン状態を取得できませんでした。",
+      setupStatus: "インスタンス状態を取得できませんでした。",
       logout: "ログアウトに失敗しました。"
     }
   },
@@ -3034,6 +3133,7 @@ export const jaJP = {
         algorithmTransparencyLink: "アルゴリズムの透明性を見る",
         markScrolledArticlesIgnored: "開かずに通過した記事を無視済みにし、未読から外す",
         removeReadLaterOnReadComplete: "あとで読むの記事を読み終えたら、あとで読むから外す",
+        infiniteArticleLoading: "無限読み込み：一覧の末尾までスクロールすると次の記事を自動で読み込む",
         cocoonLevel: "パーソナライズ度",
         cocoonLevelHint: "1 はより開かれた分散的な探索、10 はより個人に合わせた安定的で控えめな変化です。どのレベルでも購読フィード内だけで並び替え、重複排除と明示的な低評価を尊重します。",
         interestClusterLimits: {
@@ -3279,6 +3379,7 @@ export const jaJP = {
     },
     loadMore: "さらに読み込む",
     loadingMore: "読み込み中",
+    retryLoadMore: "再読み込み",
     loadingSlow: "読み込みに予想より時間がかかっています。邸報はまだ読み取りを続けています。",
     emptyNoFeedsTitle: "フィードはまだありません",
     emptyNoFeedsBody: "RSS / Atom フィードを追加すると、ここに記事が表示されます。",
@@ -3810,9 +3911,52 @@ export const jaJP = {
       unknown: "不明"
     }
   },
+  recommendationInventory: {
+    eyebrow: "おすすめ在庫",
+    close: "おすすめ在庫を閉じる",
+    connectionError: "おすすめ在庫の接続が一時的に切れています。自動的に再接続します。",
+    emptyNotice:
+      "並び替え済みの在庫を読み切りました。さらに読み込むと予備の並び順を使うため、関連性が低くなる可能性があります。バックエンドの並び替え完了を待つこともできます。",
+    rankingNotice:
+      "バックエンドで並び替え中です。並び替え済み在庫がなくなると、一時的に予備の並び順を使います。完了後、在庫は自動更新されます。",
+    systemTitle: "システム概要",
+    open: (status: string) => `おすすめ在庫を見る：${status}`,
+    statuses: {
+      available: "在庫あり",
+      empty: "在庫なし",
+      ranking: "並び替え中",
+      loading: "読み込み中",
+      unavailable: "不明"
+    },
+    summaries: {
+      available: (remaining: number, total: number) =>
+        `現在のおすすめ列には、並び替え済み記事が残り ${remaining} 件あります。並び替え済み合計は ${total} 件です。`,
+      empty: (fallback: number) =>
+        `現在のおすすめ列には、並び替え済み記事が残っていません。予備の記事は約 ${fallback} 件ありますが、関連性が低い可能性があります。`,
+      ranking: (remaining: number, running: number, queued: number) =>
+        `バックエンドの並び替えは実行中 ${running} 件、待機中 ${queued} 件です。並び替え済み在庫は残り ${remaining} 件です。`,
+      loading: "おすすめ在庫を読み込んでいます。",
+      unavailable: "おすすめ在庫を取得できません。"
+    },
+    metrics: {
+      remainingSorted: "残り並び替え済み",
+      sortedTotal: "並び替え済み合計",
+      latestActive: "最新並び替え",
+      staleActive: "古い並び替え",
+      loaded: "読み込み済み",
+      fallback: "予備列",
+      unrankedFallback: "未ソート予備",
+      rankingJobs: "並び替えジョブ",
+      rankContext: "Rank context",
+      lastRankedAt: "最終並び替え",
+      updatedAt: "状態更新",
+      rankingJobValue: (running: number, queued: number) => `実行 ${running} · 待機 ${queued}`
+    }
+  },
   reader: {
     originalLink: "原文",
     backToList: "一覧に戻る",
+    reload: "再読み込み",
     selectArticleTitle: "記事を選択",
     selectArticleBody: "記事の詳細はここに表示されます。",
     feedOnlyNotice: "現在はフィードの要約のみ利用できます。",

@@ -37,6 +37,7 @@ import {
   type RankExplanationReason,
   type ReadLaterArticleSort,
   type ReaderSettings,
+  type RecommendationInventory,
   type RecommendationStatus,
   type RecommendationClusterItem,
   type RecommendationClusterMergeCandidate,
@@ -151,6 +152,7 @@ const ARTICLE_STATE_OVERLAY_STORAGE_KEY = "dibao:article-state-overlay:v1";
 const ARTICLE_STATE_OVERLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTICLE_STATE_OVERLAY_LIMIT = 500;
 const AUTH_GATE_RETRY_DELAYS_MS = [500, 1500, 3000, 5000, 10_000, 30_000] as const;
+const AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT = 1;
 
 function authGateRetryDelayMs(attempt: number): number {
   return AUTH_GATE_RETRY_DELAYS_MS[
@@ -262,6 +264,7 @@ export function App() {
   const initialSearchForm = useMemo(() => searchFormFromLocation(), []);
   const initialArticleStateOverlay = useMemo(() => readArticleStateOverlay(), []);
   const [appStage, setAppStage] = useState<AppStage>({ type: "auth-loading" });
+  const [authGateRetryToken, setAuthGateRetryToken] = useState(0);
   const [authUsername, setAuthUsername] = useState<string | null>(null);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -329,6 +332,8 @@ export function App() {
   const [recommendationStatus, setRecommendationStatus] = useState<RecommendationStatus | null>(
     null
   );
+  const [recommendationInventory, setRecommendationInventory] =
+    useState<RecommendationInventory | null>(null);
   const [allRecommendationClusters, setAllRecommendationClusters] = useState<
     RecommendationClusterItem[]
   >([]);
@@ -347,7 +352,11 @@ export function App() {
   const [updatingClusterLexicon, setUpdatingClusterLexicon] = useState(false);
   const [updatingMergeCandidateId, setUpdatingMergeCandidateId] = useState<string | null>(null);
   const [isRecommendationStatusLoading, setIsRecommendationStatusLoading] = useState(false);
+  const [isRecommendationInventoryLoading, setIsRecommendationInventoryLoading] = useState(false);
   const [recommendationStatusError, setRecommendationStatusError] = useState<string | null>(null);
+  const [recommendationInventoryError, setRecommendationInventoryError] = useState<string | null>(
+    null
+  );
   const [feedUrl, setFeedUrl] = useState("");
   const [feedDiscovery, setFeedDiscovery] = useState<FeedDiscoveryResponse | null>(null);
   const [feedDiscoveryError, setFeedDiscoveryError] = useState<string | null>(null);
@@ -358,6 +367,7 @@ export function App() {
   const [isArticlesLoading, setIsArticlesLoading] = useState(true);
   const [isLoadingMoreArticles, setIsLoadingMoreArticles] = useState(false);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailReloadRevision, setDetailReloadRevision] = useState(0);
   const [isExplanationLoading, setIsExplanationLoading] = useState(false);
   const [isListExplanationLoading, setIsListExplanationLoading] = useState(false);
   const [isAddingFeed, setIsAddingFeed] = useState(false);
@@ -690,6 +700,12 @@ export function App() {
     articleRequestVersion.current += 1;
   }, [setLocale]);
 
+  const handleRetryAuthGate = useCallback(() => {
+    setAuthError(null);
+    setAppStage({ type: "auth-loading" });
+    setAuthGateRetryToken((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -709,9 +725,13 @@ export function App() {
             setAppStage(nextStage);
           }
           return;
-        } catch {
+        } catch (error) {
           if (!cancelled) {
-            setAuthError(null);
+            setAuthError(
+              attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
+                ? `${t.auth.errors.session} ${userMessageForError(error, t.errors.api)}`
+                : null
+            );
             setAppStage({ type: "auth-loading" });
           }
           await delay(authGateRetryDelayMs(attempt));
@@ -724,7 +744,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [resetReaderState, t.errors.api]);
+  }, [authGateRetryToken, resetReaderState, t.auth.errors.session, t.errors.api]);
 
   useEffect(() => {
     function updateOnlineStatus() {
@@ -775,9 +795,13 @@ export function App() {
             setAppStage(nextStage);
           }
           return;
-        } catch {
+        } catch (error) {
           if (!cancelled) {
-            setAuthError(null);
+            setAuthError(
+              attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
+                ? `${t.auth.errors.setupStatus} ${userMessageForError(error, t.errors.api)}`
+                : null
+            );
             setAppStage({ type: "setup-status-loading" });
           }
           await delay(authGateRetryDelayMs(attempt));
@@ -790,7 +814,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [appStage.type, resetReaderState, t.errors.api]);
+  }, [
+    appStage.type,
+    authGateRetryToken,
+    resetReaderState,
+    t.auth.errors.setupStatus,
+    t.errors.api
+  ]);
 
   useEffect(() => {
     if (appStage.type !== "derived-data-upgrade") {
@@ -1115,6 +1145,9 @@ export function App() {
       setRecommendationStatus(null);
       setIsRecommendationStatusLoading(false);
       setRecommendationStatusError(null);
+      setRecommendationInventory(null);
+      setIsRecommendationInventoryLoading(false);
+      setRecommendationInventoryError(null);
     }
     setDetailError(null);
     setExplanationError(null);
@@ -1413,6 +1446,97 @@ export function App() {
   ]);
 
   useEffect(() => {
+    if (
+      appStage.type !== "reader" ||
+      appPage.type !== "reader" ||
+      currentArticleView !== "recommended"
+    ) {
+      setRecommendationInventory(null);
+      setRecommendationInventoryError(null);
+      setIsRecommendationInventoryLoading(false);
+      return;
+    }
+
+    const input = {
+      feedId: selectedFeed?.id ?? null,
+      folderId: selectedFolder?.id ?? null,
+      unreadOnly,
+      timeWindow,
+      loadedCount: articles.length
+    };
+    let disposed = false;
+    setIsRecommendationInventoryLoading(true);
+    setRecommendationInventoryError(null);
+
+    void dibaoApi
+      .getRecommendationInventory(input)
+      .then((inventory) => {
+        if (disposed) {
+          return;
+        }
+        setRecommendationInventory(inventory);
+        setRecommendationInventoryError(null);
+      })
+      .catch((error) => {
+        if (disposed) {
+          return;
+        }
+        setRecommendationInventory(null);
+        setRecommendationInventoryError(userMessageForError(error, t.errors.api));
+      })
+      .finally(() => {
+        if (!disposed) {
+          setIsRecommendationInventoryLoading(false);
+        }
+      });
+
+    if (typeof EventSource === "undefined") {
+      return () => {
+        disposed = true;
+      };
+    }
+
+    const source = new EventSource(dibaoApi.recommendationInventoryEventsUrl(input));
+    const handleInventory = (event: MessageEvent<string>) => {
+      if (disposed) {
+        return;
+      }
+      try {
+        const inventory = JSON.parse(event.data) as RecommendationInventory;
+        setRecommendationInventory(inventory);
+        setRecommendationInventoryError(null);
+        setIsRecommendationInventoryLoading(false);
+      } catch {
+        setRecommendationInventoryError(t.recommendationInventory.connectionError);
+      }
+    };
+    source.addEventListener("inventory", handleInventory as EventListener);
+    source.onerror = () => {
+      if (!disposed) {
+        setIsRecommendationInventoryLoading(false);
+        setRecommendationInventoryError(t.recommendationInventory.connectionError);
+      }
+    };
+
+    return () => {
+      disposed = true;
+      source.removeEventListener("inventory", handleInventory as EventListener);
+      source.close();
+    };
+  }, [
+    appPage.type,
+    appStage.type,
+    articles.length,
+    currentArticleView,
+    selectedFeed?.id,
+    selectedFolder?.id,
+    t.errors.api,
+    t.recommendationInventory.connectionError,
+    timeWindow,
+    unreadOnly
+  ]);
+
+  useEffect(() => {
     if (appStage.type !== "reader" || appPage.type !== "algorithm-transparency") {
       return;
     }
@@ -1583,6 +1707,7 @@ export function App() {
     };
   }, [
     currentArticleView,
+    detailReloadRevision,
     selectedArticleId,
     submittedSearchForm.sort,
     t.actions.errors.open,
@@ -2701,6 +2826,12 @@ export function App() {
     setIsSourceDrawerOpen(false);
   }
 
+  function handleRetryArticleDetail() {
+    if (selectedArticleId) {
+      setDetailReloadRevision((current) => current + 1);
+    }
+  }
+
   function navigateToAppPage(page: AppPage) {
     window.history.pushState({ dibaoPage: page.type }, "", urlForAppPage(page, {
       favoriteSort,
@@ -2970,7 +3101,16 @@ export function App() {
     return (
       <main className={styles.authShell}>
         {pwaStatusBanner}
-        <AuthGatePanel error={authError} isSubmitting={false} mode="loading" />
+        <AuthGatePanel
+          error={authError}
+          isSubmitting={false}
+          loadingLabel={
+            appStage.type === "setup-status-loading" ? t.auth.setupStatusLoading : t.auth.loading
+          }
+          mode="loading"
+          onRetryLoading={handleRetryAuthGate}
+          retryLoadingLabel={t.auth.retry}
+        />
       </main>
     );
   }
@@ -3371,6 +3511,7 @@ export function App() {
               feeds={feeds}
               form={searchForm}
               hasSubmitted={hasSubmittedSearch}
+              infiniteArticleLoading={appSettings.behavior.infiniteArticleLoading}
               isArticlesLoading={isArticlesLoading}
               isMarkingScopeRead={isMarkingScopeRead}
               isLoadingMore={isLoadingMoreArticles}
@@ -3420,6 +3561,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onOpenExplanation={handleOpenExplanation}
               onReadProgress={handleReadProgress}
+              onRetryDetail={handleRetryArticleDetail}
               pendingAction={
                 articleDetail && pendingArticleAction?.articleId === articleDetail.id
                   ? pendingArticleAction.intent
@@ -3472,6 +3614,7 @@ export function App() {
               articleView={currentArticleView}
               articles={articles}
               feedCount={feeds.length}
+              infiniteArticleLoading={appSettings.behavior.infiniteArticleLoading}
               isIgnoreTelemetryEnabled={isArticleListIgnoreTelemetryEnabled({
                 articleView: currentArticleView,
                 markScrolledArticlesIgnored: appSettings.behavior.markScrolledArticlesIgnored
@@ -3483,6 +3626,9 @@ export function App() {
               loadMoreError={loadMoreError}
               nextCursor={nextArticleCursor}
               onIgnoreArticle={handleIgnoreArticle}
+              onRecordRecommendationExposures={(input) => {
+                void dibaoApi.recordRecommendationExposures(input).catch(() => undefined);
+              }}
               onLoadMore={handleLoadMoreArticles}
               onMarkScopeRead={handleMarkCurrentArticleListScopeRead}
               onPreviewMarkScopeRead={previewCurrentArticleListScopeRead}
@@ -3511,6 +3657,12 @@ export function App() {
               recommendationStatusError={
                 currentArticleView === "recommended" ? recommendationStatusError : null
               }
+              recommendationInventory={
+                currentArticleView === "recommended" ? recommendationInventory : null
+              }
+              recommendationInventoryError={
+                currentArticleView === "recommended" ? recommendationInventoryError : null
+              }
               readerCommandError={readerCommandError}
               selectedArticleId={selectedArticleId}
               selectedFeed={selectedFeed}
@@ -3518,6 +3670,7 @@ export function App() {
               showRecommendationStatus={currentArticleView === "recommended"}
               showQuickFilters={supportsQuickFilters(currentArticleView)}
               isRecommendationStatusLoading={isRecommendationStatusLoading}
+              isRecommendationInventoryLoading={isRecommendationInventoryLoading}
               timeWindow={timeWindow}
               unreadCount={unreadCount}
               unreadOnly={unreadOnly}
@@ -3545,6 +3698,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onOpenExplanation={handleOpenExplanation}
               onReadProgress={handleReadProgress}
+              onRetryDetail={handleRetryArticleDetail}
               pendingAction={
                 articleDetail && pendingArticleAction?.articleId === articleDetail.id
                   ? pendingArticleAction.intent

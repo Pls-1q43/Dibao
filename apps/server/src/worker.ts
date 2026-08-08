@@ -1,4 +1,4 @@
-import { buildServer, type DibaoServerInstance } from "./app.js";
+import { buildServer } from "./app.js";
 import {
   DEFAULT_WORKER_CORE_MIGRATION_WAIT_MS,
   waitForCoreMigrationsReady,
@@ -64,11 +64,9 @@ const server = buildServer({
 });
 
 let closing = false;
-const keepAlive = setInterval(() => {
-  void (server as DibaoServerInstance).drainBackgroundJobsNow?.().catch((error) => {
-    server.log.error(error);
-  });
-}, 1_000);
+// The worker has no listening socket. Keep its event loop alive without
+// polling SQLite; JobRunner's own interval and wake signal perform drains.
+const keepAlive = setInterval(() => undefined, 60_000);
 
 try {
   await server.ready();

@@ -86,9 +86,15 @@ describe("settings service", () => {
       telemetry: {
         enabled: true
       },
+      behavior: {
+        infiniteArticleLoading: false
+      },
       ranking: {
         localLearningEnabled: true,
-        localLearningShadowMode: false
+        localLearningShadowMode: false,
+        crossSessionFatigueMode: "shadow",
+        recentHistoryMode: "shadow",
+        learnedExplorationMode: "shadow"
       }
     });
 
@@ -103,6 +109,9 @@ describe("settings service", () => {
         },
         telemetry: {
           enabled: false
+        },
+        behavior: {
+          infiniteArticleLoading: true
         }
       }).settings
     ).toMatchObject({
@@ -115,8 +124,38 @@ describe("settings service", () => {
       },
       telemetry: {
         enabled: false
+      },
+      behavior: {
+        infiniteArticleLoading: true
       }
     });
+  });
+
+  it("persists infinite article loading while keeping older behavior settings compatible", () => {
+    const settings = new MemorySettingsRepository();
+    settings.setJson("behavior.settings", {
+      markScrolledArticlesIgnored: false,
+      removeReadLaterOnReadComplete: true
+    });
+    const service = new SettingsService({ settings });
+
+    expect(service.getSettings().behavior).toEqual({
+      markScrolledArticlesIgnored: false,
+      removeReadLaterOnReadComplete: true,
+      infiniteArticleLoading: false
+    });
+
+    expect(
+      service.updateSettings({ behavior: { infiniteArticleLoading: true } }).settings.behavior
+    ).toEqual({
+      markScrolledArticlesIgnored: false,
+      removeReadLaterOnReadComplete: true,
+      infiniteArticleLoading: true
+    });
+
+    expect(() =>
+      service.updateSettings({ behavior: { infiniteArticleLoading: "yes" } })
+    ).toThrow(SettingsServiceError);
   });
 
   it("persists configurable interest cluster limits and validates bounds", () => {

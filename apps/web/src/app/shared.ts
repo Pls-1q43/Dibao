@@ -190,6 +190,7 @@ export type SettingsDraft = {
   defaultHomeView: AppSettings["ui"]["defaultHomeView"];
   markScrolledArticlesIgnored: boolean;
   removeReadLaterOnReadComplete: boolean;
+  infiniteArticleLoading: boolean;
   telemetryEnabled: boolean;
   fontSize: string;
   lineHeight: string;
@@ -272,6 +273,7 @@ export function draftForSettings(settings: AppSettings): SettingsDraft {
     defaultHomeView: settings.ui.defaultHomeView,
     markScrolledArticlesIgnored: settings.behavior.markScrolledArticlesIgnored,
     removeReadLaterOnReadComplete: settings.behavior.removeReadLaterOnReadComplete,
+    infiniteArticleLoading: settings.behavior.infiniteArticleLoading,
     telemetryEnabled: settings.telemetry.enabled,
     fontSize: String(settings.reader.fontSize),
     lineHeight: String(settings.reader.lineHeight),
@@ -587,7 +589,8 @@ export function parseSettingsDraft(
     behavior: {
       ...current.behavior,
       markScrolledArticlesIgnored: draft.markScrolledArticlesIgnored,
-      removeReadLaterOnReadComplete: draft.removeReadLaterOnReadComplete
+      removeReadLaterOnReadComplete: draft.removeReadLaterOnReadComplete,
+      infiniteArticleLoading: draft.infiniteArticleLoading
     },
     telemetry: {
       ...current.telemetry,
@@ -625,7 +628,8 @@ export function parseSettingsDraft(
       },
       behavior: {
         markScrolledArticlesIgnored: draft.markScrolledArticlesIgnored,
-        removeReadLaterOnReadComplete: draft.removeReadLaterOnReadComplete
+        removeReadLaterOnReadComplete: draft.removeReadLaterOnReadComplete,
+        infiniteArticleLoading: draft.infiniteArticleLoading
       },
       telemetry: {
         enabled: draft.telemetryEnabled

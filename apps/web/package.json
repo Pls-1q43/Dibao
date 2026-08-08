@@ -1,6 +1,6 @@
 {
   "name": "@dibao/web",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -12,7 +12,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@dibao/shared": "0.2.1",
+    "@dibao/shared": "0.3.0",
     "@sentry/react": "^10.53.1",
     "react": "^19.2.6",
     "react-aria-components": "^1.17.0",

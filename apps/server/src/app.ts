@@ -53,7 +53,8 @@ import {
   type JobStatus,
   type PluginJobType,
   type JobType,
-  type ProfileSignalCountRow
+  type ProfileSignalCountRow,
+  type RecommendedArticleInventory
 } from "@dibao/db";
 import { cosineSimilarity, profileAlgorithmDefaults } from "@dibao/ranking";
 import { dibaoVersion, type ApiError } from "@dibao/shared";
@@ -133,6 +134,7 @@ import {
   writeForegroundActivitySignal
 } from "./foreground-activity.js";
 import { FullContentExtractionService } from "./full-content-extraction-service.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
 import {
   InterestClusterLabelService,
   InterestClusterLabelServiceError,
@@ -179,7 +181,8 @@ import { ProfileService } from "./profile-service.js";
 import { ProfileRebuildService } from "./profile-rebuild-service.js";
 import {
   RankingRecalculateJobService,
-  RANKING_RECALCULATE_JOB_TYPE
+  RANKING_RECALCULATE_JOB_TYPE,
+  RANKING_RECALCULATE_REFRESH_DELAY_MS
 } from "./ranking-job-service.js";
 import {
   ReaderCommandService,
@@ -201,10 +204,14 @@ import {
   RecommendationMaintenanceScheduler
 } from "./recommendation-maintenance-scheduler.js";
 import {
+  RECOMMENDATION_ALGORITHM_VERSION,
+  RECOMMENDATION_FEATURE_SCHEMA_VERSION,
   RecommendationRankingService,
   type RankExplanationClusterMatch,
   type RankExplanationResult
 } from "./ranking-service.js";
+import { RecommendationMemoryService } from "./recommendation-memory-service.js";
+import { PassiveExposureBuffer } from "./passive-exposure-buffer.js";
 import {
   DEFAULT_RETENTION_CLEANUP_INTERVAL_MS,
   RetentionCleanupJobService,
@@ -289,6 +296,10 @@ type ArticleQuery = {
   limit?: string;
   cursor?: string;
   sort?: string;
+};
+
+type RecommendationInventoryQuery = ArticleQuery & {
+  loadedCount?: string;
 };
 
 type SearchQuery = {
@@ -393,6 +404,12 @@ type RecommendationMaintenanceParams = {
   task: string;
 };
 
+type RecommendationExposureBody = {
+  clientSessionId?: unknown;
+  articleIds?: unknown;
+  exposedAt?: unknown;
+};
+
 type RecommendationClusterQuery = {
   limit?: string;
   clusterDetailLevel?: string;
@@ -402,6 +419,29 @@ type RecommendationStatusQuery = {
   includeClusterItems?: string;
   clusterItemLimit?: string;
   clusterDetailLevel?: string;
+};
+
+type RecommendationInventoryState = "available" | "empty" | "ranking";
+
+type RecommendationInventoryResponse = {
+  status: RecommendationInventoryState;
+  activeRankContext: string;
+  latestRerankWindowId: string | null;
+  eligibleCount: number;
+  sortedCount: number;
+  remainingSortedCount: number;
+  latestActiveCount: number;
+  staleActiveCount: number;
+  fallbackCount: number;
+  baseFallbackCount: number;
+  unrankedFallbackCount: number;
+  loadedCount: number;
+  rankingJob: {
+    queued: number;
+    running: number;
+  };
+  lastRankedAt: string | null;
+  updatedAt: string;
 };
 
 type RecommendationMergeCandidateQuery = {
@@ -439,6 +479,8 @@ type EncodedCursorPayload = CursorPayload | { keyset: ArticleListCursor };
 
 const ARTICLE_EXPLANATION_CACHE_TTL_MS = 60_000;
 const ARTICLE_EXPLANATION_CACHE_MAX_ENTRIES = 500;
+const WAL_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+const WAL_MAINTENANCE_MIN_BYTES = 16 * 1024 * 1024;
 
 type BuildServerOptions = {
   db?: DibaoDatabase;
@@ -466,6 +508,7 @@ type BuildServerOptions = {
   fullContentFetcher?: typeof fetch;
   latestReleaseFetcher?: typeof fetch;
   pluginFetcher?: typeof fetch;
+  fetchResolveHostname?: HostnameResolver;
   enableUserPluginInstall?: boolean;
   pluginTrustedPublicKeys?: Record<string, string>;
   officialPluginsDir?: string;
@@ -535,9 +578,12 @@ export function buildServer(options: BuildServerOptions = {}) {
   const onFetchWarning = (warning: unknown) => {
     app.log.warn({ event: "outbound_fetch_private_target", warning });
   };
+  let pluginServiceForFullContent: PluginService | null = null;
   const fullContentExtractor = new FullContentExtractionService({
     fetcher: options.fullContentFetcher,
-    onFetchWarning
+    pluginExtractor: async (input) => pluginServiceForFullContent?.extractFullContent(input) ?? null,
+    onFetchWarning,
+    resolveHostname: options.fetchResolveHostname
   });
   const embeddingAdapters = {
     openai_compatible: new OpenAiCompatibleEmbeddingAdapter({
@@ -581,6 +627,8 @@ export function buildServer(options: BuildServerOptions = {}) {
   configureServerTelemetry({
     enabled: settingsService.getSettings().telemetry.enabled
   });
+  const recommendationMemoryService = new RecommendationMemoryService(db, options.now);
+  const passiveExposureBuffer = new PassiveExposureBuffer(recommendationMemoryService);
   attachServerTelemetryErrorHandler(app);
   const rankingService = new RecommendationRankingService({
     db,
@@ -662,6 +710,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     pluginDataDir: options.pluginDataDir,
     secretKey: options.pluginSecretKey,
     fetcher: options.pluginFetcher,
+    resolveHostname: options.fetchResolveHostname,
     enableUserPluginInstall: options.enableUserPluginInstall,
     trustedPublicKeys: options.pluginTrustedPublicKeys,
     now: options.now,
@@ -670,6 +719,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       app.log.info(record, "plugin.api.performance");
     }
   });
+  pluginServiceForFullContent = pluginService;
   if (!hasBlockingCoreMigration) {
     pluginService.reconcileOfficialPlugins();
   }
@@ -689,25 +739,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   const rankingJobService = new RankingRecalculateJobService({
     jobs,
     ranking: rankingService,
-    now: options.now,
-    targetChunkMs: options.rankingTargetChunkMs,
-    onChunk: (record) => {
-      app.log.info(
-        {
-          route: "jobs.rankingRecalculate.chunk",
-          jobId: record.jobId,
-          durationMs: roundDuration(record.durationMs),
-          processed: record.processed,
-          limit: record.limit,
-          nextLimit: record.nextLimit,
-          hasNextCursor: record.nextCursor !== null,
-          paused: record.paused,
-          pauseReason: record.pauseReason ?? null,
-          resumeAfter: timestampToIso(record.resumeAfter)
-        },
-        "job.performance"
-      );
-    }
+    now: options.now
   });
   const behaviorProjectionJobService = new BehaviorProjectionJobService({
     db,
@@ -765,6 +797,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     clusterLabels: clusterLabelService,
     clusterMerge: clusterMergeService,
     interestFamilies: interestFamilyService,
+    memory: recommendationMemoryService,
     getRankingSettings: () => settingsService.getSettings().ranking,
     getMaintenanceSettings: () => settingsService.getSettings().recommendationMaintenance,
     now: options.now
@@ -832,6 +865,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     fetcher: options.feedFetcher,
     fullContentExtractor,
     onFetchWarning,
+    resolveHostname: options.fetchResolveHostname,
     now: options.now
   });
   const feedFullContentService = new FeedFullContentService({
@@ -842,7 +876,8 @@ export function buildServer(options: BuildServerOptions = {}) {
   const feedDiscoveryService = new FeedDiscoveryService({
     feeds,
     fetcher: options.feedFetcher,
-    onFetchWarning
+    onFetchWarning,
+    resolveHostname: options.fetchResolveHostname
   });
   const feedHealthService = new FeedHealthService({
     feeds,
@@ -905,6 +940,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   const articleActionService = new ArticleActionService({
     actions: articleActions,
     behaviorProjectionJobs: behaviorProjectionJobService,
+    recommendationMemory: recommendationMemoryService,
     maintenance: {
       enqueueStrongActionMaintenance: (now) => {
         const maintenanceSettings = settingsService.getSettings().recommendationMaintenance;
@@ -996,9 +1032,22 @@ export function buildServer(options: BuildServerOptions = {}) {
   const authRequired = options.authRequired ?? true;
   let maintenanceTickTimer: NodeJS.Timeout | null = null;
   let maintenanceInitialTickTimer: NodeJS.Timeout | null = null;
+  let walMaintenanceTimer: NodeJS.Timeout | null = null;
   let backgroundStartupTimer: NodeJS.Timeout | null = null;
   let stopJobWakeWatcher: (() => void) | null = null;
   let backgroundServicesStarted = false;
+  let recommendationInventorySubscriberId = 0;
+  let recommendationInventoryHeartbeatTimer: NodeJS.Timeout | null = null;
+  const recommendationInventorySubscribers = new Map<
+    number,
+    {
+      input: ArticleListInput;
+      loadedCount: number;
+      send: (payload: RecommendationInventoryResponse) => void;
+      heartbeat: () => void;
+      close: () => void;
+    }
+  >();
 
   const jobRunner = new JobRunner({
     jobs,
@@ -1076,6 +1125,12 @@ export function buildServer(options: BuildServerOptions = {}) {
     maxJobsPerDrain: options.jobRunnerMaxJobsPerDrain,
     onEvent: (event) => {
       app.log.info(jobRunnerEventLog(event), "job.runner");
+      if (
+        event.job.type === RANKING_RECALCULATE_JOB_TYPE ||
+        event.job.type === BEHAVIOR_EVENT_PROJECT_JOB_TYPE
+      ) {
+        broadcastRecommendationInventory("ranking job event");
+      }
     },
     beforeRun: (job) => {
       if (foregroundQuietWindowMs <= 0 || !isForegroundDeferrableJobType(job.type)) {
@@ -1208,7 +1263,9 @@ export function buildServer(options: BuildServerOptions = {}) {
 
     enqueueEmbeddingArticles(uniqueArticleIds);
     try {
-      rankingJobService.enqueueArticles(uniqueArticleIds);
+      rankingJobService.enqueueArticles(uniqueArticleIds, {
+        delayMs: RANKING_RECALCULATE_REFRESH_DELAY_MS
+      });
       if (hasBehaviorEvidence(uniqueArticleIds)) {
         const maintenanceSettings = settingsService.getSettings().recommendationMaintenance;
         if (maintenanceSettings.maintenanceEnabled) {
@@ -1288,6 +1345,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     const pathname = parseRequestPathname(request.url);
     recordForegroundApiActivity(request, pathname);
 
+    if (pathname && isApiPath(pathname)) {
+      reply.header("Cache-Control", "no-store");
+    }
+
     if (pathname && !isApiPath(pathname)) {
       return;
     }
@@ -1352,6 +1413,50 @@ export function buildServer(options: BuildServerOptions = {}) {
     );
   }
 
+  function getRecommendationInventoryResponse(
+    input: ArticleListInput,
+    loadedCount: number
+  ): RecommendationInventoryResponse {
+    const inventory = articles.getRecommendedInventory({
+      ...input,
+      view: "recommended",
+      includeUnreadCount: false,
+      rankContext: rankingService.getActiveRankContext()
+    });
+    const rankingJob = {
+      queued: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "queued"),
+      running: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "running")
+    };
+    return mapRecommendationInventory(inventory, loadedCount, rankingJob, options.now?.() ?? Date.now());
+  }
+
+  function ensureRecommendationInventoryHeartbeat(): void {
+    if (recommendationInventoryHeartbeatTimer) {
+      return;
+    }
+    recommendationInventoryHeartbeatTimer = setInterval(() => {
+      for (const subscriber of recommendationInventorySubscribers.values()) {
+        subscriber.heartbeat();
+      }
+    }, 25_000);
+    recommendationInventoryHeartbeatTimer.unref?.();
+  }
+
+  function broadcastRecommendationInventory(reason: string): void {
+    if (recommendationInventorySubscribers.size === 0) {
+      return;
+    }
+    for (const subscriber of recommendationInventorySubscribers.values()) {
+      try {
+        subscriber.send(
+          getRecommendationInventoryResponse(subscriber.input, subscriber.loadedCount)
+        );
+      } catch (error) {
+        app.log.warn({ error, reason }, "recommendation.inventory.broadcast_failed");
+      }
+    }
+  }
+
   function startBackgroundServices(): void {
     if (!backgroundJobs) {
       return;
@@ -1379,6 +1484,13 @@ export function buildServer(options: BuildServerOptions = {}) {
       return;
     }
     backgroundServicesStarted = true;
+    const cancelledLegacyRankingJobs = rankingJobService.cancelLegacyCursorJobs();
+    if (cancelledLegacyRankingJobs > 0) {
+      app.log.info(
+        { cancelledLegacyRankingJobs },
+        "cancelled legacy full-history ranking jobs"
+      );
+    }
     const pendingProjectionJob = behaviorProjectionJobService.enqueueProjectionIfPending();
     if (pendingProjectionJob) {
       app.log.info(
@@ -1405,6 +1517,33 @@ export function buildServer(options: BuildServerOptions = {}) {
     jobHistoryCleanupScheduler.start();
     profileDecayScheduler.start();
     recommendationMaintenanceScheduler.start();
+    if (!walMaintenanceTimer && configuredDatabasePath && configuredDatabasePath !== ":memory:") {
+      const maintainWalWhenIdle = () => {
+        const now = options.now?.() ?? Date.now();
+        if (
+          foregroundQuietUntil(settings, {
+            now,
+            quietWindowMs: foregroundQuietWindowMs,
+            signalPath: foregroundSignalPath
+          })
+        ) {
+          return;
+        }
+        try {
+          const wal = statSync(`${configuredDatabasePath}-wal`, { throwIfNoEntry: false });
+          if (!wal || wal.size < WAL_MAINTENANCE_MIN_BYTES) {
+            return;
+          }
+          db.pragma("wal_checkpoint(PASSIVE)");
+          app.log.info({ walBytes: wal.size }, "sqlite.wal_maintenance");
+        } catch (error) {
+          // The next idle interval can retry; this path must never affect requests.
+          app.log.debug({ error }, "sqlite.wal_maintenance_skipped");
+        }
+      };
+      walMaintenanceTimer = setInterval(maintainWalWhenIdle, WAL_MAINTENANCE_INTERVAL_MS);
+      walMaintenanceTimer.unref?.();
+    }
     if (!maintenanceTickTimer) {
       const intervalMs =
         options.recommendationMaintenanceIntervalMs ??
@@ -1467,10 +1606,19 @@ export function buildServer(options: BuildServerOptions = {}) {
     retentionCleanupScheduler.stop();
     feedRefreshScheduler.stop();
     jobRunner.stop();
+    for (const subscriber of recommendationInventorySubscribers.values()) {
+      subscriber.close();
+    }
+    recommendationInventorySubscribers.clear();
+    if (recommendationInventoryHeartbeatTimer) {
+      clearInterval(recommendationInventoryHeartbeatTimer);
+      recommendationInventoryHeartbeatTimer = null;
+    }
     if (stopJobWakeWatcher) {
       stopJobWakeWatcher();
       stopJobWakeWatcher = null;
     }
+    passiveExposureBuffer.dispose();
     pluginService.dispose();
     if (maintenanceTickTimer) {
       clearInterval(maintenanceTickTimer);
@@ -1479,6 +1627,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     if (maintenanceInitialTickTimer) {
       clearTimeout(maintenanceInitialTickTimer);
       maintenanceInitialTickTimer = null;
+    }
+    if (walMaintenanceTimer) {
+      clearInterval(walMaintenanceTimer);
+      walMaintenanceTimer = null;
     }
     if (backgroundStartupTimer) {
       clearTimeout(backgroundStartupTimer);
@@ -1901,6 +2053,94 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
   });
 
+  app.get<{ Querystring: RecommendationInventoryQuery }>(
+    "/api/recommendation/inventory",
+    async (request, reply) => {
+      const parsed = parseRecommendationInventoryQuery(request.query, options.now);
+      if (!parsed.ok) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
+      }
+
+      return {
+        data: getRecommendationInventoryResponse(parsed.input, parsed.loadedCount)
+      };
+    }
+  );
+
+  app.get<{ Querystring: RecommendationInventoryQuery }>(
+    "/api/recommendation/inventory/events",
+    (request, reply) => {
+      const parsed = parseRecommendationInventoryQuery(request.query, options.now);
+      if (!parsed.ok) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", parsed.message, parsed.details);
+      }
+
+      const subscriberId = recommendationInventorySubscriberId + 1;
+      recommendationInventorySubscriberId = subscriberId;
+      let closed = false;
+
+      function removeSubscriber(): void {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        recommendationInventorySubscribers.delete(subscriberId);
+        if (
+          recommendationInventorySubscribers.size === 0 &&
+          recommendationInventoryHeartbeatTimer
+        ) {
+          clearInterval(recommendationInventoryHeartbeatTimer);
+          recommendationInventoryHeartbeatTimer = null;
+        }
+      }
+
+      function send(payload: RecommendationInventoryResponse): void {
+        if (closed) {
+          return;
+        }
+        try {
+          reply.raw.write(`event: inventory\ndata: ${JSON.stringify(payload)}\n\n`);
+        } catch (error) {
+          app.log.warn({ error }, "recommendation.inventory.sse_write_failed");
+          removeSubscriber();
+        }
+      }
+
+      function heartbeat(): void {
+        if (closed) {
+          return;
+        }
+        try {
+          reply.raw.write(`: ${Date.now()}\n\n`);
+        } catch (error) {
+          app.log.warn({ error }, "recommendation.inventory.sse_heartbeat_failed");
+          removeSubscriber();
+        }
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      });
+      request.raw.on("close", removeSubscriber);
+      recommendationInventorySubscribers.set(subscriberId, {
+        input: parsed.input,
+        loadedCount: parsed.loadedCount,
+        send,
+        heartbeat,
+        close: () => {
+          removeSubscriber();
+          reply.raw.end();
+        }
+      });
+      ensureRecommendationInventoryHeartbeat();
+      send(getRecommendationInventoryResponse(parsed.input, parsed.loadedCount));
+    }
+  );
+
   app.get<{ Querystring: RecommendationStatusQuery }>(
     "/api/recommendation/status",
     async (request, reply) => {
@@ -1924,12 +2164,37 @@ export function buildServer(options: BuildServerOptions = {}) {
           rankingService,
           clusterLabels: clusterLabelService,
           interestFamilies: interestFamilyService,
+          memory: recommendationMemoryService,
           settings: settingsService.getSettings().ranking,
           includeClusterItems: includeClusterItems ?? true
         })
       };
     }
   );
+
+  app.post<{ Body: RecommendationExposureBody }>("/api/recommendation/exposures", async (request, reply) => {
+    const body = request.body ?? {};
+    const exposedAt =
+      typeof body.exposedAt === "number" && Number.isInteger(body.exposedAt) && body.exposedAt > 0
+        ? body.exposedAt
+        : undefined;
+    if (
+      typeof body.clientSessionId !== "string" ||
+      body.clientSessionId.trim().length === 0 ||
+      !Array.isArray(body.articleIds) ||
+      !body.articleIds.every((articleId) => typeof articleId === "string") ||
+      (body.exposedAt !== undefined && exposedAt === undefined)
+    ) {
+      return sendApiError(reply, 400, "VALIDATION_ERROR", "Invalid recommendation exposure batch");
+    }
+    return {
+      data: passiveExposureBuffer.record({
+        clientSessionId: body.clientSessionId,
+        articleIds: body.articleIds,
+        exposedAt
+      })
+    };
+  });
 
   app.get<{ Querystring: RecommendationStatusQuery }>(
     "/api/recommendation/transparency",
@@ -1974,6 +2239,7 @@ export function buildServer(options: BuildServerOptions = {}) {
         rankingService,
         clusterLabels: clusterLabelService,
         interestFamilies: interestFamilyService,
+        memory: recommendationMemoryService,
         settings: settingsService.getSettings().ranking,
         maintenanceSettings: settingsService.getSettings().recommendationMaintenance,
         maintenanceScheduleStates: recommendationMaintenanceService.listScheduleStates(),
@@ -2925,12 +3191,14 @@ export function buildServer(options: BuildServerOptions = {}) {
     const startedAt = performance.now();
     const data: Array<{ articleId: string; eventId: string; state: unknown }> = [];
     const skipped: Array<{ articleId: string; code: string; message: string }> = [];
-    for (const action of parsed.actions) {
-      try {
-        const result = articleActionService.record({
-          articleId: action.articleId,
-          ...action.input
-        });
+    try {
+      const results = articleActionService.recordMany(
+        parsed.actions.map((action) => ({ articleId: action.articleId, ...action.input }))
+      );
+      for (const [index, result] of results.entries()) {
+        const action = parsed.actions[index];
+        if (!action) continue;
+        if (result) {
         invalidateArticleExplanationCache(action.articleId);
         data.push({
           articleId: action.articleId,
@@ -2943,17 +3211,16 @@ export function buildServer(options: BuildServerOptions = {}) {
           action: action.input.type,
           state: result.state
         }).catch((error) => app.log.error(error));
-      } catch (error) {
-        if (error instanceof ArticleActionServiceError && error.code === "NOT_FOUND") {
-          skipped.push({
-            articleId: action.articleId,
-            code: error.code,
-            message: error.message
-          });
           continue;
         }
-        return sendArticleActionError(reply, error);
+        skipped.push({
+          articleId: action.articleId,
+          code: "NOT_FOUND",
+          message: "Article not found"
+        });
       }
+    } catch (error) {
+      return sendArticleActionError(reply, error);
     }
     app.log.info(
       {
@@ -3065,6 +3332,14 @@ function registerWebStaticRoutes(
       const assetPath = resolveStaticAssetPath(webDistDir, pathname);
       if (assetPath) {
         return sendStaticFile(reply, request.method, assetPath);
+      }
+
+      if (pathname === "/service-worker.js") {
+        const serviceWorkerPath = resolveStaticAssetPath(webDistDir, "/sw.js");
+        if (serviceWorkerPath) {
+          return sendStaticFile(reply, request.method, serviceWorkerPath);
+        }
+        return reply.status(404).type("text/plain; charset=utf-8").send("Not found");
       }
 
       const indexPath = resolveStaticAssetPath(webDistDir, "/index.html");
@@ -3282,6 +3557,10 @@ function isForegroundActivityRoute(pathname: string): boolean {
     );
   }
 
+  if (pathname === "/api/recommendation/inventory/events") {
+    return false;
+  }
+
   return (
     pathname.startsWith("/api/articles") ||
     pathname === "/api/auth/session" ||
@@ -3409,6 +3688,7 @@ function getRecommendationStatus(options: {
   rankingService: RecommendationRankingService;
   clusterLabels: InterestClusterLabelService;
   interestFamilies: InterestFamilyService;
+  memory?: RecommendationMemoryService;
   settings: ReturnType<SettingsService["getSettings"]>["ranking"];
   includeClusterItems?: boolean;
   clusterItemLimit?: number;
@@ -3481,6 +3761,7 @@ function getRecommendationStatus(options: {
     ...(activeIndex ? { embeddingIndexId: activeIndex.id } : {})
   });
   const lastRankingUpdate = options.rankings.getLastRankingUpdate({ activeRankContext });
+  const snapshot = options.memory?.snapshotSummary() ?? null;
   const profileSignals = options.profiles.countProfileSignals();
   const profileLearning = isProfileLearning(profileSignals, clusters);
   const warnings = recommendationWarnings({
@@ -3502,8 +3783,8 @@ function getRecommendationStatus(options: {
     activeIndex: activeIndex ? mapRecommendationIndex(activeIndex) : null,
     activeRankContext,
     algorithm: {
-      version: "rec_v3",
-      featureSchemaVersion: 3,
+      version: RECOMMENDATION_ALGORITHM_VERSION,
+      featureSchemaVersion: RECOMMENDATION_FEATURE_SCHEMA_VERSION,
       cocoonLevel: options.settings.cocoonLevel,
       localLearning: {
         enabled: options.settings.localLearningEnabled,
@@ -3527,6 +3808,19 @@ function getRecommendationStatus(options: {
     rankedArticles,
     lastProfileUpdate: timestampToIso(lastProfileUpdate),
     lastRankingUpdate: timestampToIso(lastRankingUpdate),
+    memory: {
+      snapshot: snapshot
+        ? {
+            schemaVersion: snapshot.schemaVersion,
+            embeddingIndexId: snapshot.embeddingIndexId,
+            generatedAt: timestampToIso(snapshot.generatedAt),
+            sourceWatermark: snapshot.sourceWatermark
+          }
+        : null,
+      crossSessionFatigueMode: options.settings.crossSessionFatigueMode,
+      recentHistoryMode: options.settings.recentHistoryMode,
+      learnedExplorationMode: options.settings.learnedExplorationMode
+    },
     warnings
   };
 }
@@ -3720,6 +4014,7 @@ function getRecommendationTransparency(options: {
   rankingService: RecommendationRankingService;
   clusterLabels: InterestClusterLabelService;
   interestFamilies: InterestFamilyService;
+  memory?: RecommendationMemoryService;
   settings: ReturnType<SettingsService["getSettings"]>["ranking"];
   includeClusterItems?: boolean;
   clusterItemLimit?: number;
@@ -5223,6 +5518,105 @@ function parseArticleQuery(
   }
 
   return { ok: true, input };
+}
+
+function parseRecommendationInventoryQuery(
+  query: RecommendationInventoryQuery,
+  now: (() => number) | undefined
+):
+  | { ok: true; input: ArticleListInput; loadedCount: number }
+  | { ok: false; message: string; details?: unknown } {
+  if (query.view !== undefined && query.view !== "recommended") {
+    return {
+      ok: false,
+      message: "view must be recommended",
+      details: { field: "view" }
+    };
+  }
+
+  const loadedCount = parseLoadedCount(query.loadedCount);
+  if (loadedCount === null) {
+    return {
+      ok: false,
+      message: "loadedCount must be a non-negative integer",
+      details: { field: "loadedCount" }
+    };
+  }
+
+  const parsed = parseArticleQuery(
+    {
+      ...query,
+      view: "recommended",
+      cursor: undefined,
+      includeUnreadCount: "false",
+      limit: undefined
+    },
+    now
+  );
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  return {
+    ok: true,
+    input: {
+      ...parsed.input,
+      view: "recommended",
+      includeUnreadCount: false,
+      cursor: undefined,
+      offset: undefined,
+      limit: undefined
+    },
+    loadedCount
+  };
+}
+
+function parseLoadedCount(value: string | undefined): number | null {
+  if (value === undefined) {
+    return 0;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100_000) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function mapRecommendationInventory(
+  inventory: RecommendedArticleInventory,
+  loadedCount: number,
+  rankingJob: { queued: number; running: number },
+  now: number
+): RecommendationInventoryResponse {
+  const normalizedLoadedCount = Math.max(0, Math.trunc(loadedCount));
+  const fallbackCount = inventory.baseFallbackCount + inventory.unrankedFallbackCount;
+  const remainingSortedCount = Math.max(0, inventory.sortedCount - normalizedLoadedCount);
+  const hasRankingJob = rankingJob.queued + rankingJob.running > 0;
+  const status: RecommendationInventoryState = hasRankingJob
+    ? "ranking"
+    : remainingSortedCount > 0
+      ? "available"
+      : "empty";
+
+  return {
+    status,
+    activeRankContext: inventory.rankContext,
+    latestRerankWindowId: inventory.latestRerankWindowId,
+    eligibleCount: inventory.eligibleCount,
+    sortedCount: inventory.sortedCount,
+    remainingSortedCount,
+    latestActiveCount: inventory.latestActiveCount,
+    staleActiveCount: inventory.staleActiveCount,
+    fallbackCount,
+    baseFallbackCount: inventory.baseFallbackCount,
+    unrankedFallbackCount: inventory.unrankedFallbackCount,
+    loadedCount: normalizedLoadedCount,
+    rankingJob,
+    lastRankedAt: timestampToIso(inventory.lastRankedAt),
+    updatedAt: timestampToIsoValue(now)
+  };
 }
 
 function parseSearchQuery(query: SearchQuery):

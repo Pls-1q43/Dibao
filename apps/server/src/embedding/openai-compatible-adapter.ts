@@ -149,7 +149,11 @@ function shouldRequestOpenAiCompatibleDimensions(provider: EmbeddingProviderConf
 
   try {
     const url = new URL(provider.baseUrl);
-    return url.hostname.endsWith("googleapis.com") && url.pathname.includes("/openai");
+    if (url.hostname.endsWith("googleapis.com") && url.pathname.includes("/openai")) {
+      return true;
+    }
+    return url.hostname === "api.openai.com" &&
+      (model === "text-embedding-3-small" || model === "text-embedding-3-large");
   } catch {
     return false;
   }

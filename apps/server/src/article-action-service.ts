@@ -6,6 +6,7 @@ import type {
 import type { ProfileEventProcessJobService } from "./profile-event-job-service.js";
 import type { RankingRecalculateJobService } from "./ranking-job-service.js";
 import type { BehaviorProjectionJobService } from "./behavior-projection-job-service.js";
+import type { RecommendationMemoryService } from "./recommendation-memory-service.js";
 
 export class ArticleActionServiceError extends Error {
   constructor(
@@ -32,6 +33,7 @@ export type ArticleActionServiceOptions = {
   behaviorProjectionJobs?: Pick<BehaviorProjectionJobService, "enqueueProjection">;
   rankingJobs?: Pick<RankingRecalculateJobService, "enqueueAll" | "enqueueArticles">;
   maintenance?: { enqueueStrongActionMaintenance: (now?: number) => unknown };
+  recommendationMemory?: Pick<RecommendationMemoryService, "recordBehaviorOutcome">;
   removeReadLaterOnReadComplete?: () => boolean;
   deferPostActionWork?: (work: () => void) => void;
   now?: () => number;
@@ -83,9 +85,42 @@ export class ArticleActionService {
       if (isStrongMaintenanceAction(input)) {
         this.options.maintenance?.enqueueStrongActionMaintenance(this.now());
       }
+      this.options.recommendationMemory?.recordBehaviorOutcome({
+        articleId: input.articleId,
+        type: input.type,
+        progress: input.progress,
+        now: this.now()
+      });
     });
 
     return finalResult;
+  }
+
+  recordMany(inputs: RecordArticleActionServiceInput[]): Array<RecordArticleActionResult | null> {
+    if (inputs.length === 0) {
+      return [];
+    }
+    const now = this.now();
+    const results = this.options.actions.recordMany
+      ? this.options.actions.recordMany(inputs.map((input) => ({ ...input, now })))
+      : inputs.map((input) => this.options.actions.record({ ...input, now }));
+    const successfulArticleIds = results.flatMap((result, index) =>
+      result && inputs[index] ? [inputs[index].articleId] : []
+    );
+    if (successfulArticleIds.length === 0) {
+      return results;
+    }
+
+    this.deferPostActionWork(() => {
+      if (this.options.behaviorProjectionJobs) {
+        this.options.behaviorProjectionJobs.enqueueProjection();
+      } else {
+        this.options.rankingJobs?.enqueueArticles(
+          successfulArticleIds
+        );
+      }
+    });
+    return results;
   }
 
   private deferPostActionWork(work: () => void): void {

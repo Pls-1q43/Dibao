@@ -38,16 +38,23 @@ type ArticleStateDbRow = {
   notInterestedAt: number | null;
 };
 
+type PreparedRecordArticleActionInput =
+  Required<Omit<RecordArticleActionInput, "progress" | "metadata">> &
+    Pick<RecordArticleActionInput, "progress" | "metadata">;
+
 export interface ArticleActionRepository {
   clearReadLater(articleId: string, now: number): ArticleStateSnapshot | null;
   record(input: RecordArticleActionInput): RecordArticleActionResult | null;
+  recordMany?(inputs: RecordArticleActionInput[]): Array<RecordArticleActionResult | null>;
 }
 
 export class SqliteArticleActionRepository implements ArticleActionRepository {
   private readonly recordTransaction: (
-    input: Required<Omit<RecordArticleActionInput, "progress" | "metadata">> &
-      Pick<RecordArticleActionInput, "progress" | "metadata">
+    input: PreparedRecordArticleActionInput
   ) => RecordArticleActionResult | null;
+  private readonly recordManyTransaction: (
+    inputs: PreparedRecordArticleActionInput[]
+  ) => Array<RecordArticleActionResult | null>;
 
   constructor(private readonly db: DibaoDatabase) {
     this.recordTransaction = this.db.transaction((input) => {
@@ -66,6 +73,9 @@ export class SqliteArticleActionRepository implements ArticleActionRepository {
         eventId: input.eventId
       };
     });
+    this.recordManyTransaction = this.db.transaction((inputs: PreparedRecordArticleActionInput[]) =>
+      inputs.map((input) => this.recordTransaction(input))
+    );
   }
 
   record(input: RecordArticleActionInput): RecordArticleActionResult | null {
@@ -74,6 +84,16 @@ export class SqliteArticleActionRepository implements ArticleActionRepository {
       now: input.now ?? Date.now(),
       eventId: input.eventId ?? randomUUID()
     });
+  }
+
+  recordMany(inputs: RecordArticleActionInput[]): Array<RecordArticleActionResult | null> {
+    return this.recordManyTransaction(
+      inputs.map((input) => ({
+        ...input,
+        now: input.now ?? Date.now(),
+        eventId: input.eventId ?? randomUUID()
+      }))
+    );
   }
 
   clearReadLater(articleId: string, now: number): ArticleStateSnapshot | null {

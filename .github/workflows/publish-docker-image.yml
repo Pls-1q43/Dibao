@@ -116,3 +116,135 @@ jobs:
             dibao_sentry_config=${{ env.DIBAO_SENTRY_CONFIG_FILE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify published image Sentry config
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
+          else
+            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
+          fi
+
+          docker pull --platform linux/amd64 "$image_ref"
+          docker run -i --rm --platform linux/amd64 "$image_ref" node --input-type=module - <<'NODE'
+          import { readFileSync, readdirSync } from "node:fs";
+          import { join } from "node:path";
+
+          const runtime = JSON.parse(readFileSync("/app/.dibao/sentry.json", "utf8"));
+          const assetsDir = "/app/apps/web/dist/assets";
+          const jsBundle = readdirSync(assetsDir)
+            .filter((file) => file.endsWith(".js"))
+            .map((file) => readFileSync(join(assetsDir, file), "utf8"))
+            .join("\n");
+
+          const runtimeReport = {
+            hasDsn: Boolean(String(runtime.dsn ?? "").trim()),
+            hasOrg: Boolean(String(runtime.org ?? "").trim()),
+            hasProject: Boolean(String(runtime.project ?? "").trim())
+          };
+          const browserReport = {
+            hasDsn: Boolean(runtime.dsn && jsBundle.includes(runtime.dsn)),
+            hasOrg: Boolean(runtime.org && jsBundle.includes(runtime.org)),
+            hasProject: Boolean(runtime.project && jsBundle.includes(runtime.project))
+          };
+
+          console.log(
+            `Runtime Sentry config: hasDsn=${runtimeReport.hasDsn} hasOrg=${runtimeReport.hasOrg} hasProject=${runtimeReport.hasProject}`
+          );
+          console.log(
+            `Browser Sentry config: hasDsn=${browserReport.hasDsn} hasOrg=${browserReport.hasOrg} hasProject=${browserReport.hasProject}`
+          );
+
+          if (
+            !runtimeReport.hasDsn ||
+            !runtimeReport.hasOrg ||
+            !runtimeReport.hasProject ||
+            !browserReport.hasDsn ||
+            !browserReport.hasOrg ||
+            !browserReport.hasProject
+          ) {
+            throw new Error("Published image is missing required Sentry config.");
+          }
+          NODE
+
+      - name: Verify release container install and upgrade
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
+          else
+            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
+          fi
+
+          previous_image="${{ steps.image.outputs.name }}:v0.2.1"
+          fresh_name="dibao-release-fresh-${GITHUB_RUN_ID}"
+          old_name="dibao-release-upgrade-old-${GITHUB_RUN_ID}"
+          new_name="dibao-release-upgrade-new-${GITHUB_RUN_ID}"
+          fresh_data="$(mktemp -d)"
+          upgrade_data="$(mktemp -d)"
+          chmod 777 "$fresh_data" "$upgrade_data"
+
+          cleanup() {
+            docker rm -f "$fresh_name" "$old_name" "$new_name" >/dev/null 2>&1 || true
+            sudo rm -rf "$fresh_data" "$upgrade_data"
+          }
+          trap cleanup EXIT
+
+          wait_health() {
+            local name="$1"
+            local url="$2"
+            local expected_version="$3"
+            for _ in $(seq 1 90); do
+              local body
+              body="$(curl -fsS "$url/api/system/health" 2>/dev/null || true)"
+              if BODY="$body" EXPECTED_VERSION="$expected_version" node -e 'try { const json = JSON.parse(process.env.BODY || ""); process.exit(json.data?.ok === true && json.data?.version === process.env.EXPECTED_VERSION ? 0 : 1); } catch { process.exit(1); }'; then
+                return 0
+              fi
+              sleep 2
+            done
+            docker logs "$name" --tail 250 || true
+            echo "::error::Container $name did not become healthy with version $expected_version."
+            return 1
+          }
+
+          latest_migration() {
+            local name="$1"
+            docker exec "$name" node -e 'const Database = require("better-sqlite3"); const db = new Database("/data/dibao.sqlite", { readonly: true }); const row = db.prepare("select version, name from schema_migrations order by version desc limit 1").get(); console.log(`${row.version} ${row.name}`); db.close();'
+          }
+
+          wait_latest_migration() {
+            local name="$1"
+            local expected="$2"
+            local upgrade_url="${3:-}"
+            for _ in $(seq 1 90); do
+              if [ -n "$upgrade_url" ]; then
+                curl -fsS "$upgrade_url/api/system/upgrade/status" >/dev/null 2>&1 || true
+              fi
+              local latest
+              latest="$(latest_migration "$name" 2>/dev/null || true)"
+              if [ "$latest" = "$expected" ]; then
+                echo "Latest migration for $name: $latest"
+                return 0
+              fi
+              sleep 2
+            done
+            docker logs "$name" --tail 250 || true
+            echo "::error::Container $name did not reach migration $expected."
+            return 1
+          }
+
+          docker run -d --name "$fresh_name" -p 18081:8080 -v "$fresh_data:/data" "$image_ref"
+          wait_health "$fresh_name" "http://127.0.0.1:18081" "0.3.0"
+          wait_latest_migration "$fresh_name" "026 recommendation_v3_memory"
+          docker rm -f "$fresh_name"
+
+          docker pull "$previous_image"
+          docker run -d --name "$old_name" -p 18082:8080 -v "$upgrade_data:/data" "$previous_image"
+          wait_health "$old_name" "http://127.0.0.1:18082" "0.2.1"
+          wait_latest_migration "$old_name" "025 recommended_rank_sort_index"
+          docker rm -f "$old_name"
+
+          docker run -d --name "$new_name" -p 18083:8080 -v "$upgrade_data:/data" "$image_ref"
+          wait_health "$new_name" "http://127.0.0.1:18083" "0.3.0"
+          wait_latest_migration "$new_name" "026 recommendation_v3_memory" "http://127.0.0.1:18083"

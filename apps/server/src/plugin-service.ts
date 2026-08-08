@@ -29,9 +29,14 @@ import type {
   PluginScheduleRow
 } from "@dibao/db";
 import {
-  assertControlledFetchTarget,
-  controlledFetchText
+  controlledFetchText,
+  type ControlledFetcher,
+  type HostnameResolver
 } from "./controlled-fetch.js";
+import type {
+  FullContentPluginExtractionInput,
+  FullContentPluginExtractionResult
+} from "./full-content-extraction-service.js";
 import { DeferredJobRun, PermanentJobFailure, type JobHandler } from "./job-runner.js";
 
 export const PLUGIN_CAPABILITIES = [
@@ -72,6 +77,7 @@ const PLUGIN_EVENT_SET = new Set<string>(PLUGIN_EVENT_CATALOG);
 const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
 const PLUGIN_SCHEMA_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const PLUGIN_HOOK_TIMEOUT_MS = 2_000;
+const PLUGIN_FULL_CONTENT_EXTRACTOR_TIMEOUT_MS = 2_000;
 const PLUGIN_ACTIVATION_TIMEOUT_MS = 10_000;
 const PLUGIN_API_TIMEOUT_MS = 30_000;
 const PLUGIN_TASK_PAUSED_RETRY_MS = 6 * 60 * 60 * 1000;
@@ -112,6 +118,7 @@ export type PluginManifest = {
     actions?: PluginActionContribution[];
     hooks?: string[];
     events?: string[];
+    fullContentExtractors?: PluginFullContentExtractorContribution[];
     tasks?: PluginTaskContribution[];
     setupSteps?: PluginSetupStepContribution[];
   };
@@ -145,6 +152,12 @@ export type PluginActionContribution = {
   slot: string;
   icon?: string;
   command: string;
+  order?: number;
+};
+
+export type PluginFullContentExtractorContribution = {
+  id: string;
+  title: string;
   order?: number;
 };
 
@@ -271,7 +284,8 @@ export type PluginServiceOptions = {
   getActiveRankContext: () => string;
   officialPluginsDir?: string;
   pluginDataDir?: string;
-  fetcher?: typeof fetch;
+  fetcher?: ControlledFetcher;
+  resolveHostname?: HostnameResolver;
   enableUserPluginInstall?: boolean;
   trustedPublicKeys?: Record<string, string>;
   secretKey?: string;
@@ -293,11 +307,17 @@ type PluginRuntime = {
   child: ChildProcess | null;
   disposed: boolean;
   hooks: Set<string>;
+  fullContentExtractors: Set<string>;
   tasks: Set<string>;
   apiGet: Set<string>;
   apiPost: Set<string>;
   pending: Map<string, PluginRuntimePending>;
-  invoke: (kind: "hook" | "task" | "api", name: string, input: unknown, timeoutMs?: number) => Promise<unknown>;
+  invoke: (
+    kind: "hook" | "task" | "api" | "fullContentExtractor",
+    name: string,
+    input: unknown,
+    timeoutMs?: number
+  ) => Promise<unknown>;
   dispose: () => Promise<void>;
 };
 
@@ -439,7 +459,7 @@ type PluginArticleStateDbRow = {
 
 export class PluginService {
   private readonly now: () => number;
-  private readonly fetcher: typeof fetch;
+  private readonly fetcher: ControlledFetcher | undefined;
   private readonly enableUserPluginInstall: boolean;
   private readonly trustedPublicKeys: Record<string, string>;
   private readonly secretCodec: PluginSecretCodec;
@@ -453,7 +473,7 @@ export class PluginService {
 
   constructor(private readonly options: PluginServiceOptions) {
     this.now = options.now ?? Date.now;
-    this.fetcher = options.fetcher ?? fetch;
+    this.fetcher = options.fetcher;
     this.enableUserPluginInstall =
       options.enableUserPluginInstall ??
       readBooleanEnv("DIBAO_ENABLE_UNTRUSTED_PLUGINS") ??
@@ -589,6 +609,62 @@ export class PluginService {
         this.disposeRuntime(install.id);
       }
     }
+  }
+
+  async extractFullContent(
+    input: FullContentPluginExtractionInput
+  ): Promise<FullContentPluginExtractionResult | null> {
+    for (const candidate of this.enabledFullContentExtractors()) {
+      try {
+        const runtime = await this.ensureRuntime(candidate.install);
+        if (!runtime.fullContentExtractors.has(candidate.extractor.id)) {
+          continue;
+        }
+        const result = await runtime.invoke(
+          "fullContentExtractor",
+          candidate.extractor.id,
+          input,
+          PLUGIN_FULL_CONTENT_EXTRACTOR_TIMEOUT_MS
+        );
+        const normalized = normalizeFullContentPluginResult(result);
+        if (!normalized) {
+          continue;
+        }
+        this.options.plugins.setKv(
+          candidate.install.id,
+          `fullContentExtractor:${candidate.extractor.id}:last`,
+          {
+            articleUrl: input.articleUrl,
+            extractedAt: this.now(),
+            textLength: normalized.contentText.length
+          },
+          this.now()
+        );
+        return normalized;
+      } catch (error) {
+        const message = errorMessage(error);
+        if (candidate.install.official && isTransientPluginRuntimeError(message)) {
+          const failedAt = this.now();
+          this.options.plugins.setKv(
+            candidate.install.id,
+            `fullContentExtractor:${candidate.extractor.id}:lastError`,
+            { articleUrl: input.articleUrl, failedAt, error: redactText(message) },
+            failedAt
+          );
+          this.recordOfficialPluginRuntimeError(
+            candidate.install.id,
+            `fullContentExtractor:${candidate.extractor.id}`,
+            message,
+            failedAt
+          );
+          this.disposeRuntime(candidate.install.id);
+          continue;
+        }
+        this.options.plugins.setStatus(candidate.install.id, "failed", message, this.now());
+        this.disposeRuntime(candidate.install.id);
+      }
+    }
+    return null;
   }
 
   async enqueueDueSchedules(): Promise<JobRow[]> {
@@ -1073,6 +1149,7 @@ export class PluginService {
       child: null,
       disposed: false,
       hooks: new Set(),
+      fullContentExtractors: new Set(),
       tasks: new Set(),
       apiGet: new Set(),
       apiPost: new Set(),
@@ -1305,6 +1382,13 @@ export class PluginService {
       runtime.tasks.add(name);
       return;
     }
+    if (kind === "fullContentExtractor") {
+      if (!(manifest.contributes?.fullContentExtractors?.some((extractor) => extractor.id === name) ?? false)) {
+        throw new PluginServiceError(403, "FORBIDDEN", `Plugin full content extractor is not declared: ${name}`);
+      }
+      runtime.fullContentExtractors.add(name);
+      return;
+    }
     if (kind === "api:get") {
       runtime.apiGet.add(normalizeApiPath(name));
       return;
@@ -1473,7 +1557,8 @@ export class PluginService {
   private async pluginFetch(input: PluginOutboundFetchInput) {
     return await performPluginFetch({
       input: normalizeOutboundFetchInput(input),
-      fetcher: this.fetcher
+      fetcher: this.fetcher,
+      resolveHostname: this.options.resolveHostname
     });
   }
 
@@ -1618,7 +1703,8 @@ export class PluginService {
           body: request.body,
           timeoutMs: request.timeoutMs
         },
-        fetcher: this.fetcher
+        fetcher: this.fetcher,
+        resolveHostname: this.options.resolveHostname
       });
       const durationMs = Math.max(this.now() - startedAt, 0);
       const responseJson = JSON.stringify(redactedFetchResponse(response));
@@ -2040,6 +2126,30 @@ export class PluginService {
       });
   }
 
+  private enabledFullContentExtractors(): Array<{
+    install: PluginInstallRow;
+    extractor: PluginFullContentExtractorContribution;
+  }> {
+    const candidates: Array<{
+      install: PluginInstallRow;
+      extractor: PluginFullContentExtractorContribution;
+    }> = [];
+    for (const install of this.options.plugins.listInstalls()) {
+      if (install.status !== "enabled") {
+        continue;
+      }
+      const manifest = parseStoredManifest(install);
+      for (const extractor of manifest.contributes?.fullContentExtractors ?? []) {
+        candidates.push({ install, extractor });
+      }
+    }
+    return candidates.sort((left, right) =>
+      (left.extractor.order ?? 100) - (right.extractor.order ?? 100) ||
+      left.install.id.localeCompare(right.install.id) ||
+      left.extractor.id.localeCompare(right.extractor.id)
+    );
+  }
+
   private async fetchUpdateMetadata(url: string): Promise<PluginUpdateMetadata> {
     this.assertUserPluginInstallEnabled();
     const body = await this.fetchPluginText(url, PLUGIN_UPDATE_METADATA_MAX_BYTES);
@@ -2052,7 +2162,8 @@ export class PluginService {
         fetcher: this.fetcher,
         headers: { accept: "application/json, application/octet-stream, */*;q=0.8" },
         maxBytes,
-        timeoutMs: PLUGIN_OUTBOUND_TIMEOUT_MS
+        timeoutMs: PLUGIN_OUTBOUND_TIMEOUT_MS,
+        resolveHostname: this.options.resolveHostname
       });
       if (!result.response.ok) {
         throw new PluginServiceError(
@@ -2533,6 +2644,15 @@ function parsePluginManifest(input: unknown): PluginManifest {
       throw new PluginServiceError(400, "VALIDATION_ERROR", `Unsupported plugin event: ${event}`);
     }
   }
+  for (const extractor of contributes.fullContentExtractors ?? []) {
+    if (!extractor.id || !extractor.title) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        "Plugin full content extractors require id and title"
+      );
+    }
+  }
   return {
     manifestVersion: 1,
     id,
@@ -2589,9 +2709,44 @@ function normalizeContributions(
     events: Array.isArray(contributes.events)
       ? contributes.events.filter((event): event is string => typeof event === "string")
       : [],
+    fullContentExtractors: normalizeFullContentExtractorContributions(contributes.fullContentExtractors),
     tasks: Array.isArray(contributes.tasks) ? contributes.tasks : [],
     setupSteps: Array.isArray(contributes.setupSteps) ? contributes.setupSteps : []
   };
+}
+
+function normalizeFullContentExtractorContributions(
+  input: unknown
+): PluginFullContentExtractorContribution[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const ids = new Set<string>();
+  return input.map((item) => {
+    const record = parseJsonObject(item);
+    const id = stringValue(record?.id);
+    const title = stringValue(record?.title);
+    const order = record?.order;
+    if (!id || !title) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        "Plugin full content extractors require id and title"
+      );
+    }
+    if (ids.has(id)) {
+      throw new PluginServiceError(400, "VALIDATION_ERROR", `Duplicate plugin full content extractor id: ${id}`);
+    }
+    if (order !== undefined && (typeof order !== "number" || !Number.isFinite(order))) {
+      throw new PluginServiceError(
+        400,
+        "VALIDATION_ERROR",
+        `Plugin full content extractor order must be a number: ${id}`
+      );
+    }
+    ids.add(id);
+    return { id, title, order: typeof order === "number" ? order : undefined };
+  });
 }
 
 function runtimeContributions(contributes: PluginManifest["contributes"]): PluginRuntimeContributions {
@@ -3103,9 +3258,27 @@ function pluginApiStability(manifest: PluginManifest): PluginApiStabilitySummary
   if (manifest.capabilities.includes("articles:read") || manifest.capabilities.includes("articles:write")) {
     beta.add("articles.snapshot");
   }
+  if ((manifest.contributes?.fullContentExtractors ?? []).length > 0) {
+    beta.add("fullContent.extractor");
+  }
   return {
     stable: [...stable].sort(),
     beta: [...beta].sort()
+  };
+}
+
+function normalizeFullContentPluginResult(result: unknown): FullContentPluginExtractionResult | null {
+  const record = parseJsonObject(result);
+  const contentHtml = stringValue(record?.contentHtml);
+  const contentText = stringValue(record?.contentText);
+  if (!contentHtml || !contentText) {
+    return null;
+  }
+  return {
+    title: stringOrNull(record?.title),
+    contentHtml,
+    contentText,
+    excerpt: stringOrNull(record?.excerpt)
   };
 }
 
@@ -3287,63 +3460,38 @@ function normalizeHeaderName(name: string): string {
 
 async function performPluginFetch(input: {
   input: Required<PluginOutboundFetchInput>;
-  fetcher: typeof fetch;
-  redirects?: number;
+  fetcher?: ControlledFetcher;
+  resolveHostname?: HostnameResolver;
 }): Promise<{ ok: boolean; status: number; headers: Record<string, string>; bodyText: string }> {
-  const redirects = input.redirects ?? 0;
   const body = encodePluginRequestBody(input.input.body);
   if (body && Buffer.byteLength(body, "utf8") > PLUGIN_OUTBOUND_MAX_REQUEST_BYTES) {
     throw new PluginServiceError(400, "VALIDATION_ERROR", "Plugin request body is too large");
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.input.timeoutMs);
   try {
-    await assertControlledFetchTarget(input.input.url);
-    const response = await input.fetcher(input.input.url, {
+    const result = await controlledFetchText(input.input.url, {
+      fetcher: input.fetcher,
       method: input.input.method,
       headers: {
         ...input.input.headers,
         ...(body ? { "content-type": input.input.headers["content-type"] ?? "application/json" } : {})
       },
       body: body ?? undefined,
-      redirect: "manual",
-      signal: controller.signal
+      maxBytes: PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES,
+      timeoutMs: input.input.timeoutMs,
+      maxRedirects: PLUGIN_OUTBOUND_MAX_REDIRECTS,
+      resolveHostname: input.resolveHostname
     });
-    const location = response.headers.get("location");
-    if (isRedirectStatus(response.status) && location) {
-      if (redirects >= PLUGIN_OUTBOUND_MAX_REDIRECTS) {
-        throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin request exceeded redirect limit");
-      }
-      return await performPluginFetch({
-        input: {
-          ...input.input,
-          url: normalizePluginOutboundUrl(new URL(location, input.input.url).toString())
-        },
-        fetcher: input.fetcher,
-        redirects: redirects + 1
-      });
-    }
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES) {
-      throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin response is too large");
-    }
-    const bodyText = await response.text();
-    if (Buffer.byteLength(bodyText, "utf8") > PLUGIN_OUTBOUND_MAX_RESPONSE_BYTES) {
-      throw new PluginServiceError(502, "PROVIDER_ERROR", "Plugin response is too large");
-    }
     return {
-      ok: response.ok,
-      status: response.status,
-      headers: redactHeaders(Object.fromEntries(response.headers.entries())),
-      bodyText
+      ok: result.response.ok,
+      status: result.response.status,
+      headers: redactHeaders(Object.fromEntries(result.response.headers.entries())),
+      bodyText: result.body
     };
   } catch (error) {
     if (error instanceof PluginServiceError) {
       throw error;
     }
     throw new PluginServiceError(502, "PROVIDER_ERROR", redactText(errorMessage(error)));
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -3352,10 +3500,6 @@ function encodePluginRequestBody(body: unknown): string | null {
     return null;
   }
   return typeof body === "string" ? body : JSON.stringify(body);
-}
-
-function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function parseDeliveryStoredRequest(value: string): PluginDeliveryStoredRequest {

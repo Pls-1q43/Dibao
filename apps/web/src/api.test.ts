@@ -6,6 +6,7 @@ describe("web API client", () => {
   it("calls auth endpoints with same-origin credentials", async () => {
     const calls: Array<{
       body: unknown;
+      cache: RequestCache | undefined;
       credentials: RequestCredentials | undefined;
       method: string | undefined;
       path: string;
@@ -14,6 +15,7 @@ describe("web API client", () => {
       calls.push({
         path: String(input),
         method: init?.method,
+        cache: init?.cache,
         credentials: init?.credentials,
         body: init?.body ? JSON.parse(String(init.body)) : null
       });
@@ -54,12 +56,14 @@ describe("web API client", () => {
       {
         path: "/api/auth/session",
         method: undefined,
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       },
       {
         path: "/api/auth/setup",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           username: "Pls",
@@ -69,6 +73,7 @@ describe("web API client", () => {
       {
         path: "/api/auth/login",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           username: "Pls",
@@ -78,6 +83,7 @@ describe("web API client", () => {
       {
         path: "/api/auth/password",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: {
           currentPassword: "correct horse battery",
@@ -87,12 +93,14 @@ describe("web API client", () => {
       {
         path: "/api/auth/logout-all",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       },
       {
         path: "/api/auth/logout",
         method: "POST",
+        cache: "no-store",
         credentials: "same-origin",
         body: null
       }
@@ -386,6 +394,9 @@ describe("web API client", () => {
           retentionDays: 45,
           keepFavorites: false
         },
+        behavior: {
+          infiniteArticleLoading: true
+        },
         ranking: {
           maxPositiveInterestClusters: 48,
           maxNegativeInterestClusters: 32
@@ -420,6 +431,9 @@ describe("web API client", () => {
           retention: {
             retentionDays: 45,
             keepFavorites: false
+          },
+          behavior: {
+            infiniteArticleLoading: true
           },
           ranking: {
             maxPositiveInterestClusters: 48,
@@ -663,6 +677,66 @@ describe("web API client", () => {
     expect(calls).toEqual([
       "/api/recommendation/status",
       "/api/recommendation/status?includeClusterItems=false"
+    ]);
+  });
+
+  it("fetches recommendation inventory and builds the event stream URL", async () => {
+    const calls: string[] = [];
+    const api = createDibaoApi(async (input) => {
+      calls.push(String(input));
+
+      return new Response(
+        JSON.stringify({
+          data: {
+            status: "available",
+            activeRankContext: "rec_v3:test",
+            latestRerankWindowId: "window:new",
+            eligibleCount: 12,
+            sortedCount: 8,
+            remainingSortedCount: 3,
+            latestActiveCount: 5,
+            staleActiveCount: 3,
+            fallbackCount: 4,
+            baseFallbackCount: 2,
+            unrankedFallbackCount: 2,
+            loadedCount: 5,
+            rankingJob: {
+              queued: 0,
+              running: 0
+            },
+            lastRankedAt: "2026-05-14T08:11:00.000Z",
+            updatedAt: "2026-05-14T08:12:00.000Z"
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    });
+
+    await expect(
+      api.getRecommendationInventory({
+        folderId: "folder_design",
+        unreadOnly: true,
+        timeWindow: "7d",
+        loadedCount: 5
+      })
+    ).resolves.toMatchObject({
+      status: "available",
+      remainingSortedCount: 3
+    });
+    expect(
+      api.recommendationInventoryEventsUrl({
+        feedId: "feed_1",
+        timeWindow: "24h",
+        loadedCount: 10
+      })
+    ).toBe("/api/recommendation/inventory/events?feedId=feed_1&timeWindow=24h&loadedCount=10");
+    expect(calls).toEqual([
+      "/api/recommendation/inventory?folderId=folder_design&unreadOnly=true&timeWindow=7d&loadedCount=5"
     ]);
   });
 
@@ -1251,7 +1325,7 @@ describe("web API client", () => {
             activeRankContext: "base",
             algorithm: {
               version: "rec_v3",
-              featureSchemaVersion: 3,
+              featureSchemaVersion: 4,
               cocoonLevel: 1,
               localLearning: { enabled: true, shadowMode: false },
               exploration: { enabled: true },

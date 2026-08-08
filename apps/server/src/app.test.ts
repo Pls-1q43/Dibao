@@ -24,6 +24,7 @@ import {
 import { signPluginPackage } from "@dibao/plugin-sdk";
 import { parseOpml } from "@dibao/rss";
 import { buildServer as buildRealServer, getHealth } from "./app.js";
+import type { HostnameResolver } from "./controlled-fetch.js";
 import type { FeedFetcher } from "./feed-refresh-service.js";
 import { JobRunner } from "./job-runner.js";
 import {
@@ -35,9 +36,15 @@ import {
   RANKING_RECALCULATE_JOB_TYPE
 } from "./ranking-job-service.js";
 import { ProfileService } from "./profile-service.js";
-import { RecommendationRankingService } from "./ranking-service.js";
+import {
+  RECOMMENDATION_ALGORITHM_VERSION,
+  RECOMMENDATION_FEATURE_SCHEMA_VERSION,
+  RecommendationRankingService
+} from "./ranking-service.js";
 
 const tempDirs: string[] = [];
+const TEST_ACTIVE_RANK_CONTEXT = `${RECOMMENDATION_ALGORITHM_VERSION}:embedding:cocoon_5:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
+const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -48,6 +55,7 @@ afterEach(() => {
 function buildServer(options: Parameters<typeof buildRealServer>[0] = {}) {
   return buildRealServer({
     authRequired: false,
+    fetchResolveHostname: publicTestResolver,
     ...options
   });
 }
@@ -70,7 +78,7 @@ describe("server API vertical slice", () => {
           database: "ok",
           fts: "ok",
           vectorStore: "ok",
-          version: "0.2.1"
+          version: "0.3.0"
         }
       });
     } finally {
@@ -207,6 +215,10 @@ describe("server API vertical slice", () => {
         method: "HEAD",
         url: "/reader/latest"
       });
+      const legacyServiceWorker = await app.inject({
+        method: "GET",
+        url: "/service-worker.js"
+      });
 
       expect(root.statusCode, root.body).toBe(200);
       expect(root.headers["content-type"]).toContain("text/html");
@@ -221,6 +233,8 @@ describe("server API vertical slice", () => {
       expect(spaRoute.body).toContain("Dibao shell");
       expect(head.statusCode, head.body).toBe(200);
       expect(head.body).toBe("");
+      expect(legacyServiceWorker.statusCode, legacyServiceWorker.body).toBe(404);
+      expect(legacyServiceWorker.body).not.toContain("Dibao shell");
     } finally {
       await app.close();
       db.close();
@@ -1350,6 +1364,10 @@ describe("server API vertical slice", () => {
         method: "GET",
         url: "/sw.js"
       });
+      const legacyServiceWorker = await app.inject({
+        method: "GET",
+        url: "/service-worker.js"
+      });
       const searchRoute = await app.inject({
         method: "GET",
         url: "/search"
@@ -1380,6 +1398,12 @@ describe("server API vertical slice", () => {
       expect(serviceWorker.headers["content-type"]).toMatch(/javascript/);
       expect(serviceWorker.headers["cache-control"]).toBe("no-cache, no-store, must-revalidate");
       expect(serviceWorker.body).toContain("fetch");
+      expect(legacyServiceWorker.statusCode, legacyServiceWorker.body).toBe(200);
+      expect(legacyServiceWorker.headers["content-type"]).toMatch(/javascript/);
+      expect(legacyServiceWorker.headers["cache-control"]).toBe(
+        "no-cache, no-store, must-revalidate"
+      );
+      expect(legacyServiceWorker.body).toContain("fetch");
 
       expect(searchRoute.statusCode, searchRoute.body).toBe(200);
       expect(searchRoute.body).toContain("Dibao shell");
@@ -1450,6 +1474,7 @@ describe("server API vertical slice", () => {
 
       expect(response.statusCode, response.body).toBe(404);
       expect(response.headers["content-type"]).toContain("application/json");
+      expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.json()).toMatchObject({
         error: {
           code: "NOT_FOUND"
@@ -1476,6 +1501,7 @@ describe("server API vertical slice", () => {
       });
 
       expect(response.statusCode, response.body).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.json()).toEqual({
         data: {
           setupCompleted: false,
@@ -1515,6 +1541,7 @@ describe("server API vertical slice", () => {
         password: "correct horse battery"
       });
       expect(setup.statusCode, setup.body).toBe(200);
+      expect(setup.headers["cache-control"]).toBe("no-store");
       expect(setup.json()).toEqual({
         data: {
           ok: true
@@ -1551,6 +1578,7 @@ describe("server API vertical slice", () => {
         }
       });
       expect(session.statusCode, session.body).toBe(200);
+      expect(session.headers["cache-control"]).toBe("no-store");
       expect(session.json()).toEqual({
         data: {
           setupCompleted: true,
@@ -1585,12 +1613,14 @@ describe("server API vertical slice", () => {
         url: "/api/system/health"
       });
       expect(health.statusCode, health.body).toBe(200);
+      expect(health.headers["cache-control"]).toBe("no-store");
 
       const protectedResponse = await app.inject({
         method: "GET",
         url: "/api/feeds"
       });
       expect(protectedResponse.statusCode, protectedResponse.body).toBe(401);
+      expect(protectedResponse.headers["cache-control"]).toBe("no-store");
       expect(protectedResponse.json()).toMatchObject({
         error: {
           code: "UNAUTHORIZED"
@@ -1871,6 +1901,7 @@ describe("server API vertical slice", () => {
         url: "/api/setup/status"
       });
       expect(anonymous.statusCode, anonymous.body).toBe(401);
+      expect(anonymous.headers["cache-control"]).toBe("no-store");
       expect(anonymous.json()).toMatchObject({
         error: {
           code: "UNAUTHORIZED"
@@ -1890,6 +1921,7 @@ describe("server API vertical slice", () => {
       });
 
       expect(status.statusCode, status.body).toBe(200);
+      expect(status.headers["cache-control"]).toBe("no-store");
       expect(status.json()).toEqual({
         data: {
           setupCompleted: true,
@@ -2277,7 +2309,7 @@ describe("server API vertical slice", () => {
         name: "Timeout Test",
         version: "1.0.0",
         publisher: "Dibao",
-        dibao: { minVersion: "0.1.0", maxVersion: "<0.3.0" },
+        dibao: { minVersion: "0.1.0", maxVersion: "<0.4.0" },
         entry: { server: "server/index.mjs" },
         capabilities: [],
         contributes: { hooks: ["settings.afterUpdated"] }
@@ -2953,6 +2985,155 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("reports recommendation inventory counts and remaining ranked stock", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    createActiveEmbeddingDiagnosticsFixture(db, { providerTestStatus: "success" });
+    feeds.upsert({
+      id: "feed_inventory",
+      title: "Inventory Feed",
+      feedUrl: "https://example.com/inventory.xml",
+      now: 1000
+    });
+    for (const id of ["active_new", "active_old", "base_only", "unranked"]) {
+      articles.upsert({
+        id: `article_${id}`,
+        feedId: "feed_inventory",
+        url: `https://example.com/inventory/${id}`,
+        title: id,
+        discoveredAt: 2000,
+        dedupeKey: id,
+        now: 2000
+      });
+    }
+    insertRankForContext(db, {
+      articleId: "article_active_new",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.9,
+      calculatedAt: 5000,
+      rerankWindowId: "window:new",
+      rerankPosition: 1
+    });
+    insertRankForContext(db, {
+      articleId: "article_active_old",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.8,
+      calculatedAt: 4000,
+      rerankWindowId: "window:old",
+      rerankPosition: 1
+    });
+    insertRank(db, "article_base_only", 0.7, 3000);
+
+    const app = buildServer({ db, logger: false, now: () => 6000 });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?unreadOnly=true&loadedCount=1"
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          status: "available",
+          activeRankContext: TEST_ACTIVE_RANK_CONTEXT,
+          latestRerankWindowId: "window:new",
+          eligibleCount: 4,
+          sortedCount: 2,
+          remainingSortedCount: 1,
+          latestActiveCount: 1,
+          staleActiveCount: 1,
+          fallbackCount: 2,
+          baseFallbackCount: 1,
+          unrankedFallbackCount: 1,
+          loadedCount: 1,
+          rankingJob: {
+            queued: 0,
+            running: 0
+          },
+          lastRankedAt: "1970-01-01T00:00:05.000Z",
+          updatedAt: "1970-01-01T00:00:06.000Z"
+        }
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("marks recommendation inventory as ranking while ranking jobs are queued", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    const jobs = new SqliteJobRepository(db);
+    createActiveEmbeddingDiagnosticsFixture(db, { providerTestStatus: "success" });
+    feeds.upsert({
+      id: "feed_inventory_ranking",
+      title: "Inventory Ranking Feed",
+      feedUrl: "https://example.com/inventory-ranking.xml",
+      now: 1000
+    });
+    articles.upsert({
+      id: "article_inventory_ranking",
+      feedId: "feed_inventory_ranking",
+      url: "https://example.com/inventory-ranking",
+      title: "Inventory ranking",
+      discoveredAt: 2000,
+      dedupeKey: "inventory-ranking",
+      now: 2000
+    });
+    insertRankForContext(db, {
+      articleId: "article_inventory_ranking",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.9,
+      calculatedAt: 5000,
+      rerankWindowId: "window:new",
+      rerankPosition: 1
+    });
+    jobs.enqueue({
+      id: "job_inventory_ranking",
+      type: RANKING_RECALCULATE_JOB_TYPE,
+      now: 6000
+    });
+    const app = buildServer({ db, logger: false, now: () => 7000 });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?loadedCount=1"
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          status: "ranking",
+          remainingSortedCount: 0,
+          rankingJob: {
+            queued: 1,
+            running: 0
+          }
+        }
+      });
+
+      const invalid = await app.inject({
+        method: "GET",
+        url: "/api/recommendation/inventory?loadedCount=-1"
+      });
+      expect(invalid.statusCode, invalid.body).toBe(400);
+      expect(invalid.json()).toMatchObject({
+        error: {
+          code: "VALIDATION_ERROR",
+          details: {
+            field: "loadedCount"
+          }
+        }
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("keeps profile warmup active for open-only behavior", async () => {
     const db = createEmptyDatabase();
     const feeds = new SqliteFeedRepository(db);
@@ -3414,6 +3595,72 @@ describe("server API vertical slice", () => {
           inputCount: 1,
           dimensions: 768
         }
+      ]);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("omits unsupported legacy Gemini dimensions and requests them from official OpenAI text-embedding-3", async () => {
+    const db = createEmptyDatabase();
+    const geminiCalls: Array<{
+      url: string;
+      apiKey: string | null;
+      inputCount: number;
+      model: string;
+      outputDimensionality: number | null;
+    }> = [];
+    const openAiCalls: Array<{
+      url: string;
+      authorization: string | null;
+      inputCount: number;
+      dimensions: number | null;
+    }> = [];
+    const app = buildServer({
+      db,
+      logger: false,
+      embeddingFetcher: async (input, init) => {
+        const url = String(input);
+        if (url.includes("generativelanguage.googleapis.com")) {
+          return geminiEmbeddingFetcherFixture(geminiCalls, 3)(input, init);
+        }
+        return embeddingFetcherFixture(openAiCalls, 3)(input, init);
+      }
+    });
+
+    try {
+      const legacy = await postJson(app, "/api/embedding/providers", {
+        type: "gemini",
+        name: "Legacy Gemini",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        model: "embedding-001",
+        dimension: 3,
+        apiKey: "legacy-secret",
+        enabled: false
+      });
+      const legacyId = legacy.json().data.id;
+      const legacyTest = await app.inject({ method: "POST", url: `/api/embedding/providers/${legacyId}/test` });
+      expect(legacyTest.statusCode, legacyTest.body).toBe(200);
+
+      const openAi = await postJson(app, "/api/embedding/providers", {
+        type: "openai_compatible",
+        name: "Official OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        model: "text-embedding-3-small",
+        dimension: 3,
+        apiKey: "openai-secret",
+        enabled: false
+      });
+      const openAiId = openAi.json().data.id;
+      const openAiTest = await app.inject({ method: "POST", url: `/api/embedding/providers/${openAiId}/test` });
+      expect(openAiTest.statusCode, openAiTest.body).toBe(200);
+
+      expect(geminiCalls).toEqual([
+        expect.objectContaining({ model: "models/embedding-001", outputDimensionality: null })
+      ]);
+      expect(openAiCalls).toEqual([
+        expect.objectContaining({ url: "https://api.openai.com/v1/embeddings", dimensions: 3 })
       ]);
     } finally {
       await app.close();
@@ -4039,7 +4286,7 @@ describe("server API vertical slice", () => {
           activeIndex: {
             id: textSliceActive?.id
           },
-          activeRankContext: "rec_v3:embedding:cocoon_5:schema_3"
+          activeRankContext: TEST_ACTIVE_RANK_CONTEXT
         }
       });
     } finally {
@@ -4271,7 +4518,7 @@ describe("server API vertical slice", () => {
             model: "fixture-embedding",
             dimension: 3
           },
-          activeRankContext: "rec_v3:embedding:cocoon_5:schema_3",
+          activeRankContext: TEST_ACTIVE_RANK_CONTEXT,
           coverage: {
             candidateCount: 2,
             eligibleArticleCount: 2,
@@ -4502,7 +4749,7 @@ describe("server API vertical slice", () => {
       contentHash: "article_recent:3000",
       now: 6100
     });
-    const activeRankContext = "rec_v3:embedding:cocoon_5:schema_3";
+    const activeRankContext = TEST_ACTIVE_RANK_CONTEXT;
     insertRankForContext(db, {
       articleId: "article_recommended",
       rankContext: activeRankContext,
@@ -4678,7 +4925,7 @@ describe("server API vertical slice", () => {
     }
   });
 
-  it("reports degraded recommendation diagnostics for failed embedding jobs while recommendations remain usable", async () => {
+  it("reports degraded recommendation diagnostics for failed embedding jobs without exposing base recommendations", async () => {
     const db = createFixtureDatabase();
     const { index } = createActiveEmbeddingDiagnosticsFixture(db, {
       providerTestStatus: "success"
@@ -4755,10 +5002,7 @@ describe("server API vertical slice", () => {
         url: "/api/articles?view=recommended"
       });
       expect(recommended.statusCode, recommended.body).toBe(200);
-      expect(recommended.json().data.map((article: { id: string }) => article.id)).toEqual([
-        "article_recommended",
-        "article_recent"
-      ]);
+      expect(recommended.json().data.map((article: { id: string }) => article.id)).toEqual([]);
     } finally {
       await app.close();
       db.close();
@@ -4928,7 +5172,8 @@ describe("server API vertical slice", () => {
           },
           behavior: {
             markScrolledArticlesIgnored: true,
-            removeReadLaterOnReadComplete: false
+            removeReadLaterOnReadComplete: false,
+            infiniteArticleLoading: false
           },
           telemetry: {
             enabled: true
@@ -4950,7 +5195,10 @@ describe("server API vertical slice", () => {
             localLearningEnabled: true,
             localLearningShadowMode: false,
             explorationEnabled: true,
-            evaluationEnabled: false
+            evaluationEnabled: false,
+            crossSessionFatigueMode: "shadow",
+            recentHistoryMode: "shadow",
+            learnedExplorationMode: "shadow"
           },
           recommendationMaintenance: {
             maintenanceEnabled: true,
@@ -4985,7 +5233,8 @@ describe("server API vertical slice", () => {
         },
         behavior: {
           markScrolledArticlesIgnored: false,
-          removeReadLaterOnReadComplete: true
+          removeReadLaterOnReadComplete: true,
+          infiniteArticleLoading: true
         },
         telemetry: {
           enabled: false
@@ -5020,7 +5269,8 @@ describe("server API vertical slice", () => {
             },
             behavior: {
               markScrolledArticlesIgnored: false,
-              removeReadLaterOnReadComplete: true
+              removeReadLaterOnReadComplete: true,
+              infiniteArticleLoading: true
             },
             telemetry: {
               enabled: false
@@ -5063,7 +5313,8 @@ describe("server API vertical slice", () => {
             },
             behavior: {
               markScrolledArticlesIgnored: false,
-              removeReadLaterOnReadComplete: true
+              removeReadLaterOnReadComplete: true,
+              infiniteArticleLoading: true
             },
             telemetry: {
               enabled: false
@@ -5101,6 +5352,11 @@ describe("server API vertical slice", () => {
         {
           behavior: {
             removeReadLaterOnReadComplete: "yes"
+          }
+        },
+        {
+          behavior: {
+            infiniteArticleLoading: "yes"
           }
         },
         {
@@ -5179,7 +5435,7 @@ describe("server API vertical slice", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toMatchObject({
         data: {
-          currentVersion: "0.2.1",
+          currentVersion: "0.3.0",
           latestVersion: "v0.2.0",
           releaseUrl: "https://github.com/Pls-1q43/Dibao/releases/tag/v0.2.0",
           updateAvailable: false,
@@ -5941,15 +6197,15 @@ describe("server API vertical slice", () => {
 
       insertSemanticRankForContext(db, {
         articleId: "article_cluster_label_api",
-        rankContext: "rec_v3:embedding:cocoon_5:schema_3",
+        rankContext: TEST_ACTIVE_RANK_CONTEXT,
         embeddingIndexId: index.id,
         score: 1.4,
         calculatedAt: 21_000
       });
       new SqliteRankingRepository(db).upsertRankContext({
-        id: "rec_v3:embedding:cocoon_5:schema_3",
-        algorithmVersion: "rec_v3",
-        featureSchemaVersion: 3,
+        id: TEST_ACTIVE_RANK_CONTEXT,
+        algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
+        featureSchemaVersion: RECOMMENDATION_FEATURE_SCHEMA_VERSION,
         embeddingIndexId: index.id,
         cocoonLevel: 5,
         now: 21_000
@@ -6658,6 +6914,55 @@ describe("server API vertical slice", () => {
       expect(openEmbeddingArticleIds(db)).toEqual(
         expect.arrayContaining(backfill.json().data.effectiveContentChangedArticleIds)
       );
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("uses an enabled official full-content selector plugin before the built-in extractor", async () => {
+    const db = createEmptyDatabase();
+    const plugins = new SqlitePluginRepository(db);
+    const selectedText = "Selector plugin extracted this nested article body. ".repeat(8);
+    const app = buildServer({
+      db,
+      logger: false,
+      feedFetcher: fixtureFetcher({ "https://example.com/feed.xml": fixtureRss }),
+      fullContentFetcher: async () =>
+        new Response(
+          `<html><head><title>Selector fixture</title></head><body><div class="entry-content"><div><p>${selectedText}</p></div></div></body></html>`,
+          { headers: { "content-type": "text/html" } }
+        )
+    });
+
+    try {
+      const catalog = await app.inject({ method: "GET", url: "/api/plugins/catalog" });
+      expect(catalog.json()).toMatchObject({
+        data: expect.arrayContaining([
+          expect.objectContaining({ id: "app.dibao.full-content-selectors", status: "installed" })
+        ])
+      });
+      const enabled = await app.inject({
+        method: "POST",
+        url: "/api/plugins/app.dibao.full-content-selectors/enable"
+      });
+      expect(enabled.statusCode, enabled.body).toBe(200);
+
+      const add = await postJson(app, "/api/feeds", { feedUrl: "https://example.com/feed.xml" });
+      const feedId = add.json().data.feed.id;
+      const preview = await postJson(app, `/api/feeds/${feedId}/full-content/preview`, {});
+
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json()).toMatchObject({
+        data: {
+          status: "success",
+          title: "Selector fixture",
+          contentText: expect.stringContaining("Selector plugin extracted")
+        }
+      });
+      expect(
+        plugins.getKv("app.dibao.full-content-selectors", "fullContentExtractor:balanced-readable-selectors:last")
+      ).toMatchObject({ textLength: expect.any(Number) });
     } finally {
       await app.close();
       db.close();
@@ -7714,7 +8019,7 @@ describe("server API vertical slice", () => {
       dimension: 4,
       now: 4000
     });
-    const activeContext = "rec_v3:embedding:cocoon_5:schema_3";
+    const activeContext = TEST_ACTIVE_RANK_CONTEXT;
     for (const [articleId, score, rerankPosition] of [
       ["article_search_low", 0.1, 2],
       ["article_search_high", 0.9, 1],
@@ -7768,6 +8073,91 @@ describe("server API vertical slice", () => {
       expect(response.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_recommended",
         "article_recent"
+      ]);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("keeps the latest active rerank window first and backfills stale active before base", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    const embeddings = new SqliteEmbeddingRepository(db);
+    feeds.upsert({
+      id: "feed_active_window",
+      title: "Active Window Feed",
+      feedUrl: "https://example.com/active-window.xml",
+      now: 1000
+    });
+    for (const [id, title, publishedAt] of [
+      ["article_active_new", "Latest active window", 3000],
+      ["article_active_old", "Older active window", 2000],
+      ["article_base_only", "Base fallback only", 1000],
+      ["article_unranked", "Unranked fallback only", 4000]
+    ] as const) {
+      articles.upsert({
+        id,
+        feedId: "feed_active_window",
+        url: `https://example.com/${id}`,
+        title,
+        summary: "Active-window fixture",
+        publishedAt,
+        discoveredAt: publishedAt,
+        dedupeKey: id,
+        now: publishedAt
+      });
+    }
+    embeddings.upsertProvider({
+      id: "provider_active_window",
+      type: "embedded_local",
+      name: "Active Window Provider",
+      model: "fixture",
+      dimension: 4,
+      enabled: true,
+      now: 5000
+    });
+    embeddings.createIndex({
+      id: "index_active_window",
+      providerId: "provider_active_window",
+      model: "fixture",
+      dimension: 4,
+      now: 5000
+    });
+    insertRank(db, "article_base_only", 0.99, 6000);
+    insertRankForContext(db, {
+      articleId: "article_active_old",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      embeddingIndexId: "index_active_window",
+      score: 0.95,
+      calculatedAt: 6000,
+      rerankPosition: 0,
+      rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:old`
+    });
+    insertRankForContext(db, {
+      articleId: "article_active_new",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      embeddingIndexId: "index_active_window",
+      score: 0.5,
+      calculatedAt: 7000,
+      rerankPosition: 0,
+      rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:new`
+    });
+    const app = buildServer({ db, logger: false });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/articles?view=recommended&limit=10"
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().data.map((article: { id: string }) => article.id)).toEqual([
+        "article_active_new",
+        "article_active_old",
+        "article_base_only",
+        "article_unranked"
       ]);
     } finally {
       await app.close();
@@ -7837,7 +8227,7 @@ describe("server API vertical slice", () => {
     insertRank(db, "article_read_later_base", 0.8, 10_000);
     insertRankForContext(db, {
       articleId: "article_read_later_active",
-      rankContext: "rec_v3:embedding:cocoon_5:schema_3",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
       embeddingIndexId: "index_sort",
       score: 0.9,
       calculatedAt: 10_000
@@ -9979,6 +10369,8 @@ function insertRankForContext(
     embeddingIndexId?: string | null;
     score: number;
     calculatedAt: number;
+    rerankPosition?: number | null;
+    rerankWindowId?: string | null;
   }
 ): void {
   db.prepare(
@@ -9994,11 +10386,15 @@ function insertRankForContext(
         state_score,
         diversity_score,
         penalty_score,
+        rerank_position,
+        rerank_window_id,
         calculated_at
       )
-      values (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?)
+      values (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?, ?)
       on conflict(article_id, rank_context) do update set
         score = excluded.score,
+        rerank_position = excluded.rerank_position,
+        rerank_window_id = excluded.rerank_window_id,
         calculated_at = excluded.calculated_at
     `
   ).run(
@@ -10006,6 +10402,8 @@ function insertRankForContext(
     input.rankContext,
     input.embeddingIndexId ?? null,
     input.score,
+    input.rerankPosition ?? null,
+    input.rerankWindowId ?? null,
     input.calculatedAt
   );
 }

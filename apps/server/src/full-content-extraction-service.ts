@@ -2,7 +2,8 @@ import {
   controlledFetchText,
   fullContentFetchMaxBytes,
   type ControlledFetcher,
-  type FetchPrivacyWarning
+  type FetchPrivacyWarning,
+  type HostnameResolver
 } from "./controlled-fetch.js";
 
 export type FullContentExtractionStatus = "success" | "failed" | "skipped";
@@ -17,20 +18,37 @@ export type FullContentExtractionResult = {
   error: string | null;
 };
 
+export type FullContentPluginExtractionInput = {
+  articleUrl: string;
+  html: string;
+  contentType: string;
+};
+
+export type FullContentPluginExtractionResult = {
+  title?: string | null;
+  contentHtml: string;
+  contentText: string;
+  excerpt?: string | null;
+};
+
 export type FullContentExtractionServiceOptions = {
   fetcher?: ControlledFetcher;
   minTextLength?: number;
+  pluginExtractor?: (
+    input: FullContentPluginExtractionInput
+  ) => Promise<FullContentPluginExtractionResult | null>;
   onFetchWarning?: (warning: FetchPrivacyWarning) => void;
+  resolveHostname?: HostnameResolver;
 };
 
 const DEFAULT_MIN_TEXT_LENGTH = 200;
 
 export class FullContentExtractionService {
-  private readonly fetcher: ControlledFetcher;
+  private readonly fetcher: ControlledFetcher | undefined;
   private readonly minTextLength: number;
 
   constructor(private readonly options: FullContentExtractionServiceOptions = {}) {
-    this.fetcher = options.fetcher ?? fetch;
+    this.fetcher = options.fetcher;
     this.minTextLength = options.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   }
 
@@ -52,7 +70,8 @@ export class FullContentExtractionService {
           "user-agent": "DibaoFullContentFetcher/0.1"
         },
         maxBytes: fullContentFetchMaxBytes(),
-        onWarning: this.options.onFetchWarning
+        onWarning: this.options.onFetchWarning,
+        resolveHostname: this.options.resolveHostname
       });
       const response = result.response;
       const rawHtml = result.body;
@@ -63,6 +82,23 @@ export class FullContentExtractionService {
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
       if (contentType && !contentType.includes("html") && !contentType.includes("xml")) {
         return skipped(normalized, `Article response is not HTML (${contentType})`);
+      }
+
+      const pluginExtracted = await this.options.pluginExtractor?.({
+        articleUrl: normalized,
+        html: rawHtml,
+        contentType
+      });
+      if (pluginExtracted && pluginExtracted.contentText.length >= this.minTextLength) {
+        return {
+          articleUrl: normalized,
+          status: "success",
+          title: pluginExtracted.title ?? null,
+          contentHtml: pluginExtracted.contentHtml,
+          contentText: pluginExtracted.contentText,
+          excerpt: pluginExtracted.excerpt ?? excerptFor(pluginExtracted.contentText),
+          error: null
+        };
       }
 
       const extracted = extractReadableContent(rawHtml);

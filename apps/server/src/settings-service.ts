@@ -19,6 +19,7 @@ export const RECOMMENDATION_MAINTENANCE_SETTINGS_KEY = "recommendation.maintenan
 
 export const supportedSettingsLocales = ["zh-CN", "en-US", "ja-JP"] as const;
 export type SettingsLocale = (typeof supportedSettingsLocales)[number];
+export type RecommendationV3ModuleMode = "disabled" | "shadow" | "active";
 export const supportedDefaultHomeViews = ["recommended", "latest"] as const;
 export type DefaultHomeView = (typeof supportedDefaultHomeViews)[number];
 
@@ -39,6 +40,7 @@ export type AppSettings = {
   behavior: {
     markScrolledArticlesIgnored: boolean;
     removeReadLaterOnReadComplete: boolean;
+    infiniteArticleLoading: boolean;
   };
   telemetry: {
     enabled: boolean;
@@ -61,6 +63,9 @@ export type AppSettings = {
     localLearningShadowMode: boolean;
     explorationEnabled: boolean;
     evaluationEnabled: boolean;
+    crossSessionFatigueMode: RecommendationV3ModuleMode;
+    recentHistoryMode: RecommendationV3ModuleMode;
+    learnedExplorationMode: RecommendationV3ModuleMode;
   };
   recommendationMaintenance: RecommendationMaintenanceSettings;
 };
@@ -97,7 +102,8 @@ const DEFAULT_LOCALE: SettingsLocale = "zh-CN";
 const DEFAULT_HOME_VIEW: DefaultHomeView = "recommended";
 const DEFAULT_BEHAVIOR_SETTINGS = {
   markScrolledArticlesIgnored: true,
-  removeReadLaterOnReadComplete: false
+  removeReadLaterOnReadComplete: false,
+  infiniteArticleLoading: false
 } as const;
 const DEFAULT_TELEMETRY_SETTINGS = {
   enabled: true
@@ -118,7 +124,10 @@ const DEFAULT_RANKING_SETTINGS = {
   localLearningEnabled: true,
   localLearningShadowMode: false,
   explorationEnabled: true,
-  evaluationEnabled: false
+  evaluationEnabled: false,
+  crossSessionFatigueMode: "shadow",
+  recentHistoryMode: "shadow",
+  learnedExplorationMode: "shadow"
 } as const;
 export const DEFAULT_RECOMMENDATION_MAINTENANCE_SETTINGS: RecommendationMaintenanceSettings = {
   maintenanceEnabled: true,
@@ -160,6 +169,7 @@ type SettingsPatch = {
   behavior?: {
     markScrolledArticlesIgnored?: boolean;
     removeReadLaterOnReadComplete?: boolean;
+    infiniteArticleLoading?: boolean;
   };
   telemetry?: {
     enabled?: boolean;
@@ -174,6 +184,9 @@ type SettingsPatch = {
     localLearningShadowMode?: boolean;
     explorationEnabled?: boolean;
     evaluationEnabled?: boolean;
+    crossSessionFatigueMode?: RecommendationV3ModuleMode;
+    recentHistoryMode?: RecommendationV3ModuleMode;
+    learnedExplorationMode?: RecommendationV3ModuleMode;
   };
   recommendationMaintenance?: Partial<RecommendationMaintenanceSettings>;
 };
@@ -281,7 +294,8 @@ export class SettingsService {
 
     if (
       patch.behavior?.markScrolledArticlesIgnored !== undefined ||
-      patch.behavior?.removeReadLaterOnReadComplete !== undefined
+      patch.behavior?.removeReadLaterOnReadComplete !== undefined ||
+      patch.behavior?.infiniteArticleLoading !== undefined
     ) {
       this.options.settings.setJson(
         BEHAVIOR_SETTINGS_KEY,
@@ -419,7 +433,11 @@ export class SettingsService {
       removeReadLaterOnReadComplete:
         typeof input.removeReadLaterOnReadComplete === "boolean"
           ? input.removeReadLaterOnReadComplete
-          : DEFAULT_BEHAVIOR_SETTINGS.removeReadLaterOnReadComplete
+          : DEFAULT_BEHAVIOR_SETTINGS.removeReadLaterOnReadComplete,
+      infiniteArticleLoading:
+        typeof input.infiniteArticleLoading === "boolean"
+          ? input.infiniteArticleLoading
+          : DEFAULT_BEHAVIOR_SETTINGS.infiniteArticleLoading
     };
   }
 
@@ -519,7 +537,19 @@ export class SettingsService {
       evaluationEnabled:
         typeof input.evaluationEnabled === "boolean"
           ? input.evaluationEnabled
-          : DEFAULT_RANKING_SETTINGS.evaluationEnabled
+          : DEFAULT_RANKING_SETTINGS.evaluationEnabled,
+      crossSessionFatigueMode: readRecommendationV3ModuleMode(
+        input.crossSessionFatigueMode,
+        DEFAULT_RANKING_SETTINGS.crossSessionFatigueMode
+      ),
+      recentHistoryMode: readRecommendationV3ModuleMode(
+        input.recentHistoryMode,
+        DEFAULT_RANKING_SETTINGS.recentHistoryMode
+      ),
+      learnedExplorationMode: readRecommendationV3ModuleMode(
+        input.learnedExplorationMode,
+        DEFAULT_RANKING_SETTINGS.learnedExplorationMode
+      )
     };
   }
 
@@ -695,7 +725,10 @@ function parseRankingPatch(value: unknown): NonNullable<SettingsPatch["ranking"]
     "localLearningEnabled",
     "localLearningShadowMode",
     "explorationEnabled",
-    "evaluationEnabled"
+    "evaluationEnabled",
+    "crossSessionFatigueMode",
+    "recentHistoryMode",
+    "learnedExplorationMode"
   ]);
 
   const patch: NonNullable<SettingsPatch["ranking"]> = {};
@@ -748,6 +781,15 @@ function parseRankingPatch(value: unknown): NonNullable<SettingsPatch["ranking"]
     }
   }
 
+  for (const key of ["crossSessionFatigueMode", "recentHistoryMode", "learnedExplorationMode"] as const) {
+    if (Object.hasOwn(input, key)) {
+      if (!isRecommendationV3ModuleMode(input[key])) {
+        throw validationError(`${key} must be disabled, shadow, or active`, { field: key });
+      }
+      patch[key] = input[key];
+    }
+  }
+
   return patch;
 }
 
@@ -755,7 +797,7 @@ function parseBehaviorPatch(value: unknown): SettingsPatch["behavior"] {
   const input = readSectionObject(value, "behavior");
   rejectUnknownKeys(
     input,
-    ["markScrolledArticlesIgnored", "removeReadLaterOnReadComplete"],
+    ["markScrolledArticlesIgnored", "removeReadLaterOnReadComplete", "infiniteArticleLoading"],
     "behavior"
   );
 
@@ -777,6 +819,15 @@ function parseBehaviorPatch(value: unknown): SettingsPatch["behavior"] {
       });
     }
     patch.removeReadLaterOnReadComplete = input.removeReadLaterOnReadComplete;
+  }
+
+  if (Object.hasOwn(input, "infiniteArticleLoading")) {
+    if (typeof input.infiniteArticleLoading !== "boolean") {
+      throw validationError("behavior.infiniteArticleLoading must be a boolean", {
+        field: "behavior.infiniteArticleLoading"
+      });
+    }
+    patch.infiniteArticleLoading = input.infiniteArticleLoading;
   }
 
   return patch;
@@ -1031,6 +1082,17 @@ function isDefaultHomeView(value: unknown): value is DefaultHomeView {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readRecommendationV3ModuleMode(
+  value: unknown,
+  fallback: RecommendationV3ModuleMode
+): RecommendationV3ModuleMode {
+  return isRecommendationV3ModuleMode(value) ? value : fallback;
+}
+
+function isRecommendationV3ModuleMode(value: unknown): value is RecommendationV3ModuleMode {
+  return value === "disabled" || value === "shadow" || value === "active";
 }
 
 function validationError(message: string, details?: unknown): SettingsServiceError {

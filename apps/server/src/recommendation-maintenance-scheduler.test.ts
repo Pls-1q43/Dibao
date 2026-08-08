@@ -86,7 +86,7 @@ describe("RecommendationMaintenanceScheduler", () => {
     }
   });
 
-  it("enqueues daily keyword, duplicate, recent intent, FTRL, cluster-label, family, merge diagnostics, and ranking work when due", async () => {
+  it("enqueues daily maintenance work without scheduling a periodic ranking refresh", async () => {
     const fixture = createFixture(10 * 86_400_000);
     try {
       const scheduler = createScheduler(fixture);
@@ -99,7 +99,7 @@ describe("RecommendationMaintenanceScheduler", () => {
       expect(fixture.maintenance.scheduleStateFor("cluster_label_daily")?.lastJobId).toEqual(expect.any(String));
       expect(fixture.maintenance.scheduleStateFor("cluster_merge_diagnostics_daily")?.lastJobId).toEqual(expect.any(String));
       expect(fixture.maintenance.scheduleStateFor("interest_family_daily")?.lastJobId).toEqual(expect.any(String));
-      expect(fixture.maintenance.scheduleStateFor("ranking_recalculate_daily")?.lastJobId).toEqual(expect.any(String));
+      expect(fixture.maintenance.scheduleStateFor("ranking_recalculate_daily")).toBeNull();
       expect(fixture.jobs.countByTypeAndStatus("interest_cluster_label_rebuild", "queued")).toBe(1);
       expect(fixture.jobs.countByTypeAndStatus("interest_cluster_merge_diagnostics", "queued")).toBe(1);
       expect(fixture.jobs.countByTypeAndStatus("interest_family_rebuild", "queued")).toBe(1);

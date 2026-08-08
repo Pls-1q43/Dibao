@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getAppliedMigrations, openDatabase, runMigrations, type DibaoDatabase } from "@dibao/db";
 
@@ -41,7 +41,7 @@ try {
       created: true,
       path: backupPath,
       size: statSync(backupPath).size,
-      sha256: sha256File(backupPath)
+      sha256: await sha256File(backupPath)
     };
   } else {
     backup = { created: false, reason: "database_did_not_exist" };
@@ -123,8 +123,12 @@ function hasRelation(database: DibaoDatabase, name: string): boolean {
   return row !== undefined;
 }
 
-function sha256File(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }
 
 function fail(message: string): never {
