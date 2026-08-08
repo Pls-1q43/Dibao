@@ -167,3 +167,69 @@ jobs:
             throw new Error("Published image is missing required Sentry config.");
           }
           NODE
+
+      - name: Verify release container install and upgrade
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
+          else
+            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
+          fi
+
+          previous_image="${{ steps.image.outputs.name }}:v0.2.1"
+          fresh_name="dibao-release-fresh-${GITHUB_RUN_ID}"
+          old_name="dibao-release-upgrade-old-${GITHUB_RUN_ID}"
+          new_name="dibao-release-upgrade-new-${GITHUB_RUN_ID}"
+          fresh_data="$(mktemp -d)"
+          upgrade_data="$(mktemp -d)"
+          chmod 777 "$fresh_data" "$upgrade_data"
+
+          cleanup() {
+            docker rm -f "$fresh_name" "$old_name" "$new_name" >/dev/null 2>&1 || true
+            rm -rf "$fresh_data" "$upgrade_data"
+          }
+          trap cleanup EXIT
+
+          wait_health() {
+            local name="$1"
+            local url="$2"
+            local expected_version="$3"
+            for _ in $(seq 1 90); do
+              local body
+              body="$(curl -fsS "$url/api/system/health" 2>/dev/null || true)"
+              if BODY="$body" EXPECTED_VERSION="$expected_version" node -e 'try { const json = JSON.parse(process.env.BODY || ""); process.exit(json.data?.ok === true && json.data?.version === process.env.EXPECTED_VERSION ? 0 : 1); } catch { process.exit(1); }'; then
+                return 0
+              fi
+              sleep 2
+            done
+            docker logs "$name" --tail 250 || true
+            echo "::error::Container $name did not become healthy with version $expected_version."
+            return 1
+          }
+
+          latest_migration() {
+            local name="$1"
+            docker exec "$name" node -e 'const Database = require("better-sqlite3"); const db = new Database("/data/dibao.sqlite", { readonly: true }); const row = db.prepare("select version, name from schema_migrations order by version desc limit 1").get(); console.log(`${row.version} ${row.name}`); db.close();'
+          }
+
+          docker run -d --name "$fresh_name" -p 18081:8080 -v "$fresh_data:/data" "$image_ref"
+          wait_health "$fresh_name" "http://127.0.0.1:18081" "0.3.0"
+          fresh_latest="$(latest_migration "$fresh_name")"
+          echo "Fresh install latest migration: $fresh_latest"
+          test "$fresh_latest" = "026 recommendation_v3_memory"
+          docker rm -f "$fresh_name"
+
+          docker pull "$previous_image"
+          docker run -d --name "$old_name" -p 18082:8080 -v "$upgrade_data:/data" "$previous_image"
+          wait_health "$old_name" "http://127.0.0.1:18082" "0.2.1"
+          old_latest="$(latest_migration "$old_name")"
+          echo "Previous release latest migration: $old_latest"
+          test "$old_latest" = "025 recommended_rank_sort_index"
+          docker rm -f "$old_name"
+
+          docker run -d --name "$new_name" -p 18083:8080 -v "$upgrade_data:/data" "$image_ref"
+          wait_health "$new_name" "http://127.0.0.1:18083" "0.3.0"
+          upgraded_latest="$(latest_migration "$new_name")"
+          echo "Upgrade latest migration: $upgraded_latest"
+          test "$upgraded_latest" = "026 recommendation_v3_memory"
