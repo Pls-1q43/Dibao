@@ -19,8 +19,8 @@
     "@dibao/ranking": "0.3.1",
     "@dibao/rss": "0.3.1",
     "@dibao/shared": "0.3.1",
-    "@sentry/node": "^10.53.1",
-    "fastify": "^5.8.5",
-    "undici": "^7.28.0"
+    "@sentry/node": "^10.69.0",
+    "fastify": "^5.11.3",
+    "undici": "^7.29.0"
   }
 }
