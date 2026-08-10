@@ -95,12 +95,14 @@ const PLUGIN_DELIVERY_FLUSH_TIMEOUT_MS = 15_000;
 const PLUGIN_DELIVERY_FLUSH_POLL_MS = 250;
 const PLUGIN_DELIVERY_FLUSH_RETRY_DELAY_MS = 60_000;
 
+export type PluginLocalizedString = string | Record<string, string>;
+
 export type PluginManifest = {
   manifestVersion: 1;
   id: string;
-  name: string;
+  name: PluginLocalizedString;
   version: string;
-  publisher: string;
+  publisher: PluginLocalizedString;
   dibao: {
     minVersion: string;
     maxVersion: string;
@@ -126,7 +128,7 @@ export type PluginManifest = {
 
 export type PluginPanelContribution = {
   id: string;
-  title: string;
+  title: PluginLocalizedString;
   slot: string;
   order?: number;
   icon?: string;
@@ -138,7 +140,7 @@ export type PluginPanelContribution = {
 export type PluginRouteContribution = {
   id: string;
   path: string;
-  title: string;
+  title: PluginLocalizedString;
   panel: string;
   order?: number;
   icon?: string;
@@ -148,7 +150,7 @@ export type PluginRouteContribution = {
 
 export type PluginActionContribution = {
   id: string;
-  title: string;
+  title: PluginLocalizedString;
   slot: string;
   icon?: string;
   command: string;
@@ -157,7 +159,7 @@ export type PluginActionContribution = {
 
 export type PluginFullContentExtractorContribution = {
   id: string;
-  title: string;
+  title: PluginLocalizedString;
   order?: number;
 };
 
@@ -170,8 +172,8 @@ export type PluginTaskContribution = {
 
 export type PluginSetupStepContribution = {
   id: string;
-  title: string;
-  body?: string;
+  title: PluginLocalizedString;
+  body?: PluginLocalizedString;
   order?: number;
   defaultEnabled?: boolean;
 };
@@ -282,6 +284,7 @@ export type PluginServiceOptions = {
   jobs: JobRepository;
   dibaoVersion: string;
   getActiveRankContext: () => string;
+  getLocale?: () => string;
   officialPluginsDir?: string;
   pluginDataDir?: string;
   fetcher?: ControlledFetcher;
@@ -921,22 +924,26 @@ export class PluginService {
 
   list(): PluginListItem[] {
     this.reconcileOfficialPlugins();
-    return this.options.plugins.listInstalls().map((install) => this.toListItem(install));
+    return this.options.plugins
+      .listInstalls()
+      .map((install) => this.toListItem(install, this.currentLocale()));
   }
 
   listContributions(): PluginContributionListItem[] {
     this.reconcileOfficialPlugins();
+    const locale = this.currentLocale();
     return this.options.plugins
       .listInstalls()
       .filter((install) => install.status === "enabled")
       .map((install) => ({
-        ...this.toListItem(install),
+        ...this.toListItem(install, locale),
         webEntryUrl: this.webEntryUrl(install)
       }));
   }
 
   listSetupSteps(): PluginContributionListItem[] {
     this.reconcileOfficialPlugins();
+    const locale = this.currentLocale();
     return this.options.plugins
       .listInstalls()
       .filter((install) => {
@@ -944,7 +951,7 @@ export class PluginService {
         return Boolean(manifest.contributes?.setupSteps?.length);
       })
       .map((install) => ({
-        ...this.toListItem(install),
+        ...this.toListItem(install, locale),
         webEntryUrl: this.webEntryUrl(install)
       }));
   }
@@ -1208,7 +1215,8 @@ export class PluginService {
     const hostConfig = Buffer.from(JSON.stringify({
       pluginId: install.id,
       manifest,
-      entryPath
+      entryPath,
+      locale: this.currentLocale()
     }), "utf8").toString("base64url");
     child = spawn(host.command, host.args, {
       env: {
@@ -1412,6 +1420,8 @@ export class PluginService {
     switch (method) {
       case "now":
         return this.now();
+      case "locale.get":
+        return this.currentLocale();
       case "events.catalog":
         return [...PLUGIN_EVENT_CATALOG];
       case "events.emit": {
@@ -2203,13 +2213,13 @@ export class PluginService {
     return this.toListItem(this.requireInstall(pluginId));
   }
 
-  private toListItem(install: PluginInstallRow): PluginListItem {
+  private toListItem(install: PluginInstallRow, locale = this.currentLocale()): PluginListItem {
     const manifest = parseStoredManifest(install);
     return {
       id: install.id,
-      name: manifest.name,
+      name: resolveLocalizedString(manifest.name, locale),
       version: install.version,
-      publisher: manifest.publisher,
+      publisher: resolveLocalizedString(manifest.publisher, locale),
       status: install.status,
       sourceType: install.sourceType,
       sourceUrl: install.sourceUrl,
@@ -2221,13 +2231,18 @@ export class PluginService {
       grantedCapabilities: this.options.plugins.listCapabilityGrants(install.id),
       apiStability: pluginApiStability(manifest),
       contributes: manifest.contributes ?? {},
-      contributions: runtimeContributions(manifest.contributes),
+      contributions: runtimeContributions(manifest.contributes, locale),
       installedAt: new Date(install.installedAt).toISOString(),
       updatedAt: new Date(install.updatedAt).toISOString(),
       enabledAt: install.enabledAt ? new Date(install.enabledAt).toISOString() : null,
       disabledAt: install.disabledAt ? new Date(install.disabledAt).toISOString() : null,
       lastError: install.lastError
     };
+  }
+
+  private currentLocale(): string {
+    const locale = this.options.getLocale?.();
+    return typeof locale === "string" && locale.trim() ? locale.trim() : "zh-CN";
   }
 
   private webEntryUrl(install: PluginInstallRow): string | null {
@@ -2616,9 +2631,9 @@ function parsePluginManifest(input: unknown): PluginManifest {
   if (!id || !PLUGIN_ID_PATTERN.test(id)) {
     throw new PluginServiceError(400, "VALIDATION_ERROR", "Plugin id is invalid");
   }
-  const name = stringValue(manifest.name);
+  const name = localizedStringValue(manifest.name);
   const version = stringValue(manifest.version);
-  const publisher = stringValue(manifest.publisher);
+  const publisher = localizedStringValue(manifest.publisher);
   if (!name || !version || !publisher) {
     throw new PluginServiceError(400, "VALIDATION_ERROR", "Plugin name, version, and publisher are required");
   }
@@ -2725,7 +2740,7 @@ function normalizeFullContentExtractorContributions(
   return input.map((item) => {
     const record = parseJsonObject(item);
     const id = stringValue(record?.id);
-    const title = stringValue(record?.title);
+    const title = localizedStringValue(record?.title);
     const order = record?.order;
     if (!id || !title) {
       throw new PluginServiceError(
@@ -2749,18 +2764,21 @@ function normalizeFullContentExtractorContributions(
   });
 }
 
-function runtimeContributions(contributes: PluginManifest["contributes"]): PluginRuntimeContributions {
+function runtimeContributions(
+  contributes: PluginManifest["contributes"],
+  locale = "zh-CN"
+): PluginRuntimeContributions {
   const normalized = normalizeContributions(contributes);
   const routes = (normalized.routes ?? []).map((route) => ({
     id: route.id,
-    title: route.title,
+    title: resolveLocalizedString(route.title, locale),
     path: route.path
   }));
   const primaryNav = dedupePluginNav([
     ...(normalized.tabs ?? [])
       .filter((tab) => tab.primaryNav)
       .map((tab) => ({
-        label: tab.title,
+        label: resolveLocalizedString(tab.title, locale),
         route: tab.route ?? tab.id,
         icon: tab.icon,
         order: tab.order
@@ -2768,7 +2786,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     ...(normalized.routes ?? [])
       .filter((route) => route.primaryNav)
       .map((route) => ({
-        label: route.title,
+        label: resolveLocalizedString(route.title, locale),
         route: route.id,
         icon: route.icon,
         order: route.order
@@ -2778,7 +2796,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     ...(normalized.tabs ?? [])
       .filter((tab) => tab.primaryMobile)
       .map((tab) => ({
-        label: tab.title,
+        label: resolveLocalizedString(tab.title, locale),
         route: tab.route ?? tab.id,
         icon: tab.icon,
         order: tab.order
@@ -2786,7 +2804,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     ...(normalized.routes ?? [])
       .filter((route) => route.primaryMobile)
       .map((route) => ({
-        label: route.title,
+        label: resolveLocalizedString(route.title, locale),
         route: route.id,
         icon: route.icon,
         order: route.order
@@ -2799,7 +2817,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     tabs: (normalized.tabs ?? [])
       .map((tab) => ({
         id: tab.id,
-        label: tab.title,
+        label: resolveLocalizedString(tab.title, locale),
         slot: tab.slot,
         route: tab.route ?? tab.id,
         icon: tab.icon,
@@ -2809,7 +2827,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     actions: (normalized.actions ?? [])
       .map((action) => ({
         id: action.id,
-        label: action.title,
+        label: resolveLocalizedString(action.title, locale),
         slot: action.slot,
         icon: action.icon,
         command: action.command,
@@ -2819,7 +2837,7 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     settingsTabs: (normalized.settingsTabs ?? [])
       .map((tab) => ({
         id: tab.id,
-        label: tab.title,
+        label: resolveLocalizedString(tab.title, locale),
         route: tab.route ?? tab.id,
         order: tab.order
       }))
@@ -2827,8 +2845,8 @@ function runtimeContributions(contributes: PluginManifest["contributes"]): Plugi
     setupSteps: (normalized.setupSteps ?? [])
       .map((step) => ({
         id: step.id,
-        title: step.title,
-        body: step.body ?? "",
+        title: resolveLocalizedString(step.title, locale),
+        body: resolveLocalizedString(step.body ?? "", locale),
         recommended: step.defaultEnabled
       }))
       .sort(sortContributionByOrder)
@@ -2900,6 +2918,42 @@ function defaultOfficialPluginsDir(): string {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function localizedStringValue(value: unknown): PluginLocalizedString | null {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized ? normalized : null;
+  }
+  const record = parseJsonObject(value);
+  if (!record) {
+    return null;
+  }
+  const localized: Record<string, string> = {};
+  for (const [locale, text] of Object.entries(record)) {
+    const localeKey = locale.trim();
+    const normalizedText = typeof text === "string" ? text.trim() : "";
+    if (localeKey && normalizedText) {
+      localized[localeKey] = normalizedText;
+    }
+  }
+  return Object.keys(localized).length > 0 ? localized : null;
+}
+
+function resolveLocalizedString(value: PluginLocalizedString, locale = "zh-CN"): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  const normalizedLocale = locale.trim();
+  const language = normalizedLocale.split("-")[0];
+  return (
+    value[normalizedLocale] ??
+    (language ? value[language] : undefined) ??
+    value["zh-CN"] ??
+    value.zh ??
+    Object.values(value)[0] ??
+    ""
+  );
 }
 
 function stringOrNull(value: unknown): string | null {

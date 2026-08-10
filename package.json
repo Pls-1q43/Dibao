@@ -1,6 +1,6 @@
 {
   "name": "dibao",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -32,10 +32,10 @@
     "@types/node": "^25.7.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
-    "tsx": "^4.21.1",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3",
-    "vite": "^8.0.13",
-    "vitest": "^4.1.6"
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
   }
 }

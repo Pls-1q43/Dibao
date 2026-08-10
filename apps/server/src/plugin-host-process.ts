@@ -32,6 +32,7 @@ type PluginHostConfig = {
   pluginId: string;
   manifest: unknown;
   entryPath: string;
+  locale?: string;
 };
 
 const hookHandlers = new Map<string, Array<(payload: unknown) => Promise<void> | void>>();
@@ -84,6 +85,10 @@ function createContext(config: PluginHostConfig): Record<string, unknown> {
   return {
     pluginId: config.pluginId,
     manifest: config.manifest,
+    locale: typeof config.locale === "string" && config.locale ? config.locale : "zh-CN",
+    i18n: {
+      getLocale: () => callHost("locale.get")
+    },
     now: () => callHost("now"),
     hooks: {
       on: (hook: string, handler: (payload: unknown) => Promise<void> | void) => {

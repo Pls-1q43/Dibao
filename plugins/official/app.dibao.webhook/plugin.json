@@ -1,9 +1,17 @@
 {
   "manifestVersion": 1,
   "id": "app.dibao.webhook",
-  "name": "Webhook",
-  "version": "0.1.0",
-  "publisher": "Dibao",
+  "name": {
+    "zh-CN": "Webhook",
+    "en-US": "Webhook",
+    "ja-JP": "Webhook"
+  },
+  "version": "0.1.1",
+  "publisher": {
+    "zh-CN": "邸报",
+    "en-US": "Dibao",
+    "ja-JP": "Dibao"
+  },
   "dibao": {
     "minVersion": "0.2.0",
     "maxVersion": "<0.4.0"
@@ -25,7 +33,11 @@
     "settingsTabs": [
       {
         "id": "webhook-settings",
-        "title": "Webhook",
+        "title": {
+          "zh-CN": "Webhook",
+          "en-US": "Webhook",
+          "ja-JP": "Webhook"
+        },
         "slot": "settings.tabs",
         "route": "settings",
         "order": 70,

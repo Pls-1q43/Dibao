@@ -55,6 +55,29 @@ Last updated: 2026-06-18
 
 `id` 建议使用反向域名；`dibao.maxVersion` 建议写成 `<0.3.0`，避免未来 breaking API 自动启用。
 
+### 插件本地化
+
+从 0.3 起，manifest 中面向用户的字符串可以继续写普通字符串，也可以写成 locale map：
+
+```json
+{
+  "name": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+  "publisher": { "zh-CN": "示例", "en-US": "Example", "ja-JP": "Example" },
+  "contributes": {
+    "settingsTabs": [
+      {
+        "id": "settings",
+        "title": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+        "slot": "settings.tabs",
+        "route": "settings"
+      }
+    ]
+  }
+}
+```
+
+邸报按当前语言解析 manifest 字符串，fallback 顺序为完整 locale、语言代码、`zh-CN`、`zh`、第一个可用值。Web 插件 iframe 会收到 `?locale=zh-CN|en-US|ja-JP` 参数，并可通过 bridge 方法 `getLocale` 读取当前语言。服务端插件启动时可读 `ctx.locale`；如果插件需要跟随运行中的语言切换，使用 `await ctx.i18n.getLocale()`。
+
 ## Capabilities
 
 0.2 支持：

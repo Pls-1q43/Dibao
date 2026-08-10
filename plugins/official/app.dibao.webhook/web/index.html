@@ -146,6 +146,262 @@
 
     <script>
       const pluginId = "app.dibao.webhook";
+      const params = new URLSearchParams(window.location.search);
+      const locale = normalizeLocale(params.get("locale"));
+      const copy = {
+        "zh-CN": {
+          title: "Webhook",
+          summaryLoading: "加载中",
+          newRule: "新建规则",
+          rulesTitle: "规则",
+          editorTitle: "规则设置",
+          emptyEditor: "还没有规则。新建一条规则后，选择触发事件并填写 Webhook 地址即可开始发送。",
+          basicTitle: "基础信息",
+          basicHelp: "规则启用后，匹配触发事件和条件时会创建一条可重试投递。",
+          enabled: "启用",
+          name: "名称",
+          httpMethod: "HTTP 方法",
+          triggerTitle: "触发事件",
+          triggerHelp: "选择事件后，下方条件字段和模板变量会自动切换。",
+          event: "事件",
+          variablesTitle: "可用变量",
+          conditionsTitle: "触发条件",
+          conditionsHelp: "所有条件都按 AND 匹配。不加条件时，选中的事件都会触发。",
+          addCondition: "添加条件",
+          requestTitle: "请求内容",
+          requestHelp: "GET 会把字段映射合并进 query string；POST 会发送 JSON body。",
+          sendFullContent: "发送全文",
+          getQueryFields: "GET Query 字段",
+          addQuery: "添加 Query",
+          mappingHelp: "取值方式选“变量”时填写变量路径，不用加双大括号；选“固定文本”时会原样发送。",
+          postBodyFields: "POST Body 字段",
+          addField: "添加字段",
+          bodyHelp: "默认字段已覆盖常见文章同步场景。只填 Webhook URL 后即可测试发送。",
+          advancedJson: "高级 JSON",
+          advancedJsonHelp: "这里显示由上方字段映射生成的模板。需要复杂对象时可以展开编辑；保存后仍使用当前规则 schema。",
+          authAdvanced: "鉴权（高级）",
+          authHelp: "用于 Authorization、API Token 等敏感 header。通常不用配置；不填写也可以保存、测试和发送。Secret 明文只保存到插件 Secret Store，不会在界面或投递记录中回显。",
+          normalHeaders: "普通 Headers",
+          addHeader: "添加 Header",
+          addSecretHeader: "添加 Secret Header",
+          secretHint: "提示",
+          secretValue: "Secret 值",
+          saveSecret: "保存 Secret",
+          save: "保存",
+          test: "测试连接",
+          deleteRule: "删除规则",
+          deliveriesTitle: "投递记录",
+          hostTimeout: "宿主响应超时，请重试。",
+          bridgeFailed: "插件桥请求失败",
+          testFailed: (reason) => `测试连接失败：${reason}`,
+          unknownError: "未知错误",
+          secretRequired: "Secret key 和 Secret 值不能为空。",
+          summary: (rules, deliveries) => `${rules} 条规则，${deliveries} 条最近投递`,
+          noRules: "无规则",
+          ruleEnabled: "启用",
+          ruleDisabled: "停用",
+          optionalActions: "可选行为",
+          variable: "变量",
+          description: "说明",
+          example: "示例",
+          field: "字段",
+          operator: "操作符",
+          value: "值",
+          insert: "插入",
+          noConditions: "无条件。这个事件发生时都会触发。",
+          exists: "存在",
+          equals: "等于",
+          contains: "包含",
+          delete: "删除",
+          noValueNeeded: "无需填写",
+          fieldName: "字段名",
+          valueSource: "取值方式",
+          noFields: "未配置字段。",
+          variableType: "变量",
+          fixedTextType: "固定文本",
+          jsonObjectType: "JSON 对象",
+          headerName: "Header 名",
+          noPlainHeaders: "未配置普通 Header。",
+          secretKey: "Secret key",
+          prefix: "前缀",
+          noSecretHeaders: "未配置 Secret Header。",
+          noSecrets: "还没有保存的 Secret。",
+          saved: "已保存",
+          notSaved: "未保存",
+          noDeliveries: "无投递记录",
+          defaultRuleName: "收藏文章时发送",
+          customPath: "自定义路径",
+          stableEvent: "稳定插件事件。"
+        },
+        "en-US": {
+          title: "Webhook",
+          summaryLoading: "Loading",
+          newRule: "New rule",
+          rulesTitle: "Rules",
+          editorTitle: "Rule settings",
+          emptyEditor: "No rules yet. Create a rule, choose a trigger event, and enter a Webhook URL to start sending.",
+          basicTitle: "Basic info",
+          basicHelp: "When a rule is enabled, matching trigger events and conditions create retryable deliveries.",
+          enabled: "Enabled",
+          name: "Name",
+          httpMethod: "HTTP method",
+          triggerTitle: "Trigger event",
+          triggerHelp: "After you choose an event, condition fields and template variables update automatically.",
+          event: "Event",
+          variablesTitle: "Available variables",
+          conditionsTitle: "Trigger conditions",
+          conditionsHelp: "All conditions match with AND. Without conditions, every selected event triggers.",
+          addCondition: "Add condition",
+          requestTitle: "Request content",
+          requestHelp: "GET merges field mappings into the query string; POST sends a JSON body.",
+          sendFullContent: "Send full content",
+          getQueryFields: "GET query fields",
+          addQuery: "Add query",
+          mappingHelp: "For variable values, enter the variable path without double braces. Fixed text is sent as-is.",
+          postBodyFields: "POST body fields",
+          addField: "Add field",
+          bodyHelp: "Default fields cover common article-sync cases. Entering only the Webhook URL is enough for a test send.",
+          advancedJson: "Advanced JSON",
+          advancedJsonHelp: "This shows the template generated by the field mappings above. Expand it for complex objects; saving still uses the current rule schema.",
+          authAdvanced: "Auth (advanced)",
+          authHelp: "For sensitive headers such as Authorization or API tokens. Usually optional. Secrets are stored only in the plugin Secret Store and are not shown in the UI or delivery logs.",
+          normalHeaders: "Plain headers",
+          addHeader: "Add header",
+          addSecretHeader: "Add secret header",
+          secretHint: "Hint",
+          secretValue: "Secret value",
+          saveSecret: "Save secret",
+          save: "Save",
+          test: "Test connection",
+          deleteRule: "Delete rule",
+          deliveriesTitle: "Deliveries",
+          hostTimeout: "Host timed out. Please try again.",
+          bridgeFailed: "Plugin bridge request failed",
+          testFailed: (reason) => `Test connection failed: ${reason}`,
+          unknownError: "Unknown error",
+          secretRequired: "Secret key and secret value are required.",
+          summary: (rules, deliveries) => `${rules} rules, ${deliveries} recent deliveries`,
+          noRules: "No rules",
+          ruleEnabled: "Enabled",
+          ruleDisabled: "Disabled",
+          optionalActions: "Optional actions",
+          variable: "Variable",
+          description: "Description",
+          example: "Example",
+          field: "Field",
+          operator: "Operator",
+          value: "Value",
+          insert: "Insert",
+          noConditions: "No conditions. This event will always trigger.",
+          exists: "Exists",
+          equals: "Equals",
+          contains: "Contains",
+          delete: "Delete",
+          noValueNeeded: "No value needed",
+          fieldName: "Field name",
+          valueSource: "Value source",
+          noFields: "No fields configured.",
+          variableType: "Variable",
+          fixedTextType: "Fixed text",
+          jsonObjectType: "JSON object",
+          headerName: "Header name",
+          noPlainHeaders: "No plain headers configured.",
+          secretKey: "Secret key",
+          prefix: "Prefix",
+          noSecretHeaders: "No secret headers configured.",
+          noSecrets: "No saved secrets yet.",
+          saved: "Saved",
+          notSaved: "Not saved",
+          noDeliveries: "No deliveries",
+          defaultRuleName: "Send when an article is favorited",
+          customPath: "Custom path",
+          stableEvent: "Stable plugin event."
+        },
+        "ja-JP": {
+          title: "Webhook",
+          summaryLoading: "読み込み中",
+          newRule: "新規ルール",
+          rulesTitle: "ルール",
+          editorTitle: "ルール設定",
+          emptyEditor: "ルールはまだありません。新しいルールを作成し、トリガーイベントと Webhook URL を入力すると送信を開始できます。",
+          basicTitle: "基本情報",
+          basicHelp: "ルールを有効にすると、トリガーイベントと条件に一致したとき再試行可能な配信が作成されます。",
+          enabled: "有効",
+          name: "名前",
+          httpMethod: "HTTP メソッド",
+          triggerTitle: "トリガーイベント",
+          triggerHelp: "イベントを選ぶと、下の条件フィールドとテンプレート変数が自動で切り替わります。",
+          event: "イベント",
+          variablesTitle: "利用可能な変数",
+          conditionsTitle: "トリガー条件",
+          conditionsHelp: "すべての条件は AND で判定されます。条件がない場合、選択したイベントは常にトリガーされます。",
+          addCondition: "条件を追加",
+          requestTitle: "リクエスト内容",
+          requestHelp: "GET はフィールドマッピングを query string に統合し、POST は JSON body を送信します。",
+          sendFullContent: "全文を送信",
+          getQueryFields: "GET Query フィールド",
+          addQuery: "Query を追加",
+          mappingHelp: "値の種類が変数の場合は二重波括弧なしで変数パスを入力します。固定テキストはそのまま送信されます。",
+          postBodyFields: "POST Body フィールド",
+          addField: "フィールドを追加",
+          bodyHelp: "既定フィールドは一般的な記事同期を想定しています。Webhook URL だけでもテスト送信できます。",
+          advancedJson: "高度な JSON",
+          advancedJsonHelp: "上のフィールドマッピングから生成されたテンプレートです。複雑な object が必要な場合は展開して編集できます。保存時は現在のルール schema を使います。",
+          authAdvanced: "認証（高度）",
+          authHelp: "Authorization や API token などの機密 header 用です。通常は任意です。Secret の平文はプラグイン Secret Store にのみ保存され、UI や配信記録には表示されません。",
+          normalHeaders: "通常 Headers",
+          addHeader: "Header を追加",
+          addSecretHeader: "Secret Header を追加",
+          secretHint: "ヒント",
+          secretValue: "Secret 値",
+          saveSecret: "Secret を保存",
+          save: "保存",
+          test: "接続テスト",
+          deleteRule: "ルールを削除",
+          deliveriesTitle: "配信記録",
+          hostTimeout: "ホストがタイムアウトしました。もう一度お試しください。",
+          bridgeFailed: "プラグイン bridge request が失敗しました",
+          testFailed: (reason) => `接続テストに失敗しました: ${reason}`,
+          unknownError: "不明なエラー",
+          secretRequired: "Secret key と Secret 値は必須です。",
+          summary: (rules, deliveries) => `${rules} 件のルール、最近の配信 ${deliveries} 件`,
+          noRules: "ルールなし",
+          ruleEnabled: "有効",
+          ruleDisabled: "無効",
+          optionalActions: "選択可能な action",
+          variable: "変数",
+          description: "説明",
+          example: "例",
+          field: "フィールド",
+          operator: "演算子",
+          value: "値",
+          insert: "挿入",
+          noConditions: "条件はありません。このイベント発生時は常にトリガーされます。",
+          exists: "存在",
+          equals: "等しい",
+          contains: "含む",
+          delete: "削除",
+          noValueNeeded: "入力不要",
+          fieldName: "フィールド名",
+          valueSource: "値の種類",
+          noFields: "フィールドは未設定です。",
+          variableType: "変数",
+          fixedTextType: "固定テキスト",
+          jsonObjectType: "JSON object",
+          headerName: "Header 名",
+          noPlainHeaders: "通常 Header は未設定です。",
+          secretKey: "Secret key",
+          prefix: "Prefix",
+          noSecretHeaders: "Secret Header は未設定です。",
+          noSecrets: "保存済み Secret はまだありません。",
+          saved: "保存済み",
+          notSaved: "未保存",
+          noDeliveries: "配信記録なし",
+          defaultRuleName: "記事のお気に入り時に送信",
+          customPath: "カスタムパス",
+          stableEvent: "安定したプラグインイベントです。"
+        }
+      }[locale];
       const articleActions = [
         "impression",
         "open",
@@ -220,7 +476,7 @@
         if (data.ok) {
           handler.resolve(data.result);
         } else {
-          handler.reject(new Error(data.error || "Plugin bridge request failed"));
+          handler.reject(new Error(data.error || copy.bridgeFailed));
         }
       });
 
@@ -242,7 +498,7 @@
           window.setTimeout(() => {
             if (!bridgeHandlers.has(requestId)) return;
             bridgeHandlers.delete(requestId);
-            reject(new Error("宿主响应超时，请重试。"));
+            reject(new Error(copy.hostTimeout));
           }, 10000);
         });
       }
@@ -327,7 +583,7 @@
             mergeDelivery(delivery);
           }
           if (delivery?.status !== "succeeded") {
-            throw new Error(`测试连接失败：${delivery?.error || delivery?.status || "未知错误"}`);
+            throw new Error(copy.testFailed(delivery?.error || delivery?.status || copy.unknownError));
           }
         });
       });
@@ -352,7 +608,7 @@
         const value = document.getElementById("secret-value").value;
         const hint = document.getElementById("secret-hint").value.trim();
         if (!key || !value) {
-          showError("Secret key 和 Secret 值不能为空。");
+          showError(copy.secretRequired);
           return;
         }
         await run(async () => {
@@ -365,7 +621,52 @@
         });
       });
 
+      applyStaticCopy();
       load();
+
+      function applyStaticCopy() {
+        document.documentElement.lang = locale;
+        document.title = copy.title;
+        document.querySelector(".toolbar h1").textContent = copy.title;
+        document.getElementById("summary").textContent = copy.summaryLoading;
+        document.getElementById("new-rule").textContent = copy.newRule;
+        document.querySelector(".layout aside.panel h2").textContent = copy.rulesTitle;
+        document.querySelector("#editor > h2").textContent = copy.editorTitle;
+        document.getElementById("empty").textContent = copy.emptyEditor;
+        const sections = [...document.querySelectorAll("#form .section-card")];
+        setSectionCopy(sections[0], copy.basicTitle, copy.basicHelp);
+        setSwitchText("enabled", copy.enabled);
+        setLabelText("name", copy.name);
+        setLabelText("method", copy.httpMethod);
+        setSectionCopy(sections[1], copy.triggerTitle, copy.triggerHelp);
+        setLabelText("event", copy.event);
+        document.querySelector("#variables").previousElementSibling.textContent = copy.variablesTitle;
+        setSectionCopy(sections[2], copy.conditionsTitle, copy.conditionsHelp);
+        document.getElementById("add-condition").textContent = copy.addCondition;
+        setSectionCopy(sections[3], copy.requestTitle, copy.requestHelp);
+        setSwitchText("include-content", copy.sendFullContent);
+        document.querySelector("#query-wrap .subhead h3").textContent = copy.getQueryFields;
+        document.getElementById("add-query-row").textContent = copy.addQuery;
+        document.querySelector("#query-wrap .help").textContent = copy.mappingHelp;
+        document.querySelector("#body-wrap .subhead h3").textContent = copy.postBodyFields;
+        document.getElementById("add-body-row").textContent = copy.addField;
+        document.querySelector("#body-wrap .help").textContent = copy.bodyHelp;
+        document.querySelector("#advanced-json summary").textContent = copy.advancedJson;
+        document.querySelector("#advanced-json .help").textContent = copy.advancedJsonHelp;
+        document.querySelector("#auth-details summary").textContent = copy.authAdvanced;
+        document.querySelector("#auth-details > .help").textContent = copy.authHelp;
+        document.querySelector("#auth-details .subhead h3").textContent = copy.normalHeaders;
+        document.getElementById("add-header-row").textContent = copy.addHeader;
+        document.querySelectorAll("#auth-details .subhead h3")[1].textContent = "Secret Headers";
+        document.getElementById("add-secret-header-row").textContent = copy.addSecretHeader;
+        setLabelText("secret-hint", copy.secretHint);
+        setLabelText("secret-value", copy.secretValue);
+        document.getElementById("save-secret").textContent = copy.saveSecret;
+        document.getElementById("save").textContent = copy.save;
+        document.getElementById("test").textContent = copy.test;
+        document.getElementById("delete").textContent = copy.deleteRule;
+        document.querySelector("#deliveries").previousElementSibling.textContent = copy.deliveriesTitle;
+      }
 
       async function load() {
         await run(async () => applyState(await api("state")));
@@ -399,7 +700,7 @@
 
       function render() {
         document.getElementById("summary").textContent =
-          `${state.rules.length} 条规则，${state.deliveries.length} 条最近投递`;
+          copy.summary(state.rules.length, state.deliveries.length);
         renderRules();
         renderEvents();
         const rule = currentRule();
@@ -413,7 +714,7 @@
         const root = document.getElementById("rules");
         root.innerHTML = "";
         if (state.rules.length === 0) {
-          root.innerHTML = '<div class="empty">无规则</div>';
+          root.innerHTML = `<div class="empty">${escapeHtml(copy.noRules)}</div>`;
           return;
         }
         for (const rule of state.rules) {
@@ -421,7 +722,7 @@
           const button = document.createElement("button");
           button.type = "button";
           button.className = `rule-row${rule.id === state.selectedId ? " active" : ""}`;
-          button.innerHTML = `<strong>${escapeHtml(rule.name)}</strong><div class="muted">${escapeHtml(meta.title)} · ${escapeHtml(rule.method)} · ${rule.enabled ? "启用" : "停用"}</div>`;
+          button.innerHTML = `<strong>${escapeHtml(rule.name)}</strong><div class="muted">${escapeHtml(meta.title)} · ${escapeHtml(rule.method)} · ${rule.enabled ? copy.ruleEnabled : copy.ruleDisabled}</div>`;
           button.addEventListener("click", () => {
             saveDraftFromForm();
             state.selectedId = rule.id;
@@ -476,7 +777,7 @@
         actions.innerHTML = "";
         const actionField = (meta.fields || []).find((field) => field.path === "event.action");
         if (actionField?.options?.length) {
-          actions.innerHTML = '<span class="pill">可选行为</span>';
+          actions.innerHTML = `<span class="pill">${escapeHtml(copy.optionalActions)}</span>`;
           for (const action of actionField.options) {
             const chip = document.createElement("span");
             chip.className = "template-chip";
@@ -503,7 +804,7 @@
 
       function renderVariableTable(variables) {
         const root = document.getElementById("variables");
-        root.innerHTML = tableShell("变量", "说明", "示例", "");
+        root.innerHTML = tableShell(copy.variable, copy.description, copy.example, "");
         const body = root.querySelector("tbody");
         for (const variable of variables) {
           const row = document.createElement("tr");
@@ -511,7 +812,7 @@
             <td><code>{{${escapeHtml(variable.path)}}}</code></td>
             <td>${escapeHtml(variable.description || "")}</td>
             <td><span class="muted">${escapeHtml(formatExample(variable.example))}</span></td>
-            <td><button class="button" type="button">插入</button></td>
+            <td><button class="button" type="button">${escapeHtml(copy.insert)}</button></td>
           `;
           row.querySelector("button").addEventListener("click", () => insertTemplate(variable.path));
           body.append(row);
@@ -520,11 +821,11 @@
 
       function renderConditions(rule) {
         const root = document.getElementById("conditions");
-        root.innerHTML = tableShell("字段", "操作符", "值", "");
+        root.innerHTML = tableShell(copy.field, copy.operator, copy.value, "");
         const body = root.querySelector("tbody");
         const conditions = rule.conditions || [];
         if (conditions.length === 0) {
-          root.innerHTML = '<div class="empty">无条件。这个事件发生时都会触发。</div>';
+          root.innerHTML = `<div class="empty">${escapeHtml(copy.noConditions)}</div>`;
           return;
         }
         for (const [index, condition] of conditions.entries()) {
@@ -534,13 +835,13 @@
             <td>${fieldSelect(rule.eventName, condition.path, index)}</td>
             <td>
               <select data-cond="${index}" data-field="operator">
-                <option value="exists">存在</option>
-                <option value="equals">等于</option>
-                <option value="contains">包含</option>
+                <option value="exists">${escapeHtml(copy.exists)}</option>
+                <option value="equals">${escapeHtml(copy.equals)}</option>
+                <option value="contains">${escapeHtml(copy.contains)}</option>
               </select>
             </td>
             <td data-value-cell="${index}"></td>
-            <td><button class="button danger" data-remove-condition="${index}" type="button">删除</button></td>
+            <td><button class="button danger" data-remove-condition="${index}" type="button">${escapeHtml(copy.delete)}</button></td>
           `;
           body.append(row);
           row.querySelector(`[data-field="operator"]`).value = condition.operator || "exists";
@@ -576,7 +877,7 @@
       function renderConditionValue(cell, condition, eventName, index) {
         const operator = condition.operator || "exists";
         if (operator === "exists") {
-          cell.innerHTML = '<span class="muted">无需填写</span>';
+          cell.innerHTML = `<span class="muted">${escapeHtml(copy.noValueNeeded)}</span>`;
           return;
         }
         if (eventName === "article.actionRecorded" && condition.path === "event.action") {
@@ -589,11 +890,11 @@
 
       function renderMappingTable(id, rows) {
         const root = document.getElementById(id);
-        root.innerHTML = tableShell("字段名", "取值方式", "值", "");
+        root.innerHTML = tableShell(copy.fieldName, copy.valueSource, copy.value, "");
         const body = root.querySelector("tbody");
         if (rows.length === 0) {
           const empty = document.createElement("tr");
-          empty.innerHTML = '<td colspan="4"><span class="muted">未配置字段。</span></td>';
+          empty.innerHTML = `<td colspan="4"><span class="muted">${escapeHtml(copy.noFields)}</span></td>`;
           body.append(empty);
           return;
         }
@@ -604,7 +905,7 @@
       function addMappingRow(id, row = {}, options = {}) {
         const root = document.getElementById(id);
         if (!root.querySelector("table")) {
-          root.innerHTML = tableShell("字段名", "取值方式", "值", "");
+          root.innerHTML = tableShell(copy.fieldName, copy.valueSource, copy.value, "");
         }
         const body = root.querySelector("tbody");
         if (body.querySelector("td[colspan]")) body.innerHTML = "";
@@ -614,13 +915,13 @@
           <td><input data-map-key value="${escapeAttr(row.key || "")}" placeholder="title" /></td>
           <td>
             <select data-map-type>
-              <option value="variable">变量</option>
-              <option value="fixed">固定文本</option>
-              ${row.type === "snapshot" ? '<option value="snapshot">JSON 对象</option>' : ""}
+              <option value="variable">${escapeHtml(copy.variableType)}</option>
+              <option value="fixed">${escapeHtml(copy.fixedTextType)}</option>
+              ${row.type === "snapshot" ? `<option value="snapshot">${escapeHtml(copy.jsonObjectType)}</option>` : ""}
             </select>
           </td>
           <td><input data-map-value data-template-target="true" value="${escapeAttr(row.value || "")}" placeholder="event.articleId" /></td>
-          <td><button class="button danger" type="button" data-remove-row>删除</button></td>
+          <td><button class="button danger" type="button" data-remove-row>${escapeHtml(copy.delete)}</button></td>
         `;
         tr.querySelector("[data-map-type]").value = row.type || "variable";
         tr.querySelector("[data-remove-row]").addEventListener("click", () => {
@@ -634,11 +935,11 @@
 
       function renderHeaderTable(id, headers) {
         const root = document.getElementById(id);
-        root.innerHTML = tableShell("Header 名", "值", "", "");
+        root.innerHTML = tableShell(copy.headerName, copy.value, "", "");
         const body = root.querySelector("tbody");
         const entries = Object.entries(headers || {});
         if (entries.length === 0) {
-          body.innerHTML = '<tr><td colspan="4"><span class="muted">未配置普通 Header。</span></td></tr>';
+          body.innerHTML = `<tr><td colspan="4"><span class="muted">${escapeHtml(copy.noPlainHeaders)}</span></td></tr>`;
           return;
         }
         for (const [key, value] of entries) addHeaderRow(id, key, value, { sync: false });
@@ -646,7 +947,7 @@
 
       function addHeaderRow(id, key = "", value = "", options = {}) {
         const root = document.getElementById(id);
-        if (!root.querySelector("table")) root.innerHTML = tableShell("Header 名", "值", "", "");
+        if (!root.querySelector("table")) root.innerHTML = tableShell(copy.headerName, copy.value, "", "");
         const body = root.querySelector("tbody");
         if (body.querySelector("td[colspan]")) body.innerHTML = "";
         const tr = document.createElement("tr");
@@ -654,7 +955,7 @@
         tr.innerHTML = `
           <td><input data-header-key value="${escapeAttr(key)}" placeholder="x-api-key" /></td>
           <td colspan="2"><input data-header-value data-template-target="true" value="${escapeAttr(value)}" placeholder="{{eventName}}" /></td>
-          <td><button class="button danger" type="button" data-remove-row>删除</button></td>
+          <td><button class="button danger" type="button" data-remove-row>${escapeHtml(copy.delete)}</button></td>
         `;
         tr.querySelector("[data-remove-row]").addEventListener("click", () => tr.remove());
         body.append(tr);
@@ -663,11 +964,11 @@
 
       function renderSecretHeaderTable(id, secretHeaders) {
         const root = document.getElementById(id);
-        root.innerHTML = tableShell("Header 名", "Secret key", "前缀", "");
+        root.innerHTML = tableShell(copy.headerName, copy.secretKey, copy.prefix, "");
         const body = root.querySelector("tbody");
         const entries = Object.entries(secretHeaders || {});
         if (entries.length === 0) {
-          body.innerHTML = '<tr><td colspan="4"><span class="muted">未配置 Secret Header。</span></td></tr>';
+          body.innerHTML = `<tr><td colspan="4"><span class="muted">${escapeHtml(copy.noSecretHeaders)}</span></td></tr>`;
           return;
         }
         for (const [header, value] of entries) addSecretHeaderRow(id, header, value, { sync: false });
@@ -675,7 +976,7 @@
 
       function addSecretHeaderRow(id, header = "", value = {}, options = {}) {
         const root = document.getElementById(id);
-        if (!root.querySelector("table")) root.innerHTML = tableShell("Header 名", "Secret key", "前缀", "");
+        if (!root.querySelector("table")) root.innerHTML = tableShell(copy.headerName, copy.secretKey, copy.prefix, "");
         const body = root.querySelector("tbody");
         if (body.querySelector("td[colspan]")) body.innerHTML = "";
         const tr = document.createElement("tr");
@@ -684,7 +985,7 @@
           <td><input data-secret-header-name value="${escapeAttr(header)}" placeholder="authorization" /></td>
           <td><input data-secret-header-key value="${escapeAttr(value.key || "")}" placeholder="webhook.token" /></td>
           <td><input data-secret-header-prefix value="${escapeAttr(value.prefix || "")}" placeholder="Bearer " /></td>
-          <td><button class="button danger" type="button" data-remove-row>删除</button></td>
+          <td><button class="button danger" type="button" data-remove-row>${escapeHtml(copy.delete)}</button></td>
         `;
         tr.querySelector("[data-remove-row]").addEventListener("click", () => tr.remove());
         body.append(tr);
@@ -695,7 +996,7 @@
         const root = document.getElementById("secrets");
         root.innerHTML = "";
         if (!state.secrets.length) {
-          root.innerHTML = '<div class="empty">还没有保存的 Secret。</div>';
+          root.innerHTML = `<div class="empty">${escapeHtml(copy.noSecrets)}</div>`;
           return;
         }
         for (const secret of state.secrets) {
@@ -704,9 +1005,9 @@
           row.innerHTML = `
             <div>
               <strong>${escapeHtml(secret.key)}</strong>
-              <div class="muted">${secret.hasValue ? "已保存" : "未保存"} ${escapeHtml(secret.hint || "")}</div>
+              <div class="muted">${secret.hasValue ? copy.saved : copy.notSaved} ${escapeHtml(secret.hint || "")}</div>
             </div>
-            <button class="button danger" type="button">删除</button>
+            <button class="button danger" type="button">${escapeHtml(copy.delete)}</button>
           `;
           row.querySelector("button").addEventListener("click", async () => {
             await run(async () => applyState(await api(`secrets/${encodeURIComponent(secret.key)}/delete`, { method: "POST", body: "{}" })));
@@ -725,7 +1026,7 @@
         const root = document.getElementById("deliveries");
         root.innerHTML = "";
         if (state.deliveries.length === 0) {
-          root.innerHTML = '<div class="empty">无投递记录</div>';
+          root.innerHTML = `<div class="empty">${escapeHtml(copy.noDeliveries)}</div>`;
           return;
         }
         for (const delivery of state.deliveries.slice(0, 20)) {
@@ -762,7 +1063,7 @@
           state.deliveries = [delivery, ...state.deliveries];
         }
         document.getElementById("summary").textContent =
-          `${state.rules.length} 条规则，${state.deliveries.length} 条最近投递`;
+          copy.summary(state.rules.length, state.deliveries.length);
         renderDeliveries();
       }
 
@@ -853,7 +1154,7 @@
           : state.events[0]?.name || "article.created";
         return {
           id: `draft_${Date.now()}_${++draftCounter}`,
-          name: "收藏文章时发送",
+          name: copy.defaultRuleName,
           enabled: true,
           eventName,
           conditions: eventName === "article.actionRecorded" ? [defaultCondition(eventName)] : [],
@@ -880,7 +1181,7 @@
         return `
           <select data-cond="${index}" data-field="path">
             ${options}
-            <option value="__custom" ${hasValue ? "" : "selected"}>自定义路径</option>
+            <option value="__custom" ${hasValue ? "" : "selected"}>${escapeHtml(copy.customPath)}</option>
           </select>
           <input data-cond="${index}" data-field="custom-path" value="${escapeAttr(hasValue ? "" : value || "")}" placeholder="event.custom" ${hasValue ? "hidden" : ""} />
         `;
@@ -955,7 +1256,7 @@
 
       function normalizeEventMeta(input) {
         if (typeof input === "string") {
-          return { name: input, title: input, description: "稳定插件事件。", fields: [], variables: [], sample: {} };
+          return { name: input, title: input, description: copy.stableEvent, fields: [], variables: [], sample: {} };
         }
         return {
           name: input.name,
@@ -1016,6 +1317,47 @@
         const node = document.getElementById("error");
         node.hidden = !message;
         node.textContent = message || "";
+      }
+
+      function setSectionCopy(section, title, help) {
+        if (!section) return;
+        const heading = section.querySelector(".section-head h3");
+        const paragraph = section.querySelector(".section-head .help");
+        if (heading) heading.textContent = title;
+        if (paragraph) paragraph.textContent = help;
+      }
+
+      function setLabelText(inputId, text) {
+        const input = document.getElementById(inputId);
+        const label = input?.closest("label");
+        if (!label) return;
+        for (const node of Array.from(label.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            node.textContent = text;
+            return;
+          }
+        }
+        label.prepend(document.createTextNode(text));
+      }
+
+      function setSwitchText(inputId, text) {
+        const input = document.getElementById(inputId);
+        const label = input?.closest("label");
+        if (!label) return;
+        for (const node of Array.from(label.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            node.textContent = text;
+            return;
+          }
+        }
+        label.append(document.createTextNode(text));
+      }
+
+      function normalizeLocale(value) {
+        if (value === "en-US" || value === "ja-JP" || value === "zh-CN") {
+          return value;
+        }
+        return "zh-CN";
       }
 
       function escapeHtml(value) {

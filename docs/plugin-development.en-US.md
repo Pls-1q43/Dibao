@@ -46,6 +46,29 @@ This guide is for third-party plugin developers. Dibao 0.2 is an ecosystem-platf
 
 Use reverse-domain IDs and a bounded compatibility range such as `<0.3.0`.
 
+### Plugin Localization
+
+Starting in 0.3, user-facing manifest strings may stay as plain strings or use locale maps:
+
+```json
+{
+  "name": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+  "publisher": { "zh-CN": "示例", "en-US": "Example", "ja-JP": "Example" },
+  "contributes": {
+    "settingsTabs": [
+      {
+        "id": "settings",
+        "title": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+        "slot": "settings.tabs",
+        "route": "settings"
+      }
+    ]
+  }
+}
+```
+
+Dibao resolves manifest strings against the current UI locale with this fallback chain: exact locale, language code, `zh-CN`, `zh`, then the first available value. Web plugin iframes receive a `?locale=zh-CN|en-US|ja-JP` query parameter and can also call the bridge method `getLocale`. Server plugins receive the startup locale as `ctx.locale`; use `await ctx.i18n.getLocale()` when an already-running plugin needs to observe language changes.
+
 ## Capabilities
 
 Supported capabilities:

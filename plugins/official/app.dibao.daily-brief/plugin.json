@@ -1,9 +1,17 @@
 {
   "manifestVersion": 1,
   "id": "app.dibao.daily-brief",
-  "name": "Daily Brief",
-  "version": "0.1.0",
-  "publisher": "Dibao",
+  "name": {
+    "zh-CN": "每日简报",
+    "en-US": "Daily Brief",
+    "ja-JP": "デイリーブリーフ"
+  },
+  "version": "0.1.1",
+  "publisher": {
+    "zh-CN": "邸报",
+    "en-US": "Dibao",
+    "ja-JP": "Dibao"
+  },
   "dibao": {
     "minVersion": "0.1.0",
     "maxVersion": "<0.4.0"
@@ -24,8 +32,16 @@
     "setupSteps": [
       {
         "id": "enable-daily-brief",
-        "title": "每日简报",
-        "body": "每天从过去 24 小时的个性化推荐中整理一份按兴趣主题分组的简报。",
+        "title": {
+          "zh-CN": "每日简报",
+          "en-US": "Daily Brief",
+          "ja-JP": "デイリーブリーフ"
+        },
+        "body": {
+          "zh-CN": "每天从过去 24 小时的个性化推荐中整理一份按兴趣主题分组的简报。",
+          "en-US": "Create a daily digest from personalized recommendations in the past 24 hours, grouped by interest topic.",
+          "ja-JP": "過去 24 時間のパーソナライズされたおすすめを、興味トピックごとに整理したデイリーブリーフを作成します。"
+        },
         "order": 30,
         "defaultEnabled": true
       }
@@ -34,7 +50,11 @@
       {
         "id": "daily-brief",
         "path": "daily-brief",
-        "title": "每日简报",
+        "title": {
+          "zh-CN": "每日简报",
+          "en-US": "Daily Brief",
+          "ja-JP": "デイリーブリーフ"
+        },
         "panel": "web/index.html",
         "order": 45,
         "icon": "newspaper",
@@ -45,7 +65,11 @@
     "tabs": [
       {
         "id": "daily-brief",
-        "title": "每日简报",
+        "title": {
+          "zh-CN": "每日简报",
+          "en-US": "Daily Brief",
+          "ja-JP": "デイリーブリーフ"
+        },
         "slot": "app.main.nav.items",
         "route": "daily-brief",
         "order": 45,
@@ -57,7 +81,11 @@
     "settingsTabs": [
       {
         "id": "daily-brief-settings",
-        "title": "每日简报",
+        "title": {
+          "zh-CN": "每日简报",
+          "en-US": "Daily Brief",
+          "ja-JP": "デイリーブリーフ"
+        },
         "slot": "settings.tabs",
         "route": "settings",
         "order": 60,

@@ -1451,7 +1451,7 @@ function PluginSettingsTabPanel(props: {
   plugin: PluginListItem;
   tab: PluginSettingsTab["tab"];
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseUrl =
     props.plugin.webEntryUrl ??
@@ -1460,6 +1460,7 @@ function PluginSettingsTabPanel(props: {
   params.set("route", props.tab.route);
   params.set("panel", "settings");
   params.set("settingsTab", props.tab.id);
+  params.set("locale", locale);
 
   useEffect(() => {
     async function handleMessage(event: MessageEvent) {
@@ -1543,6 +1544,8 @@ async function handlePluginSettingsBridgeRequest(
       return await dibaoApi.getAuthSession();
     case "getSettings":
       return await dibaoApi.getPluginSettings(plugin.id);
+    case "getLocale":
+      return document.documentElement.lang || "zh-CN";
     case "updatePluginSettings":
       return await dibaoApi.updatePluginSettings(
         plugin.id,

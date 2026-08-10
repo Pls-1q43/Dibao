@@ -18,6 +18,32 @@ import type { HostnameResolver } from "./controlled-fetch.js";
 const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
 
 describe("FeedRefreshService full content maintenance", () => {
+  it("allows self-hosted private feed URLs while still recording a warning", async () => {
+    const db = fixtureDb();
+    try {
+      const warnings: Array<{ hostname: string; reason: string }> = [];
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      const service = new FeedRefreshService({
+        db,
+        feeds,
+        articles,
+        fetcher: feedFetcher(fixtureRss()),
+        onFetchWarning: (warning) =>
+          warnings.push({ hostname: warning.hostname, reason: warning.reason }),
+        now: () => 1000
+      });
+
+      const result = await service.addFeed({ feedUrl: "http://127.0.0.1:80/feed/10.xml" });
+
+      expect(result.articlesCreated).toBe(2);
+      expect(feeds.findByFeedUrl("http://127.0.0.1/feed/10.xml")).not.toBeNull();
+      expect(warnings).toContainEqual({ hostname: "127.0.0.1", reason: "private-ipv4" });
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps feed_only refreshes on feed content and does not fetch article URLs", async () => {
     const db = fixtureDb();
     try {

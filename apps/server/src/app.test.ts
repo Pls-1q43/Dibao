@@ -78,7 +78,7 @@ describe("server API vertical slice", () => {
           database: "ok",
           fts: "ok",
           vectorStore: "ok",
-          version: "0.3.0"
+          version: "0.3.1"
         }
       });
     } finally {
@@ -375,6 +375,116 @@ describe("server API vertical slice", () => {
           })
         ])
       );
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("resolves localized plugin manifest strings and exposes locale to plugin servers", async () => {
+    const db = createEmptyDatabase();
+    const pluginDataDir = createTempDir();
+    const signedPackage = signedPluginPackageFixture({
+      manifest: {
+        manifestVersion: 1,
+        id: "com.example.localized",
+        name: { "zh-CN": "本地化插件", "en-US": "Localized Plugin", "ja-JP": "ローカライズ済みプラグイン" },
+        version: "1.0.0",
+        publisher: { "zh-CN": "示例", "en-US": "Example", "ja-JP": "サンプル" },
+        dibao: { minVersion: "0.3.0", maxVersion: "<0.4.0" },
+        entry: { server: "server/index.mjs", web: "web/index.html" },
+        capabilities: [],
+        contributes: {
+          setupSteps: [
+            {
+              id: "setup-localized",
+              title: { "zh-CN": "启用本地化插件", "en-US": "Enable localized plugin", "ja-JP": "ローカライズ済みプラグインを有効化" },
+              body: { "zh-CN": "中文说明", "en-US": "English body", "ja-JP": "日本語の説明" },
+              defaultEnabled: true
+            }
+          ],
+          routes: [
+            {
+              id: "localized",
+              path: "localized",
+              title: { "zh-CN": "本地化页面", "en-US": "Localized page", "ja-JP": "ローカライズ済みページ" },
+              panel: "web/index.html",
+              primaryNav: true
+            }
+          ],
+          tabs: [
+            {
+              id: "localized",
+              title: { "zh-CN": "本地化入口", "en-US": "Localized tab", "ja-JP": "ローカライズ済みタブ" },
+              slot: "app.main.nav.items",
+              route: "localized",
+              primaryNav: true
+            }
+          ],
+          settingsTabs: [
+            {
+              id: "localized-settings",
+              title: { "zh-CN": "本地化设置", "en-US": "Localized settings", "ja-JP": "ローカライズ済み設定" },
+              slot: "settings.tabs",
+              route: "settings"
+            }
+          ]
+        }
+      },
+      files: {
+        "web/index.html": "<!doctype html><html></html>",
+        "server/index.mjs": `
+          export async function activate(ctx) {
+            ctx.api.get("/locale", async () => ({
+              startupLocale: ctx.locale,
+              currentLocale: await ctx.i18n.getLocale()
+            }));
+          }
+        `
+      }
+    });
+    const app = buildServer({
+      db,
+      logger: false,
+      pluginDataDir,
+      enableUserPluginInstall: true,
+      pluginTrustedPublicKeys: signedPackage.trustedPublicKeys
+    });
+
+    try {
+      expect((await injectJson(app, "PATCH", "/api/settings", { ui: { locale: "en-US" } })).statusCode).toBe(200);
+      const installed = await injectJson(app, "POST", "/api/plugins/install", {
+        package: signedPackage.packageContent
+      });
+      expect(installed.statusCode, installed.body).toBe(200);
+      expect(installed.json().data).toMatchObject({
+        id: "com.example.localized",
+        name: "Localized Plugin",
+        publisher: "Example"
+      });
+
+      expect((await app.inject({ method: "POST", url: "/api/plugins/com.example.localized/enable" })).statusCode).toBe(200);
+      const contributions = await app.inject({ method: "GET", url: "/api/plugins/contributions" });
+      expect(contributions.statusCode, contributions.body).toBe(200);
+      const localized = contributions.json().data.find((plugin: { id: string }) => plugin.id === "com.example.localized");
+      expect(localized).toMatchObject({
+        name: "Localized Plugin",
+        publisher: "Example",
+        contributions: {
+          primaryNav: [expect.objectContaining({ label: "Localized tab" })],
+          routes: [expect.objectContaining({ title: "Localized page" })],
+          settingsTabs: [expect.objectContaining({ label: "Localized settings" })],
+          setupSteps: [expect.objectContaining({ title: "Enable localized plugin", body: "English body" })]
+        }
+      });
+
+      expect((await injectJson(app, "PATCH", "/api/settings", { ui: { locale: "ja-JP" } })).statusCode).toBe(200);
+      const locale = await app.inject({ method: "GET", url: "/api/plugins/com.example.localized/api/locale" });
+      expect(locale.statusCode, locale.body).toBe(200);
+      expect(locale.json().data).toEqual({
+        startupLocale: "en-US",
+        currentLocale: "ja-JP"
+      });
     } finally {
       await app.close();
       db.close();
@@ -5435,7 +5545,7 @@ describe("server API vertical slice", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toMatchObject({
         data: {
-          currentVersion: "0.3.0",
+          currentVersion: "0.3.1",
           latestVersion: "v0.2.0",
           releaseUrl: "https://github.com/Pls-1q43/Dibao/releases/tag/v0.2.0",
           updateAvailable: false,

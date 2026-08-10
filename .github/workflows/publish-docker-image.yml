@@ -178,6 +178,7 @@ jobs:
           fi
 
           previous_image="${{ steps.image.outputs.name }}:v0.2.1"
+          expected_version="$(node -p "require('./package.json').version")"
           fresh_name="dibao-release-fresh-${GITHUB_RUN_ID}"
           old_name="dibao-release-upgrade-old-${GITHUB_RUN_ID}"
           new_name="dibao-release-upgrade-new-${GITHUB_RUN_ID}"
@@ -235,7 +236,7 @@ jobs:
           }
 
           docker run -d --name "$fresh_name" -p 18081:8080 -v "$fresh_data:/data" "$image_ref"
-          wait_health "$fresh_name" "http://127.0.0.1:18081" "0.3.0"
+          wait_health "$fresh_name" "http://127.0.0.1:18081" "$expected_version"
           wait_latest_migration "$fresh_name" "026 recommendation_v3_memory"
           docker rm -f "$fresh_name"
 
@@ -246,5 +247,5 @@ jobs:
           docker rm -f "$old_name"
 
           docker run -d --name "$new_name" -p 18083:8080 -v "$upgrade_data:/data" "$image_ref"
-          wait_health "$new_name" "http://127.0.0.1:18083" "0.3.0"
+          wait_health "$new_name" "http://127.0.0.1:18083" "$expected_version"
           wait_latest_migration "$new_name" "026 recommendation_v3_memory" "http://127.0.0.1:18083"
