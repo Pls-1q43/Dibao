@@ -7,6 +7,8 @@ import {
 import type { FeedRepository } from "@dibao/db";
 import {
   controlledFetchText,
+  feedFetchAllowCidrs,
+  feedFetchAllowPrivateNetwork,
   feedFetchMaxBytes,
   type FetchPrivacyWarning,
   type HostnameResolver
@@ -212,6 +214,8 @@ export class FeedDiscoveryService {
           accept:
             "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8"
         },
+        allowPrivateNetwork: feedFetchAllowPrivateNetwork(),
+        allowCidrs: feedFetchAllowCidrs(),
         maxBytes: feedFetchMaxBytes(),
         onWarning: this.options.onFetchWarning,
         resolveHostname: this.options.resolveHostname

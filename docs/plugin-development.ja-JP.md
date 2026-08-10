@@ -46,6 +46,29 @@ Last updated: 2026-06-18
 
 `id` は reverse-domain 形式を推奨します。互換範囲は `<0.3.0` のように上限を明示してください。
 
+### プラグインのローカライズ
+
+0.3 以降、manifest のユーザー向け文字列は通常の string のままでも、locale map としても書けます。
+
+```json
+{
+  "name": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+  "publisher": { "zh-CN": "示例", "en-US": "Example", "ja-JP": "Example" },
+  "contributes": {
+    "settingsTabs": [
+      {
+        "id": "settings",
+        "title": { "zh-CN": "阅读工具", "en-US": "Reader Tools", "ja-JP": "リーダーツール" },
+        "slot": "settings.tabs",
+        "route": "settings"
+      }
+    ]
+  }
+}
+```
+
+Dibao は現在の UI locale で manifest string を解決します。fallback は exact locale、language code、`zh-CN`、`zh`、最初の利用可能な値の順です。Web plugin iframe には `?locale=zh-CN|en-US|ja-JP` query parameter が渡され、bridge method `getLocale` でも現在の言語を取得できます。server plugin は起動時 locale を `ctx.locale` で受け取ります。実行中の plugin が言語変更を追跡する場合は `await ctx.i18n.getLocale()` を使ってください。
+
 ## Capabilities
 
 0.2 の capabilities:

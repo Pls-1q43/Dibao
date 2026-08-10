@@ -769,11 +769,18 @@ describe("web i18n", () => {
   });
 
   it("renders a localized retry action when article detail loading fails", () => {
+    const article: ArticleDetail = {
+      ...articleListItem("article_detail_timeout", "opened"),
+      contentHtml: null,
+      contentText: null,
+      extractionStatus: "pending",
+      extractionError: null
+    };
     const html = renderToStaticMarkup(
       <DibaoI18nProvider>
         <ArticleDetailPanel
           actionError={null}
-          article={null}
+          article={article}
           articleView="latest"
           detailError="请求超时"
           explanation={null}
@@ -795,6 +802,10 @@ describe("web i18n", () => {
 
     expect(html).toContain("请求超时");
     expect(html).toContain("重新加载");
+    expect(html).toContain("原文");
+    expect(html).toContain("https://example.com/article_detail_timeout");
+    expect(html).toContain("noopener noreferrer");
+    expect(html).not.toContain("article_detail_timeout</h2>");
   });
 
   it("only renders row recommendation explain actions for personalized views", () => {
@@ -1255,7 +1266,7 @@ describe("web i18n", () => {
     expect(html).toContain("保留天数");
     expect(html).toContain("retention.retentionDays");
     expect(html).toContain("关于");
-    expect(html).toContain("v0.3.0");
+    expect(html).toContain("v0.3.1");
     expect(html).toContain("评论尸");
     expect(html).toContain("https://x.com/JeffreyCalm");
     expect(html).toContain("https://1q43.blog");

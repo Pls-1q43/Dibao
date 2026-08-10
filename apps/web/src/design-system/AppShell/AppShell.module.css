@@ -3406,6 +3406,17 @@
   margin: 0;
 }
 
+.readerDetailErrorActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.readerDetailErrorActions a {
+  text-decoration: none;
+}
+
 .inlineNotice {
   width: fit-content;
   min-width: 0;
@@ -3716,6 +3727,13 @@
   background: var(--color-surface);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+}
+
+.readerBody pre code {
+  display: block;
+  min-width: max-content;
+  font: inherit;
+  white-space: pre;
 }
 
 .readerSkeleton {

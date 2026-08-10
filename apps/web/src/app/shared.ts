@@ -1747,7 +1747,10 @@ export function formatCompactNumber(value: number): string {
 
 export function sanitizeArticleHtml(html: string, baseUrl?: string | null): string {
   const parser = new DOMParser();
-  const document = parser.parseFromString(`<main>${html}</main>`, "text/html");
+  const document = parser.parseFromString(
+    `<main>${normalizeArticleCodeBlockHtml(html)}</main>`,
+    "text/html"
+  );
   const allowedTags = new Set([
     "A",
     "B",
@@ -1835,6 +1838,18 @@ export function sanitizeArticleHtml(html: string, baseUrl?: string | null): stri
   }
 
   return output.innerHTML;
+}
+
+export function normalizeArticleCodeBlockHtml(html: string): string {
+  return html
+    .replace(
+      /<td\b(?=[^>]*(?:class|id)=["'][^"']*\bgutter\b[^"']*["'])[^>]*>[\s\S]*?<\/td>/giu,
+      ""
+    )
+    .replace(
+      /<div\b(?=[^>]*(?:class|id)=["'][^"']*\bgutter\b[^"']*["'])[^>]*>[\s\S]*?<\/div>/giu,
+      ""
+    );
 }
 
 export function safeArticleUrl(

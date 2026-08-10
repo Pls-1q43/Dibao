@@ -1,9 +1,17 @@
 {
   "manifestVersion": 1,
   "id": "app.dibao.full-content-selectors",
-  "name": "Full Content Selectors",
-  "version": "0.1.0",
-  "publisher": "Dibao",
+  "name": {
+    "zh-CN": "全文选择器",
+    "en-US": "Full Content Selectors",
+    "ja-JP": "全文セレクター"
+  },
+  "version": "0.1.1",
+  "publisher": {
+    "zh-CN": "邸报",
+    "en-US": "Dibao",
+    "ja-JP": "Dibao"
+  },
   "dibao": {
     "minVersion": "0.3.0",
     "maxVersion": "<0.4.0"
@@ -16,7 +24,11 @@
     "fullContentExtractors": [
       {
         "id": "balanced-readable-selectors",
-        "title": "Balanced readable selectors",
+        "title": {
+          "zh-CN": "平衡正文选择器",
+          "en-US": "Balanced readable selectors",
+          "ja-JP": "バランス型本文セレクター"
+        },
         "order": 10
       }
     ]

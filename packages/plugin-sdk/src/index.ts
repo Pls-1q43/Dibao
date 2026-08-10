@@ -15,12 +15,14 @@ export type DibaoPluginPackage = {
   signature?: DibaoPluginSignature;
 };
 
+export type DibaoPluginLocalizedString = string | Record<string, string>;
+
 export type DibaoPluginManifest = {
   manifestVersion: 1;
   id: string;
-  name: string;
+  name: DibaoPluginLocalizedString;
   version: string;
-  publisher: string;
+  publisher: DibaoPluginLocalizedString;
   dibao: {
     minVersion: string;
     maxVersion: string;
@@ -53,7 +55,7 @@ export type DibaoPluginMigration = {
 
 export type DibaoPluginPanelContribution = {
   id: string;
-  title: string;
+  title: DibaoPluginLocalizedString;
   slot: DibaoPluginSlot | string;
   order?: number;
   icon?: string;
@@ -65,7 +67,7 @@ export type DibaoPluginPanelContribution = {
 export type DibaoPluginRouteContribution = {
   id: string;
   path: string;
-  title: string;
+  title: DibaoPluginLocalizedString;
   panel: string;
   order?: number;
   icon?: string;
@@ -75,7 +77,7 @@ export type DibaoPluginRouteContribution = {
 
 export type DibaoPluginActionContribution = {
   id: string;
-  title: string;
+  title: DibaoPluginLocalizedString;
   slot: DibaoPluginSlot | string;
   icon?: string;
   command: string;
@@ -84,7 +86,7 @@ export type DibaoPluginActionContribution = {
 
 export type DibaoPluginFullContentExtractorContribution = {
   id: string;
-  title: string;
+  title: DibaoPluginLocalizedString;
   order?: number;
 };
 
@@ -97,8 +99,8 @@ export type DibaoPluginTaskContribution = {
 
 export type DibaoPluginSetupStepContribution = {
   id: string;
-  title: string;
-  body?: string;
+  title: DibaoPluginLocalizedString;
+  body?: DibaoPluginLocalizedString;
   order?: number;
   defaultEnabled?: boolean;
 };
@@ -182,6 +184,10 @@ export type DibaoPluginBetaApi = typeof dibaoPluginBetaApis[number];
 export type DibaoPluginContext = {
   pluginId: string;
   manifest: DibaoPluginManifest;
+  locale: string;
+  i18n: {
+    getLocale: () => Promise<string>;
+  };
   now: () => Promise<number>;
   hooks: {
     on: (hook: DibaoPluginEvent, handler: (payload: unknown) => Promise<void> | void) => void;
@@ -385,6 +391,11 @@ export function validatePluginPackage(pluginPackage: DibaoPluginPackage): DibaoP
         errors.push(`manifest.${key} is required`);
       }
     }
+    for (const key of ["name", "publisher"]) {
+      if (!isLocalizedString(manifest[key])) {
+        errors.push(`manifest.${key} must be a string or locale map`);
+      }
+    }
     const entry = manifest.entry as Record<string, unknown> | undefined;
     for (const entryPath of [entry?.server, entry?.web]) {
       if (typeof entryPath === "string" && pluginPackage.files && !Object.hasOwn(pluginPackage.files, entryPath)) {
@@ -443,7 +454,7 @@ export function validatePluginPackage(pluginPackage: DibaoPluginPackage): DibaoP
         ? extractor as Record<string, unknown>
         : {};
       const id = typeof record.id === "string" ? record.id.trim() : "";
-      const title = typeof record.title === "string" ? record.title.trim() : "";
+      const title = isLocalizedString(record.title);
       if (!id || !title) {
         errors.push("manifest.contributes.fullContentExtractors entries require id and title");
       } else if (fullContentExtractorIds.has(id)) {
@@ -480,4 +491,16 @@ export function validatePluginPackage(pluginPackage: DibaoPluginPackage): DibaoP
     errors.push(...signatureResult.errors);
   }
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+function isLocalizedString(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  return Object.entries(value).some(
+    ([locale, text]) => locale.trim().length > 0 && typeof text === "string" && text.trim().length > 0
+  );
 }

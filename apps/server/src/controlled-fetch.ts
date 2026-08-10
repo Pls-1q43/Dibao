@@ -183,6 +183,14 @@ export function feedFetchMaxBytes(): number {
   );
 }
 
+export function feedFetchAllowPrivateNetwork(): boolean {
+  return readBooleanEnv("DIBAO_FETCH_FEED_ALLOW_PRIVATE") ?? true;
+}
+
+export function feedFetchAllowCidrs(): string[] {
+  return readCsvEnv("DIBAO_FETCH_FEED_ALLOW_CIDRS") ?? [];
+}
+
 export function fullContentFetchMaxBytes(): number {
   return normalizePositiveInteger(
     readPositiveIntegerEnv("DIBAO_FETCH_FULL_CONTENT_MAX_BYTES"),

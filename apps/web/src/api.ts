@@ -498,10 +498,12 @@ export type PluginInstallStatus =
 
 export type PluginSourceType = "official" | "local_file" | "url" | "github_release" | "registry";
 
+export type PluginLocalizedString = string | Record<string, string>;
+
 export type PluginContribution = {
   settingsTabs?: Array<{
     id: string;
-    title: string;
+    title: PluginLocalizedString;
     slot: string;
     route?: string;
     order?: number;
@@ -509,7 +511,7 @@ export type PluginContribution = {
   }>;
   tabs?: Array<{
     id: string;
-    title: string;
+    title: PluginLocalizedString;
     slot: string;
     route?: string;
     order?: number;
@@ -520,7 +522,7 @@ export type PluginContribution = {
   routes?: Array<{
     id: string;
     path: string;
-    title: string;
+    title: PluginLocalizedString;
     panel: string;
     order?: number;
     icon?: string;
@@ -529,7 +531,7 @@ export type PluginContribution = {
   }>;
   actions?: Array<{
     id: string;
-    title: string;
+    title: PluginLocalizedString;
     slot: string;
     icon?: string;
     command: string;
@@ -545,8 +547,8 @@ export type PluginContribution = {
   }>;
   setupSteps?: Array<{
     id: string;
-    title: string;
-    body?: string;
+    title: PluginLocalizedString;
+    body?: PluginLocalizedString;
     order?: number;
     defaultEnabled?: boolean;
   }>;

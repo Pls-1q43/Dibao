@@ -2068,6 +2068,7 @@ export function ArticleDetailPanel(props: {
   const sourceNotice = props.article ? contentSourceNotice(props.article, t) : null;
   const showReaderActions = useReaderActionVisibility(readerPanelRef, props.article?.id ?? null);
   const canExplainDetail = shouldLoadRankExplanation(props.articleView);
+  const originalArticleUrl = safeOriginalArticleUrl(props.article?.url ?? null);
 
   useReaderReadProgress({
     article: props.article,
@@ -2118,13 +2119,25 @@ export function ArticleDetailPanel(props: {
       {!props.isDetailLoading && props.detailError ? (
         <div className={styles.readerDetailError}>
           <p className={styles.errorText}>{props.detailError}</p>
-          <button
-            className={styles.secondaryButton}
-            onClick={props.onRetryDetail}
-            type="button"
-          >
-            {t.reader.reload}
-          </button>
+          <div className={styles.readerDetailErrorActions}>
+            <button
+              className={styles.secondaryButton}
+              onClick={props.onRetryDetail}
+              type="button"
+            >
+              {t.reader.reload}
+            </button>
+            {originalArticleUrl ? (
+              <a
+                className={styles.secondaryButton}
+                href={originalArticleUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {t.reader.originalLink}
+              </a>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -2139,11 +2152,11 @@ export function ArticleDetailPanel(props: {
               <button className={styles.secondaryButton} onClick={props.onBackToList} type="button">
                 {t.reader.backToList}
               </button>
-              {safeOriginalArticleUrl(props.article.url) ? (
+              {originalArticleUrl ? (
                 <a
                   className={styles.secondaryButton}
-                  href={safeOriginalArticleUrl(props.article.url) ?? undefined}
-                  rel="noreferrer"
+                  href={originalArticleUrl}
+                  rel="noopener noreferrer"
                   target="_blank"
                 >
                   {t.reader.originalLink}

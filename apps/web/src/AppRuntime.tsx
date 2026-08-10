@@ -3861,7 +3861,7 @@ function PluginWorkspace(props: {
   onArticleStateChange: (articleId: string, state: ArticleState) => void;
   onOpenArticle: (articleId: string) => void;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const frameRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
@@ -3942,6 +3942,7 @@ function PluginWorkspace(props: {
     `/api/plugins/${encodeURIComponent(props.plugin.id)}/assets/web/index.html`;
   const params = new URLSearchParams();
   params.set("route", props.route);
+  params.set("locale", locale);
   if (props.route === "settings") {
     params.set("panel", "settings");
   }
@@ -3972,6 +3973,8 @@ async function handlePluginBridgeRequest(
       return await dibaoApi.getAuthSession();
     case "getSettings":
       return await dibaoApi.getPluginSettings(plugin.id);
+    case "getLocale":
+      return document.documentElement.lang || "zh-CN";
     case "updatePluginSettings":
       return await dibaoApi.updatePluginSettings(
         plugin.id,

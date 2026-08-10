@@ -287,6 +287,201 @@
     <script>
       const pluginId = "app.dibao.daily-brief";
       const params = new URLSearchParams(window.location.search);
+      const locale = normalizeLocale(params.get("locale"));
+      const copy = {
+        "zh-CN": {
+          title: "每日简报",
+          tabsAria: "每日简报视图",
+          tabBrief: "简报",
+          tabSettings: "设置",
+          briefDate: "简报日期",
+          loadingBriefs: "正在读取已生成的简报快照...",
+          heroKicker: "Daily Brief",
+          heroTitle: "每日简报",
+          heroLoading: "正在读取每日简报...",
+          generateToday: "生成今日简报",
+          regenerateToday: "重新生成今日简报",
+          emptyTitle: "还没有简报",
+          emptyBody: "这里不会在打开页面时临时生成。启用每日计划后，邸报会在设定时间保存一份快照；也可以点击“生成今日简报”手动补生成一次。",
+          dateEmptyTitle: "这一天还没有简报快照",
+          dateEmptyBody: "可以选择已有日期，或生成今日简报。",
+          filteredEmptyTitle: "当前设置下没有可用文章",
+          filteredEmptyBody: "这份空简报已经作为快照保存。可以放宽主题选择，或等新的推荐文章进入过去 24 小时窗口后再生成新快照。",
+          settingsTitle: "简报设置",
+          settingsBody: "保存后会更新每日计划任务；主题选择默认全选，取消勾选后不会进入之后生成的简报。",
+          updateTime: "更新时间",
+          timezone: "时区",
+          articleCount: "内容数量",
+          enableDaily: "启用每日计划",
+          includedTopics: "纳入主题",
+          topicsHint: "Family 关闭后，其下所有 Cluster 都会被排除；只关闭 Cluster 时，其他同 Family 文章仍可进入简报。",
+          saveSettings: "保存设置",
+          whyRecommended: "为什么推荐",
+          close: "关闭",
+          reader: "读者",
+          heroNoBrief: (username) => `你好，${username}。这里会保存每日简报快照；生成后，你可以按日期回看每一天的阅读清单。`,
+          heroBrief: ({ username, dateText, briefIndex, receivedPrefix, receivedCount, topicCount, articleCount }) =>
+            `你好，${username}。今天是 ${dateText}，欢迎收看今年的第 ${briefIndex} 份简报。在过去 24 小时中，邸报收到 ${receivedPrefix}${receivedCount} 条新文章，本次简报包含 ${topicCount} 个主题下的 ${articleCount} 篇文章。`,
+          atLeast: "至少 ",
+          settingsLoading: "正在读取设置...",
+          settingsOpenHint: "打开设置后会读取可配置主题。",
+          noTopics: "还没有可配置的兴趣主题。生成兴趣簇后，这里会显示可纳入简报的主题。",
+          familyMeta: (clusters, articles) => `${clusters} 个 Cluster · ${articles} 篇证据文章`,
+          groupCount: (count) => `${count} 篇`,
+          favorite: "收藏",
+          unfavorite: "取消收藏",
+          favoriteAria: "收藏这篇文章",
+          unfavoriteAria: "取消收藏这篇文章",
+          like: "点赞",
+          unlike: "取消点赞",
+          likeAria: "点赞这篇文章",
+          unlikeAria: "取消点赞这篇文章",
+          readLater: "稍后读",
+          removeReadLater: "移出稍后读",
+          readLaterAria: "稍后读这篇文章",
+          removeReadLaterAria: "移出稍后读",
+          notInterested: "不感兴趣",
+          notInterestedActive: "已不感兴趣",
+          notInterestedAria: "不再推荐类似文章",
+          notInterestedActiveAria: "已标记不感兴趣",
+          actionFailed: "操作失败，请重试。",
+          explanationLoading: "正在生成推荐解释...",
+          explanationFailed: "推荐解释读取失败。",
+          noExplanation: "当前没有明确的推荐信号。",
+          reasonFallback: "推荐理由",
+          impact: (impact) => `影响：${impact}`,
+          unknownTime: "未知时间",
+          hostTimeout: "宿主响应超时，请重试。"
+        },
+        "en-US": {
+          title: "Daily Brief",
+          tabsAria: "Daily Brief views",
+          tabBrief: "Brief",
+          tabSettings: "Settings",
+          briefDate: "Brief date",
+          loadingBriefs: "Loading saved brief snapshots...",
+          heroKicker: "Daily Brief",
+          heroTitle: "Daily Brief",
+          heroLoading: "Loading Daily Brief...",
+          generateToday: "Generate today's brief",
+          regenerateToday: "Regenerate today's brief",
+          emptyTitle: "No briefs yet",
+          emptyBody: "This page does not generate a temporary brief when opened. Enable the daily schedule to save snapshots at the configured time, or generate today's brief manually.",
+          dateEmptyTitle: "No brief snapshot for this day",
+          dateEmptyBody: "Pick an existing date, or generate today's brief.",
+          filteredEmptyTitle: "No available articles with the current settings",
+          filteredEmptyBody: "This empty brief has been saved as a snapshot. Loosen the topic selection, or wait for new recommended articles to enter the 24-hour window.",
+          settingsTitle: "Brief settings",
+          settingsBody: "Saving updates the daily scheduled task. Topics are included by default; unchecked topics are excluded from future briefs.",
+          updateTime: "Update time",
+          timezone: "Timezone",
+          articleCount: "Article count",
+          enableDaily: "Enable daily schedule",
+          includedTopics: "Included topics",
+          topicsHint: "When a Family is disabled, all of its Clusters are excluded. Disabling only a Cluster still allows other articles from the same Family.",
+          saveSettings: "Save settings",
+          whyRecommended: "Why recommended",
+          close: "Close",
+          reader: "reader",
+          heroNoBrief: (username) => `Hello, ${username}. Daily brief snapshots will be saved here; after generation, you can revisit each day's reading list by date.`,
+          heroBrief: ({ username, dateText, briefIndex, receivedPrefix, receivedCount, topicCount, articleCount }) =>
+            `Hello, ${username}. Today is ${dateText}. Welcome to brief #${briefIndex} this year. In the past 24 hours, Dibao received ${receivedPrefix}${receivedCount} new articles; this brief contains ${articleCount} articles across ${topicCount} topics.`,
+          atLeast: "at least ",
+          settingsLoading: "Loading settings...",
+          settingsOpenHint: "Open settings to load configurable topics.",
+          noTopics: "No configurable interest topics yet. After interest clusters are generated, topics that can be included in briefs will appear here.",
+          familyMeta: (clusters, articles) => `${clusters} Clusters · ${articles} evidence articles`,
+          groupCount: (count) => `${count} articles`,
+          favorite: "Favorite",
+          unfavorite: "Unfavorite",
+          favoriteAria: "Favorite this article",
+          unfavoriteAria: "Unfavorite this article",
+          like: "Like",
+          unlike: "Unlike",
+          likeAria: "Like this article",
+          unlikeAria: "Unlike this article",
+          readLater: "Read later",
+          removeReadLater: "Remove from read later",
+          readLaterAria: "Save this article for later",
+          removeReadLaterAria: "Remove from read later",
+          notInterested: "Not interested",
+          notInterestedActive: "Marked not interested",
+          notInterestedAria: "Stop recommending similar articles",
+          notInterestedActiveAria: "Already marked not interested",
+          actionFailed: "Action failed. Please try again.",
+          explanationLoading: "Generating recommendation explanation...",
+          explanationFailed: "Failed to load recommendation explanation.",
+          noExplanation: "No clear recommendation signals are available.",
+          reasonFallback: "Recommendation reason",
+          impact: (impact) => `Impact: ${impact}`,
+          unknownTime: "Unknown time",
+          hostTimeout: "Host timed out. Please try again."
+        },
+        "ja-JP": {
+          title: "デイリーブリーフ",
+          tabsAria: "デイリーブリーフ表示",
+          tabBrief: "ブリーフ",
+          tabSettings: "設定",
+          briefDate: "ブリーフ日付",
+          loadingBriefs: "保存済みブリーフを読み込んでいます...",
+          heroKicker: "Daily Brief",
+          heroTitle: "デイリーブリーフ",
+          heroLoading: "デイリーブリーフを読み込んでいます...",
+          generateToday: "今日のブリーフを生成",
+          regenerateToday: "今日のブリーフを再生成",
+          emptyTitle: "まだブリーフはありません",
+          emptyBody: "この画面を開いただけでは一時ブリーフは生成されません。毎日のスケジュールを有効にすると指定時刻にスナップショットを保存します。手動で今日のブリーフを生成することもできます。",
+          dateEmptyTitle: "この日のブリーフはありません",
+          dateEmptyBody: "既存の日付を選ぶか、今日のブリーフを生成してください。",
+          filteredEmptyTitle: "現在の設定では利用できる記事がありません",
+          filteredEmptyBody: "この空のブリーフはスナップショットとして保存されています。トピック選択を緩めるか、新しいおすすめ記事が 24 時間ウィンドウに入るまで待ってください。",
+          settingsTitle: "ブリーフ設定",
+          settingsBody: "保存すると毎日のスケジュールタスクが更新されます。トピックは既定で全選択され、チェックを外したものは今後のブリーフから除外されます。",
+          updateTime: "更新時刻",
+          timezone: "タイムゾーン",
+          articleCount: "記事数",
+          enableDaily: "毎日のスケジュールを有効化",
+          includedTopics: "含めるトピック",
+          topicsHint: "Family を無効化すると配下の Cluster もすべて除外されます。Cluster だけを無効化した場合、同じ Family の他の記事はブリーフに入ります。",
+          saveSettings: "設定を保存",
+          whyRecommended: "おすすめ理由",
+          close: "閉じる",
+          reader: "読者",
+          heroNoBrief: (username) => `こんにちは、${username}。デイリーブリーフのスナップショットはここに保存され、生成後は日付ごとに読書リストを見返せます。`,
+          heroBrief: ({ username, dateText, briefIndex, receivedPrefix, receivedCount, topicCount, articleCount }) =>
+            `こんにちは、${username}。今日は ${dateText} です。今年 ${briefIndex} 件目のブリーフです。過去 24 時間に Dibao は ${receivedPrefix}${receivedCount} 件の新着記事を受け取り、このブリーフには ${topicCount} トピックの ${articleCount} 件の記事が含まれます。`,
+          atLeast: "少なくとも ",
+          settingsLoading: "設定を読み込んでいます...",
+          settingsOpenHint: "設定を開くと設定可能なトピックを読み込みます。",
+          noTopics: "設定可能な興味トピックはまだありません。興味クラスター生成後、ブリーフに含められるトピックがここに表示されます。",
+          familyMeta: (clusters, articles) => `${clusters} Cluster · ${articles} 件の根拠記事`,
+          groupCount: (count) => `${count} 件`,
+          favorite: "お気に入り",
+          unfavorite: "お気に入り解除",
+          favoriteAria: "この記事をお気に入りに追加",
+          unfavoriteAria: "この記事のお気に入りを解除",
+          like: "いいね",
+          unlike: "いいね解除",
+          likeAria: "この記事にいいね",
+          unlikeAria: "この記事のいいねを解除",
+          readLater: "あとで読む",
+          removeReadLater: "あとで読むから削除",
+          readLaterAria: "この記事をあとで読むに保存",
+          removeReadLaterAria: "あとで読むから削除",
+          notInterested: "興味なし",
+          notInterestedActive: "興味なし済み",
+          notInterestedAria: "類似記事のおすすめを減らす",
+          notInterestedActiveAria: "興味なしとしてマーク済み",
+          actionFailed: "操作に失敗しました。もう一度お試しください。",
+          explanationLoading: "おすすめ理由を生成しています...",
+          explanationFailed: "おすすめ理由を読み込めませんでした。",
+          noExplanation: "明確なおすすめシグナルはありません。",
+          reasonFallback: "おすすめ理由",
+          impact: (impact) => `影響: ${impact}`,
+          unknownTime: "不明な時刻",
+          hostTimeout: "ホストがタイムアウトしました。もう一度お試しください。"
+        }
+      }[locale];
       const bridgeHandlers = new Map();
       const defaultArticleState = {
         read: false,
@@ -369,7 +564,36 @@
         if (event.target === event.currentTarget) closeExplanation();
       });
 
+      applyStaticCopy();
       load();
+
+      function applyStaticCopy() {
+        document.documentElement.lang = locale;
+        document.title = copy.title;
+        document.querySelector(".management-tabs")?.setAttribute("aria-label", copy.tabsAria);
+        document.getElementById("tab-brief").textContent = copy.tabBrief;
+        document.getElementById("tab-settings").textContent = copy.tabSettings;
+        setLabelText("brief-date", copy.briefDate);
+        document.querySelector(".brief-panel-hero .kicker").textContent = copy.heroKicker;
+        document.querySelector(".brief-panel-hero h1").textContent = copy.heroTitle;
+        document.getElementById("hero-copy").textContent = copy.heroLoading;
+        document.getElementById("generate").textContent = copy.generateToday;
+        document.getElementById("loading").textContent = copy.loadingBriefs;
+        setSectionCopy("empty", copy.emptyTitle, copy.emptyBody);
+        setSectionCopy("date-empty", copy.dateEmptyTitle, copy.dateEmptyBody);
+        setSectionCopy("filtered-empty", copy.filteredEmptyTitle, copy.filteredEmptyBody);
+        document.querySelector("#settings-panel h2").textContent = copy.settingsTitle;
+        document.querySelector("#settings-panel h2 + p").textContent = copy.settingsBody;
+        setLabelText("time", copy.updateTime);
+        setLabelText("timezone", copy.timezone);
+        setLabelText("count", copy.articleCount);
+        document.querySelector(".checkbox-label span").textContent = copy.enableDaily;
+        document.querySelector("#settings-panel h3").textContent = copy.includedTopics;
+        document.querySelector("#settings-panel h3 + p").textContent = copy.topicsHint;
+        document.getElementById("save").textContent = copy.saveSettings;
+        document.getElementById("explanation-title").textContent = copy.whyRecommended;
+        document.getElementById("close-explanation").textContent = copy.close;
+      }
 
       async function load() {
         try {
@@ -469,28 +693,36 @@
 
       function renderHero() {
         const brief = selectedBrief();
-        const copy = document.getElementById("hero-copy");
-        const username = state.auth?.username || "读者";
+        const heroCopy = document.getElementById("hero-copy");
+        const username = state.auth?.username || copy.reader;
         if (!brief) {
-          copy.textContent = `你好，${username}。这里会保存每日简报快照；生成后，你可以按日期回看每一天的阅读清单。`;
+          heroCopy.textContent = copy.heroNoBrief(username);
           return;
         }
         const date = briefDate(brief);
-        const dateText = formatChineseDate(date, brief.timezone);
+        const dateText = formatLocalizedDate(date, brief.timezone);
         const briefIndex = briefNumberOfYear(brief);
         const topicCount = brief.topicCount ?? (brief.groups || []).length;
         const articleCount = brief.articleCount || 0;
         const receivedCount = Number.isFinite(brief.receivedArticleCount)
           ? Math.max(Number(brief.receivedArticleCount), articleCount)
           : articleCount;
-        const receivedPrefix = Number.isFinite(brief.receivedArticleCount) ? "" : "至少 ";
-        copy.textContent = `你好，${username}。今天是 ${dateText}，欢迎收看今年的第 ${briefIndex} 份简报。在过去 24 小时中，邸报收到 ${receivedPrefix}${receivedCount} 条新文章，本次简报包含 ${topicCount} 个主题下的 ${articleCount} 篇文章。`;
+        const receivedPrefix = Number.isFinite(brief.receivedArticleCount) ? "" : copy.atLeast;
+        heroCopy.textContent = copy.heroBrief({
+          username,
+          dateText,
+          briefIndex,
+          receivedPrefix,
+          receivedCount,
+          topicCount,
+          articleCount
+        });
       }
 
       function renderGenerateButton() {
         const todayId = todayBriefId();
         const hasTodayBrief = Boolean(todayId && state.briefs.some((brief) => brief.id === todayId));
-        document.getElementById("generate").textContent = hasTodayBrief ? "重新生成今日简报" : "生成今日简报";
+        document.getElementById("generate").textContent = hasTodayBrief ? copy.regenerateToday : copy.generateToday;
       }
 
       function renderDatePicker() {
@@ -515,7 +747,7 @@
         list.replaceChildren();
         if (!state.settings) {
           const loading = document.createElement("p");
-          loading.textContent = state.settingsLoading ? "正在读取设置..." : "打开设置后会读取可配置主题。";
+          loading.textContent = state.settingsLoading ? copy.settingsLoading : copy.settingsOpenHint;
           list.append(loading);
           return;
         }
@@ -526,7 +758,7 @@
         const families = state.targets.families || [];
         if (families.length === 0) {
           const empty = document.createElement("p");
-          empty.textContent = "还没有可配置的兴趣主题。生成兴趣簇后，这里会显示可纳入简报的主题。";
+          empty.textContent = copy.noTopics;
           list.append(empty);
           return;
         }
@@ -543,7 +775,7 @@
           strong.textContent = family.label;
           const meta = document.createElement("span");
           meta.className = "topic-meta";
-          meta.textContent = `${family.clusterCount} 个 Cluster · ${family.supportArticleCount} 篇证据文章`;
+          meta.textContent = copy.familyMeta(family.clusterCount, family.supportArticleCount);
           labelText.append(strong, document.createElement("br"), meta);
           const checkbox = document.createElement("input");
           checkbox.type = "checkbox";
@@ -596,7 +828,7 @@
           section.className = "group";
           section.innerHTML = `<div class="group-head"><h2></h2><span class="count"></span></div>`;
           section.querySelector("h2").textContent = group.label;
-          section.querySelector(".count").textContent = `${group.articles.length} 篇`;
+          section.querySelector(".count").textContent = copy.groupCount(group.articles.length);
           for (const article of group.articles) {
             section.append(renderArticle(article));
           }
@@ -682,33 +914,33 @@
         return [
           {
             intent: "favorite",
-            label: (item) => item.favorited ? "取消收藏" : "收藏",
-            aria: (item) => item.favorited ? "取消收藏这篇文章" : "收藏这篇文章",
+            label: (item) => item.favorited ? copy.unfavorite : copy.favorite,
+            aria: (item) => item.favorited ? copy.unfavoriteAria : copy.favoriteAria,
             selected: (item) => item.favorited
           },
           {
             intent: "like",
-            label: (item) => item.liked ? "取消点赞" : "点赞",
-            aria: (item) => item.liked ? "取消点赞这篇文章" : "点赞这篇文章",
+            label: (item) => item.liked ? copy.unlike : copy.like,
+            aria: (item) => item.liked ? copy.unlikeAria : copy.likeAria,
             selected: (item) => item.liked
           },
           {
             intent: "readLater",
-            label: (item) => item.readLater ? "移出稍后读" : "稍后读",
-            aria: (item) => item.readLater ? "移出稍后读" : "稍后读这篇文章",
+            label: (item) => item.readLater ? copy.removeReadLater : copy.readLater,
+            aria: (item) => item.readLater ? copy.removeReadLaterAria : copy.readLaterAria,
             selected: (item) => item.readLater
           },
           {
             intent: "notInterested",
-            label: (item) => item.notInterested ? "已不感兴趣" : "不感兴趣",
-            aria: (item) => item.notInterested ? "已标记不感兴趣" : "不再推荐类似文章",
+            label: (item) => item.notInterested ? copy.notInterestedActive : copy.notInterested,
+            aria: (item) => item.notInterested ? copy.notInterestedActiveAria : copy.notInterestedAria,
             selected: (item) => item.notInterested,
             danger: true
           },
           {
             intent: "explain",
-            label: () => "为什么推荐",
-            aria: () => "为什么推荐",
+            label: () => copy.whyRecommended,
+            aria: () => copy.whyRecommended,
             selected: () => false
           }
         ];
@@ -737,7 +969,7 @@
             state.articleStates.set(articleId, result.state);
           }
         } catch (error) {
-          state.articleErrors.set(articleId, error.message || "操作失败，请重试。");
+          state.articleErrors.set(articleId, error.message || copy.actionFailed);
         } finally {
           state.pendingArticleActions.delete(pendingKey);
           render();
@@ -747,12 +979,16 @@
       async function openExplanation(articleId) {
         const content = document.getElementById("explanation-content");
         document.getElementById("explanation-backdrop").hidden = false;
-        content.innerHTML = `<p class="status">正在生成推荐解释...</p>`;
+        content.replaceChildren();
+        const loading = document.createElement("p");
+        loading.className = "status";
+        loading.textContent = copy.explanationLoading;
+        content.append(loading);
         try {
           const explanation = await bridge("getArticleExplanation", { articleId });
           renderExplanation(explanation);
         } catch (error) {
-          content.textContent = error.message || "推荐解释读取失败。";
+          content.textContent = error.message || copy.explanationFailed;
         }
       }
 
@@ -763,7 +999,7 @@
         if (reasons.length === 0) {
           const empty = document.createElement("p");
           empty.className = "status";
-          empty.textContent = "当前没有明确的推荐信号。";
+          empty.textContent = copy.noExplanation;
           content.append(empty);
           return;
         }
@@ -772,10 +1008,10 @@
         for (const reason of reasons) {
           const item = document.createElement("li");
           const strong = document.createElement("strong");
-          strong.textContent = reason.label || reason.type || "推荐理由";
+          strong.textContent = reason.label || reason.type || copy.reasonFallback;
           const meta = document.createElement("p");
           meta.className = "muted";
-          meta.textContent = reason.impact ? `影响：${reason.impact}` : "";
+          meta.textContent = reason.impact ? copy.impact(reason.impact) : "";
           item.append(strong);
           if (meta.textContent) item.append(meta);
           list.append(item);
@@ -874,21 +1110,46 @@
         element.textContent = message || "";
       }
 
+      function setSectionCopy(id, title, body) {
+        const section = document.getElementById(id);
+        section.querySelector("h2").textContent = title;
+        section.querySelector("p").textContent = body;
+      }
+
+      function setLabelText(inputId, text) {
+        const label = document.querySelector(`label[for="${inputId}"]`);
+        if (!label) return;
+        for (const node of Array.from(label.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            node.textContent = `\n              ${text}\n              `;
+            return;
+          }
+        }
+        label.prepend(document.createTextNode(text));
+      }
+
       function formatTime(value) {
-        return value ? new Date(value).toLocaleString() : "未知时间";
+        return value ? new Date(value).toLocaleString(locale) : copy.unknownTime;
       }
 
       function formatScore(value) {
         return typeof value === "number" ? value.toFixed(3) : "-";
       }
 
-      function formatChineseDate(value, timezone) {
-        return new Intl.DateTimeFormat("zh-CN", {
+      function formatLocalizedDate(value, timezone) {
+        return new Intl.DateTimeFormat(locale, {
           timeZone: timezone || "UTC",
           year: "numeric",
           month: "long",
           day: "numeric"
         }).format(value);
+      }
+
+      function normalizeLocale(value) {
+        if (value === "en-US" || value === "ja-JP" || value === "zh-CN") {
+          return value;
+        }
+        return "zh-CN";
       }
 
       function dibaoArticleUrl(articleId) {
@@ -925,7 +1186,7 @@
           window.setTimeout(() => {
             if (!bridgeHandlers.has(requestId)) return;
             bridgeHandlers.delete(requestId);
-            reject(new Error("宿主响应超时，请重试。"));
+            reject(new Error(copy.hostTimeout));
           }, 10000);
         });
       }

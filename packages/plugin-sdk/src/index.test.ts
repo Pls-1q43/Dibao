@@ -125,6 +125,29 @@ describe("plugin-sdk", () => {
     });
   });
 
+  it("accepts localized manifest strings", () => {
+    expect(validatePluginPackage({
+      manifest: {
+        manifestVersion: 1,
+        id: "com.example.localized",
+        name: { "zh-CN": "本地化插件", "en-US": "Localized Plugin" },
+        version: "1.0.0",
+        publisher: { "zh-CN": "示例", "en-US": "Example" },
+        dibao: { minVersion: "0.3.0", maxVersion: "<0.4.0" },
+        capabilities: [],
+        contributes: {
+          fullContentExtractors: [
+            {
+              id: "readable",
+              title: { "zh-CN": "正文选择器", "en-US": "Readable selector" }
+            }
+          ]
+        }
+      },
+      files: {}
+    })).toEqual({ ok: true });
+  });
+
   it("validates full content extractor contributions", () => {
     expect(validatePluginPackage({
       manifest: {

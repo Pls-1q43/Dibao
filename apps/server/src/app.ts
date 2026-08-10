@@ -706,6 +706,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     jobs,
     dibaoVersion,
     getActiveRankContext: () => rankingService.getActiveRankContext(),
+    getLocale: () => settingsService.getSettings().ui.locale,
     officialPluginsDir: options.officialPluginsDir,
     pluginDataDir: options.pluginDataDir,
     secretKey: options.pluginSecretKey,

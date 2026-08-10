@@ -16,6 +16,8 @@ import type {
 } from "@dibao/db";
 import {
   controlledFetchText,
+  feedFetchAllowCidrs,
+  feedFetchAllowPrivateNetwork,
   feedFetchMaxBytes,
   type ControlledFetcher,
   type ControlledFetchResponse,
@@ -128,6 +130,8 @@ export class FeedRefreshService {
         headers: {
           accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
         },
+        allowPrivateNetwork: feedFetchAllowPrivateNetwork(),
+        allowCidrs: feedFetchAllowCidrs(),
         maxBytes: feedFetchMaxBytes(),
         onWarning: this.options.onFetchWarning,
         resolveHostname: this.options.resolveHostname
