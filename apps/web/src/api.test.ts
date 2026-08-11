@@ -955,6 +955,44 @@ describe("web API client", () => {
     expect(first.meta.unreadCount).toBe(17);
   });
 
+  it("fetches reader discovery modules with encoded article ids", async () => {
+    const calls: string[] = [];
+    const api = createDibaoApi(async (input) => {
+      calls.push(String(input));
+
+      return new Response(
+        JSON.stringify({
+          data: {
+            status: "ready",
+            items: []
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    });
+
+    await expect(api.getRelatedArticles("article/one", { limit: 5 })).resolves.toEqual({
+      status: "ready",
+      items: []
+    });
+    await expect(
+      api.getPersonalizedRelatedArticles("article/one", { limit: 3 })
+    ).resolves.toEqual({
+      status: "ready",
+      items: []
+    });
+
+    expect(calls).toEqual([
+      "/api/articles/article%2Fone/related?limit=5",
+      "/api/articles/article%2Fone/personalized-related?limit=3"
+    ]);
+  });
+
   it("searches articles with encoded filters and preserves list response fallbacks", async () => {
     const calls: string[] = [];
     const api = createDibaoApi(async (input) => {

@@ -1,5 +1,6 @@
 import type {
   DibaoDatabase,
+  ArticleVectorRow,
   EmbeddingIndexInput,
   EmbeddingIndexListRow,
   EmbeddingIndexRow,
@@ -28,6 +29,10 @@ export interface EmbeddingRepository {
   findActiveIndex(): EmbeddingIndexRow | null;
   findActiveProvider(): EmbeddingProviderRow | null;
   findActiveProviderWithIndex(): { provider: EmbeddingProviderRow; index: EmbeddingIndexRow } | null;
+  findArticleVectors(input: {
+    embeddingIndexId: string;
+    articleIds: string[];
+  }): ArticleVectorRow[];
   upsertProvider(input: EmbeddingProviderInput): void;
   updateProvider(input: UpdateEmbeddingProviderInput): EmbeddingProviderRow | null;
   recordProviderTestResult(input: EmbeddingProviderTestResultInput): EmbeddingProviderRow | null;
@@ -86,6 +91,35 @@ export class SqliteEmbeddingRepository implements EmbeddingRepository {
 
     const index = this.findActiveIndexForProvider(provider.id);
     return index ? { provider, index } : null;
+  }
+
+  findArticleVectors(input: {
+    embeddingIndexId: string;
+    articleIds: string[];
+  }): ArticleVectorRow[] {
+    const articleIds = uniqueStrings(input.articleIds);
+    if (articleIds.length === 0) {
+      return [];
+    }
+
+    const values = articleIds.map(() => "(?)").join(", ");
+    return this.db
+      .prepare(
+        `
+          with requested(article_id) as (
+            values ${values}
+          )
+          select
+            ae.article_id as articleId,
+            ae.vector_blob as vectorBlob,
+            ae.content_hash as contentHash
+          from requested r
+          join article_embeddings ae
+            on ae.article_id = r.article_id
+           and ae.embedding_index_id = ?
+        `
+      )
+      .all(...articleIds, input.embeddingIndexId) as ArticleVectorRow[];
   }
 
   upsertProvider(input: EmbeddingProviderInput): void {
@@ -623,6 +657,10 @@ function usageWindowForIndex(
     itemCount: row?.itemCount ?? 0,
     estimatedTokens: row?.estimatedTokens ?? 0
   };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function baseIndexSelect(): string {

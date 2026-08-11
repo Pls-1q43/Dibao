@@ -6932,6 +6932,110 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("serves reader related and personalized-related discovery endpoints", async () => {
+    const db = createEmptyDatabase();
+    const feeds = new SqliteFeedRepository(db);
+    const articles = new SqliteArticleRepository(db);
+    const embeddings = new SqliteEmbeddingRepository(db);
+    const vectorStore = new SqliteVecVectorStore(db);
+    feeds.upsert({
+      id: "feed_reader_discovery",
+      title: "Reader Discovery",
+      feedUrl: "https://example.com/reader-discovery.xml",
+      now: 1000
+    });
+    for (const [articleId, title] of [
+      ["article_reader_current", "Current article"],
+      ["article_reader_related", "Related article"],
+      ["article_reader_personalized", "Personalized article"]
+    ] as const) {
+      articles.upsert({
+        id: articleId,
+        feedId: "feed_reader_discovery",
+        url: `https://example.com/${articleId}`,
+        title,
+        summary: `${title} summary`,
+        dedupeKey: articleId,
+        discoveredAt: 1000,
+        now: 1000
+      });
+    }
+    embeddings.upsertProvider({
+      id: "provider_reader_discovery",
+      type: "embedded_local",
+      name: "Reader Discovery Provider",
+      model: "reader-discovery-2d",
+      dimension: 2,
+      enabled: true,
+      now: 1000
+    });
+    embeddings.createIndex({
+      id: "index_reader_discovery",
+      providerId: "provider_reader_discovery",
+      model: "reader-discovery-2d",
+      dimension: 2,
+      now: 1000
+    });
+    vectorStore.upsertArticleVector({
+      articleId: "article_reader_current",
+      embeddingIndexId: "index_reader_discovery",
+      vector: [1, 0],
+      contentHash: "hash_current",
+      now: 1000
+    });
+    vectorStore.upsertArticleVector({
+      articleId: "article_reader_related",
+      embeddingIndexId: "index_reader_discovery",
+      vector: [0.99, 0.01],
+      contentHash: "hash_related",
+      now: 1000
+    });
+    vectorStore.upsertArticleVector({
+      articleId: "article_reader_personalized",
+      embeddingIndexId: "index_reader_discovery",
+      vector: [0.9, 0.1],
+      contentHash: "hash_personalized",
+      now: 1000
+    });
+    insertRankForContext(db, {
+      articleId: "article_reader_personalized",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      embeddingIndexId: "index_reader_discovery",
+      score: 0.9,
+      calculatedAt: 1000
+    });
+    const app = buildServer({ db, logger: false });
+
+    try {
+      const related = await app.inject({
+        method: "GET",
+        url: "/api/articles/article_reader_current/related?limit=1"
+      });
+      const personalized = await app.inject({
+        method: "GET",
+        url: "/api/articles/article_reader_current/personalized-related?limit=1"
+      });
+
+      expect(related.statusCode, related.body).toBe(200);
+      expect(related.json()).toMatchObject({
+        data: {
+          status: "ready",
+          items: [expect.objectContaining({ id: "article_reader_related" })]
+        }
+      });
+      expect(personalized.statusCode, personalized.body).toBe(200);
+      expect(personalized.json()).toMatchObject({
+        data: {
+          status: "ready",
+          items: [expect.objectContaining({ id: "article_reader_personalized" })]
+        }
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("previews and backfills current feed full content without behavior events", async () => {
     const db = createEmptyDatabase();
     const fullText =

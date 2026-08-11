@@ -421,6 +421,11 @@ export type ArticleListInput = {
   includeUnreadCount?: boolean;
 };
 
+export type ArticleDuplicateGroupMembershipRow = {
+  articleId: string;
+  duplicateGroupId: string;
+};
+
 export type ArticleSearchState = "all" | "unread" | "read" | "favorites" | "read_later";
 
 export type ArticleSearchSort = "relevance" | "recommended" | "latest";
@@ -1164,6 +1169,12 @@ export type ArticleVectorInput = {
   vector: Buffer | readonly number[];
   contentHash: string;
   now?: number;
+};
+
+export type ArticleVectorRow = {
+  articleId: string;
+  vectorBlob: Buffer;
+  contentHash: string;
 };
 
 export type SimilarArticleQuery = {

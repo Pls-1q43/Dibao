@@ -299,12 +299,75 @@ export class SqliteVecVectorStore implements VectorStore {
 
   private createVecTable(index: EmbeddingIndexRow): void {
     assertSafeVecTableName(index.tableName);
+    const existing = this.db
+      .prepare("select sql from sqlite_master where type = 'table' and name = ?")
+      .get(index.tableName) as { sql: string | null } | undefined;
+
+    if (existing) {
+      if (isCosineVecTableSql(existing.sql)) {
+        return;
+      }
+      this.recreateVecTableWithCosine(index);
+      return;
+    }
+
     this.db.exec(
       `
         create virtual table if not exists ${quoteIdentifier(index.tableName)}
-        using vec0(embedding float[${index.dimension}])
+        using vec0(embedding float[${index.dimension}] distance_metric=cosine)
       `
     );
+  }
+
+  private recreateVecTableWithCosine(index: EmbeddingIndexRow): void {
+    const rows = this.db
+      .prepare(
+        `
+          select article_id as articleId, vector_blob as vectorBlob
+          from article_embeddings
+          where embedding_index_id = ?
+          order by article_id
+        `
+      )
+      .all(index.id) as Array<{ articleId: string; vectorBlob: Buffer }>;
+    const now = Date.now();
+
+    this.db.transaction(() => {
+      this.db.exec(`drop table if exists ${quoteIdentifier(index.tableName)}`);
+      this.db
+        .prepare("delete from article_vector_rows where embedding_index_id = ?")
+        .run(index.id);
+      this.db.exec(
+        `
+          create virtual table ${quoteIdentifier(index.tableName)}
+          using vec0(embedding float[${index.dimension}] distance_metric=cosine)
+        `
+      );
+
+      const insertVec = this.db.prepare(
+        `
+          insert into ${quoteIdentifier(index.tableName)} (embedding)
+          values (?)
+        `
+      );
+      const insertRow = this.db.prepare(
+        `
+          insert into article_vector_rows (
+            article_id,
+            embedding_index_id,
+            vec_rowid,
+            created_at
+          )
+          values (?, ?, ?, ?)
+        `
+      );
+
+      for (const row of rows) {
+        this.validateVectorDimension(row.vectorBlob, index);
+        const result = insertVec.run(row.vectorBlob);
+        insertRow.run(row.articleId, index.id, Number(result.lastInsertRowid), now);
+      }
+    })();
   }
 
   private validateVectorDimension(vectorBlob: Buffer, index: EmbeddingIndexRow): void {
@@ -331,4 +394,8 @@ function assertSafeVecTableName(tableName: string): void {
 
 function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+function isCosineVecTableSql(sql: string | null): boolean {
+  return /\bdistance_metric\s*=\s*cosine\b/i.test(sql ?? "");
 }

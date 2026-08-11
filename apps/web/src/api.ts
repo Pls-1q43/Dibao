@@ -172,6 +172,17 @@ export type ArticleDetail = ArticleListItem & {
   extractionError: string | null;
 };
 
+export type ReaderDiscoveryUnavailableReason =
+  | "no_active_embedding"
+  | "article_embedding_missing"
+  | "insufficient_candidates";
+
+export type ReaderDiscoveryResponse = {
+  status: "ready" | "unavailable";
+  items: ArticleListItem[];
+  reason?: ReaderDiscoveryUnavailableReason;
+};
+
 export type ArticleActionRequest =
   | {
       type: "impression" | "open" | "hide" | "not_interested";
@@ -2244,6 +2255,40 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       return (
         await request<RankExplanation>(
           `/api/articles/${encodeURIComponent(articleId)}/explanation`
+        )
+      ).data;
+    },
+
+    async getRelatedArticles(
+      articleId: string,
+      input: { limit?: number; signal?: AbortSignal } = {}
+    ): Promise<ReaderDiscoveryResponse> {
+      const params = new URLSearchParams();
+      if (input.limit !== undefined) {
+        params.set("limit", String(input.limit));
+      }
+      const query = params.toString();
+      return (
+        await request<ReaderDiscoveryResponse>(
+          `/api/articles/${encodeURIComponent(articleId)}/related${query ? `?${query}` : ""}`,
+          { signal: input.signal }
+        )
+      ).data;
+    },
+
+    async getPersonalizedRelatedArticles(
+      articleId: string,
+      input: { limit?: number; signal?: AbortSignal } = {}
+    ): Promise<ReaderDiscoveryResponse> {
+      const params = new URLSearchParams();
+      if (input.limit !== undefined) {
+        params.set("limit", String(input.limit));
+      }
+      const query = params.toString();
+      return (
+        await request<ReaderDiscoveryResponse>(
+          `/api/articles/${encodeURIComponent(articleId)}/personalized-related${query ? `?${query}` : ""}`,
+          { signal: input.signal }
         )
       ).data;
     },

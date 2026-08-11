@@ -768,6 +768,93 @@ describe("web i18n", () => {
     expect(html).toContain("原文");
   });
 
+  it("renders reader discovery as a cold-path related entry by default", () => {
+    const article: ArticleDetail = {
+      ...articleListItem("article_discovery_idle", "unseen"),
+      contentHtml: null,
+      contentText: "Full text",
+      extractionStatus: "success",
+      extractionError: null
+    };
+
+    const html = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <ArticleDetailPanel
+          actionError={null}
+          article={article}
+          articleView="recommended"
+          detailError={null}
+          explanation={null}
+          explanationError={null}
+          isDetailLoading={false}
+          isExplanationLoading={false}
+          isExplanationOpen={false}
+          onArticleAction={() => undefined}
+          onBackToList={() => undefined}
+          onCloseExplanation={() => undefined}
+          onOpenExplanation={() => undefined}
+          onReadProgress={() => undefined}
+          pendingAction={null}
+          readerSettings={defaultAppSettings.reader}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(html).toContain("查找相关文章");
+    expect(html).toContain("想继续了解这个话题");
+    expect(html).not.toContain("你可能还喜欢");
+  });
+
+  it("renders personalized and related discovery results from explicit state", () => {
+    const article: ArticleDetail = {
+      ...articleListItem("article_discovery_ready", "saved"),
+      contentHtml: null,
+      contentText: "Full text",
+      extractionStatus: "success",
+      extractionError: null
+    };
+    const related = {
+      ...articleListItem("related_article", "unseen"),
+      title: "Related article title",
+      summary: "A semantic neighbor."
+    };
+    const personalized = {
+      ...articleListItem("personalized_article", "unseen"),
+      title: "Personalized article title",
+      summary: "A personalized follow-up."
+    };
+
+    const html = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <ArticleDetailPanel
+          actionError={null}
+          article={article}
+          articleView="recommended"
+          detailError={null}
+          explanation={null}
+          explanationError={null}
+          isDetailLoading={false}
+          isExplanationLoading={false}
+          isExplanationOpen={false}
+          onArticleAction={() => undefined}
+          onBackToList={() => undefined}
+          onCloseExplanation={() => undefined}
+          onOpenExplanation={() => undefined}
+          onReadProgress={() => undefined}
+          pendingAction={null}
+          personalizedDiscovery={{ status: "ready", items: [personalized] }}
+          readerSettings={defaultAppSettings.reader}
+          relatedDiscovery={{ status: "ready", items: [related] }}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(html).toContain("你可能还喜欢");
+    expect(html).toContain("Personalized article title");
+    expect(html).toContain("相关文章");
+    expect(html).toContain("Related article title");
+  });
+
   it("renders a localized retry action when article detail loading fails", () => {
     const article: ArticleDetail = {
       ...articleListItem("article_detail_timeout", "opened"),

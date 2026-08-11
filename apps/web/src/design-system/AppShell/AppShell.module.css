@@ -3651,6 +3651,109 @@
   line-height: 1.55;
 }
 
+.readerDiscovery {
+  display: grid;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
+  font-family: var(--font-ui);
+}
+
+.readerDiscoveryBlock {
+  display: grid;
+  gap: var(--space-3);
+  border-top: var(--border-subtle);
+  padding-top: var(--space-4);
+}
+
+.readerDiscoveryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.readerDiscoveryHeader h3,
+.readerDiscoveryHeader p {
+  margin: 0;
+}
+
+.readerDiscoveryHeader h3 {
+  color: var(--color-ink);
+  font-size: var(--text-lg);
+  line-height: 1.35;
+}
+
+.readerDiscoveryHeader p,
+.readerDiscoveryMeta {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.readerDiscoveryHeader .secondaryButton {
+  flex: 0 0 auto;
+  gap: var(--space-2);
+}
+
+.readerDiscoveryHeader .secondaryButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.readerDiscoveryList {
+  display: grid;
+  border-top: var(--border-subtle);
+}
+
+.readerDiscoveryItem {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+  border: 0;
+  border-bottom: var(--border-subtle);
+  padding: var(--space-3) 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.readerDiscoveryItem:hover {
+  background: var(--color-paper);
+}
+
+.readerDiscoveryItemTitle {
+  color: var(--color-ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  line-height: 1.45;
+}
+
+.readerDiscoveryItemMeta,
+.readerDiscoveryItemSummary {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.readerDiscoveryItemMeta {
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+}
+
+.readerDiscoveryRetry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.readerDiscoveryError {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
 .mobileExplainAnchor {
   display: none;
 }
@@ -4443,6 +4546,35 @@
   .sortExplanationCard {
     margin-top: var(--space-5);
     padding: var(--space-3);
+  }
+
+  .readerDiscovery {
+    gap: var(--space-5);
+    margin-top: var(--space-5);
+  }
+
+  .readerDiscoveryBlock {
+    gap: var(--space-3);
+    padding-top: var(--space-3);
+  }
+
+  .readerDiscoveryHeader {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .readerDiscoveryHeader .secondaryButton,
+  .readerDiscoveryRetry .secondaryButton {
+    width: 100%;
+    min-height: var(--target-min-mobile);
+  }
+
+  .readerDiscoveryRetry {
+    display: grid;
+  }
+
+  .readerDiscoveryItem {
+    padding: var(--space-3) 0;
   }
 
   .mobileExplainAnchor {

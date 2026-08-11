@@ -189,6 +189,10 @@ import {
   ReaderCommandServiceError
 } from "./reader-command-service.js";
 import {
+  ReaderDiscoveryService,
+  type ReaderDiscoveryResponse
+} from "./reader-discovery-service.js";
+import {
   ARTICLE_FINGERPRINT_BACKFILL_JOB_TYPE,
   DUPLICATE_GROUP_REBUILD_JOB_TYPE,
   FTRL_TRAIN_JOB_TYPE,
@@ -296,6 +300,10 @@ type ArticleQuery = {
   limit?: string;
   cursor?: string;
   sort?: string;
+};
+
+type ReaderDiscoveryQuery = {
+  limit?: string;
 };
 
 type RecommendationInventoryQuery = ArticleQuery & {
@@ -650,6 +658,12 @@ export function buildServer(options: BuildServerOptions = {}) {
     },
     maxChunkDurationMs: options.rankingTargetChunkMs,
     now: options.now
+  });
+  const readerDiscoveryService = new ReaderDiscoveryService({
+    articles,
+    embeddings,
+    vectorStore,
+    getActiveRankContext: () => rankingService.getActiveRankContext()
   });
   const articleExplanationCache = new Map<
     string,
@@ -3081,6 +3095,78 @@ export function buildServer(options: BuildServerOptions = {}) {
       data
     };
   });
+
+  app.get<{ Params: ArticleParams; Querystring: ReaderDiscoveryQuery }>(
+    "/api/articles/:id/related",
+    async (request, reply) => {
+      const limit = parseReaderDiscoveryLimit(request.query.limit);
+      if (limit === null) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", "limit must be an integer between 1 and 10", {
+          field: "limit",
+          min: 1,
+          max: 10
+        });
+      }
+
+      const startedAt = performance.now();
+      const result = readerDiscoveryService.findRelatedArticles({
+        articleId: request.params.id,
+        limit
+      });
+      app.log.info(
+        {
+          route: "/api/articles/:id/related",
+          status: result?.status ?? "not_found",
+          itemCount: result?.items.length ?? 0,
+          durationMs: roundDuration(performance.now() - startedAt)
+        },
+        "performance.route"
+      );
+      if (!result) {
+        return sendApiError(reply, 404, "NOT_FOUND", "Article not found");
+      }
+
+      return {
+        data: mapReaderDiscoveryResponse(result)
+      };
+    }
+  );
+
+  app.get<{ Params: ArticleParams; Querystring: ReaderDiscoveryQuery }>(
+    "/api/articles/:id/personalized-related",
+    async (request, reply) => {
+      const limit = parseReaderDiscoveryLimit(request.query.limit);
+      if (limit === null) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", "limit must be an integer between 1 and 10", {
+          field: "limit",
+          min: 1,
+          max: 10
+        });
+      }
+
+      const startedAt = performance.now();
+      const result = readerDiscoveryService.findPersonalizedRelatedArticles({
+        articleId: request.params.id,
+        limit
+      });
+      app.log.info(
+        {
+          route: "/api/articles/:id/personalized-related",
+          status: result?.status ?? "not_found",
+          itemCount: result?.items.length ?? 0,
+          durationMs: roundDuration(performance.now() - startedAt)
+        },
+        "performance.route"
+      );
+      if (!result) {
+        return sendApiError(reply, 404, "NOT_FOUND", "Article not found");
+      }
+
+      return {
+        data: mapReaderDiscoveryResponse(result)
+      };
+    }
+  );
 
   app.get<{ Params: ArticleParams }>("/api/articles/:id/explanation", async (request, reply) => {
     const startedAt = performance.now();
@@ -6682,6 +6768,19 @@ function parseLimit(value: string | undefined): number | undefined | null {
   return Math.min(parsed, 100);
 }
 
+function parseReaderDiscoveryLimit(value: string | undefined): number | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function encodeCursor(cursor: number | ArticleListCursor | null): string | null {
   if (cursor === null) {
     return null;
@@ -6910,6 +7009,14 @@ function mapArticleDetail(article: ArticleDetailRow) {
     summary: hasBody ? articleListSummaryPreview(article.summary) : article.summary,
     extractionStatus: article.extractionStatus,
     extractionError: article.extractionError
+  };
+}
+
+function mapReaderDiscoveryResponse(response: ReaderDiscoveryResponse) {
+  return {
+    status: response.status,
+    items: response.items.map(mapArticleListItem),
+    ...(response.status === "unavailable" ? { reason: response.reason } : {})
   };
 }
 

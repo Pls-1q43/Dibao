@@ -1,6 +1,6 @@
 import type { CSSProperties, FormEvent, MouseEvent, RefObject, SyntheticEvent } from "react";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchState, ArticleState, ArticleTimeWindow, ArticleView, FavoriteArticleSort, Feed, FeedDiagnosticItem, FeedFolder, PluginContributions, RankExplanation, RankExplanationReason, ReaderCommandMarkScopeReadPreviewResponse, ReaderSettings, ReadLaterArticleSort, RecommendationInventory, RecommendationInventoryStatus, RecommendationStatus } from "../api.js";
+import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchState, ArticleState, ArticleTimeWindow, ArticleView, FavoriteArticleSort, Feed, FeedDiagnosticItem, FeedFolder, PluginContributions, RankExplanation, RankExplanationReason, ReaderCommandMarkScopeReadPreviewResponse, ReaderDiscoveryUnavailableReason, ReaderSettings, ReadLaterArticleSort, RecommendationInventory, RecommendationInventoryStatus, RecommendationStatus } from "../api.js";
 import { useI18n, type Dictionary, type NavigationItemKey } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { articleInteractionStatusForState } from "../articleListState.js";
@@ -15,6 +15,17 @@ const sanitizedArticleHtmlCache = new Map<string, string>();
 export type PluginActionButton = PluginContributions["actions"][number] & {
   pluginId: string;
   pluginName: string;
+};
+
+export type ReaderDiscoveryPanelState = {
+  status: "idle" | "loading" | "ready" | "unavailable" | "error";
+  items: ArticleListItem[];
+  reason?: ReaderDiscoveryUnavailableReason;
+};
+
+const idleReaderDiscoveryState: ReaderDiscoveryPanelState = {
+  status: "idle",
+  items: []
 };
 
 export type PluginActionContext = {
@@ -2049,7 +2060,10 @@ export function ArticleDetailPanel(props: {
   onPluginAction?: (action: PluginActionButton, context: PluginActionContext) => void;
   onBackToList: () => void;
   onCloseExplanation: () => void;
+  onLoadRelatedArticles?: () => void;
   onOpenExplanation: () => void;
+  onRetryPersonalizedRelated?: () => void;
+  onSelectDiscoveryArticle?: (articleId: string) => void;
   onReadProgress: (
     articleId: string,
     progress: number,
@@ -2061,6 +2075,8 @@ export function ArticleDetailPanel(props: {
   pluginBottomActions?: PluginActionButton[];
   pluginToolbarActions?: PluginActionButton[];
   readerSettings: ReaderSettings;
+  relatedDiscovery?: ReaderDiscoveryPanelState;
+  personalizedDiscovery?: ReaderDiscoveryPanelState;
 }) {
   const { t, formatArticleDate } = useI18n();
   const readerPanelRef = useRef<HTMLElement>(null);
@@ -2209,6 +2225,13 @@ export function ArticleDetailPanel(props: {
             placement="bottom"
             pluginActions={props.pluginBottomActions ?? []}
           />
+          <ReaderDiscoverySections
+            onLoadRelatedArticles={props.onLoadRelatedArticles}
+            onRetryPersonalizedRelated={props.onRetryPersonalizedRelated}
+            onSelectArticle={props.onSelectDiscoveryArticle}
+            personalized={props.personalizedDiscovery ?? idleReaderDiscoveryState}
+            related={props.relatedDiscovery ?? idleReaderDiscoveryState}
+          />
           <ArticleExplanationEntry
             articleView={props.articleView}
             error={props.explanationError}
@@ -2222,6 +2245,190 @@ export function ArticleDetailPanel(props: {
       ) : null}
     </section>
   );
+}
+
+function ReaderDiscoverySections(props: {
+  personalized: ReaderDiscoveryPanelState;
+  related: ReaderDiscoveryPanelState;
+  onLoadRelatedArticles?: () => void;
+  onRetryPersonalizedRelated?: () => void;
+  onSelectArticle?: (articleId: string) => void;
+}) {
+  return (
+    <section className={styles.readerDiscovery} aria-label="Reader discovery">
+      <PersonalizedDiscoverySection
+        onRetry={props.onRetryPersonalizedRelated}
+        onSelectArticle={props.onSelectArticle}
+        state={props.personalized}
+      />
+      <RelatedDiscoverySection
+        onLoad={props.onLoadRelatedArticles}
+        onSelectArticle={props.onSelectArticle}
+        state={props.related}
+      />
+    </section>
+  );
+}
+
+function PersonalizedDiscoverySection(props: {
+  state: ReaderDiscoveryPanelState;
+  onRetry?: () => void;
+  onSelectArticle?: (articleId: string) => void;
+}) {
+  const { t } = useI18n();
+  const { discovery } = t.reader;
+
+  if (props.state.status === "idle") {
+    return null;
+  }
+
+  return (
+    <section className={styles.readerDiscoveryBlock} aria-live="polite">
+      <div className={styles.readerDiscoveryHeader}>
+        <h3>{discovery.personalizedTitle}</h3>
+      </div>
+      {props.state.status === "loading" ? (
+        <p className={styles.readerDiscoveryMeta}>{discovery.personalizedLoading}</p>
+      ) : null}
+      {props.state.status === "error" ? (
+        <ReaderDiscoveryRetryMessage
+          message={discovery.personalizedError}
+          onRetry={props.onRetry}
+        />
+      ) : null}
+      {props.state.status === "unavailable" ? (
+        <p className={styles.readerDiscoveryMeta}>
+          {discoveryUnavailableMessage(props.state.reason, t)}
+        </p>
+      ) : null}
+      {props.state.status === "ready" ? (
+        props.state.items.length > 0 ? (
+          <ReaderDiscoveryArticleList
+            items={props.state.items}
+            onSelectArticle={props.onSelectArticle}
+          />
+        ) : (
+          <p className={styles.readerDiscoveryMeta}>{discovery.personalizedEmpty}</p>
+        )
+      ) : null}
+    </section>
+  );
+}
+
+function RelatedDiscoverySection(props: {
+  state: ReaderDiscoveryPanelState;
+  onLoad?: () => void;
+  onSelectArticle?: (articleId: string) => void;
+}) {
+  const { t } = useI18n();
+  const { discovery } = t.reader;
+
+  return (
+    <section className={styles.readerDiscoveryBlock} aria-live="polite">
+      <div className={styles.readerDiscoveryHeader}>
+        <div>
+          <h3>
+            {props.state.status === "ready" && props.state.items.length > 0
+              ? discovery.relatedTitle
+              : discovery.relatedPrompt}
+          </h3>
+          {props.state.status === "idle" || props.state.status === "error" ? (
+            <p>{discovery.relatedIntro}</p>
+          ) : null}
+        </div>
+        {props.state.status === "idle" || props.state.status === "error" ? (
+          <button
+            className={styles.secondaryButton}
+            onClick={props.onLoad}
+            type="button"
+          >
+            <ActionIcon name="search" />
+            <span>{props.state.status === "error" ? discovery.retry : discovery.relatedButton}</span>
+          </button>
+        ) : null}
+      </div>
+      {props.state.status === "loading" ? (
+        <p className={styles.readerDiscoveryMeta}>{discovery.relatedLoading}</p>
+      ) : null}
+      {props.state.status === "error" ? (
+        <p className={styles.readerDiscoveryError}>{discovery.relatedError}</p>
+      ) : null}
+      {props.state.status === "unavailable" ? (
+        <p className={styles.readerDiscoveryMeta}>
+          {discoveryUnavailableMessage(props.state.reason, t)}
+        </p>
+      ) : null}
+      {props.state.status === "ready" ? (
+        props.state.items.length > 0 ? (
+          <ReaderDiscoveryArticleList
+            items={props.state.items}
+            onSelectArticle={props.onSelectArticle}
+          />
+        ) : (
+          <p className={styles.readerDiscoveryMeta}>{discovery.relatedEmpty}</p>
+        )
+      ) : null}
+    </section>
+  );
+}
+
+function ReaderDiscoveryRetryMessage(props: {
+  message: string;
+  onRetry?: () => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <div className={styles.readerDiscoveryRetry}>
+      <p className={styles.readerDiscoveryError}>{props.message}</p>
+      <button className={styles.secondaryButton} onClick={props.onRetry} type="button">
+        {t.reader.discovery.retry}
+      </button>
+    </div>
+  );
+}
+
+function ReaderDiscoveryArticleList(props: {
+  items: ArticleListItem[];
+  onSelectArticle?: (articleId: string) => void;
+}) {
+  const { formatArticleDate } = useI18n();
+
+  return (
+    <div className={styles.readerDiscoveryList}>
+      {props.items.map((item) => (
+        <button
+          className={styles.readerDiscoveryItem}
+          key={item.id}
+          onClick={() => props.onSelectArticle?.(item.id)}
+          type="button"
+        >
+          <span className={styles.readerDiscoveryItemTitle}>{item.title}</span>
+          <span className={styles.readerDiscoveryItemMeta}>
+            {[item.feedTitle, item.publishedAt ? formatArticleDate(item.publishedAt) : null]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {item.summary ? (
+            <span className={styles.readerDiscoveryItemSummary}>
+              {truncateDiscoverySummary(plainTextSummary(item.summary))}
+            </span>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function truncateDiscoverySummary(value: string): string {
+  return value.length > 150 ? `${value.slice(0, 150)}...` : value;
+}
+
+function discoveryUnavailableMessage(
+  reason: ReaderDiscoveryUnavailableReason | undefined,
+  t: Dictionary
+): string {
+  return t.reader.discovery.unavailable[reason ?? "article_embedding_missing"];
 }
 
 function ArticleRowActions(props: {

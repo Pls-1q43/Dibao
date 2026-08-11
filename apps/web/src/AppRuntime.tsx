@@ -37,6 +37,7 @@ import {
   type RankExplanationReason,
   type ReadLaterArticleSort,
   type ReaderSettings,
+  type ReaderDiscoveryResponse,
   type RecommendationInventory,
   type RecommendationStatus,
   type RecommendationClusterItem,
@@ -79,7 +80,7 @@ import {
   storeTelemetryPreference
 } from "./telemetry.js";
 import { PwaStatusBanner, SetupWelcomePanel, AuthGatePanel, DerivedDataUpgradePanel, SetupSourcesPanel, SetupOptionalPluginsPanel } from "./setup/SetupPanels.js";
-import { FeedPanel, ArticleListPanel, SearchResultsPanel, ArticleDetailPanel, ArticleExplanationDialog, NavigationIcon, ActionIcon, type PluginActionButton, type PluginActionContext } from "./reader/ReaderPanels.js";
+import { FeedPanel, ArticleListPanel, SearchResultsPanel, ArticleDetailPanel, ArticleExplanationDialog, NavigationIcon, ActionIcon, type PluginActionButton, type PluginActionContext, type ReaderDiscoveryPanelState } from "./reader/ReaderPanels.js";
 import {
   actionErrorMessageFor,
   appendUniqueArticles,
@@ -148,6 +149,7 @@ const IGNORE_TELEMETRY_TIMEOUT_MS = 8_000;
 const ARTICLE_LIST_REQUEST_TIMEOUT_MS = 10_000;
 const ARTICLE_LIST_FAILURE_TIMEOUT_MS = ARTICLE_LIST_REQUEST_TIMEOUT_MS * 3;
 const ARTICLE_DETAIL_REQUEST_TIMEOUT_MS = 12_000;
+const READER_DISCOVERY_REQUEST_TIMEOUT_MS = 10_000;
 const ARTICLE_STATE_OVERLAY_STORAGE_KEY = "dibao:article-state-overlay:v1";
 const ARTICLE_STATE_OVERLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTICLE_STATE_OVERLAY_LIMIT = 500;
@@ -175,6 +177,20 @@ type ArticleStateOverlayEntry = {
 type ArticleStateOverlay = {
   states: Map<string, ArticleState>;
   locallyUpdatedIds: Set<string>;
+};
+
+type PersonalizedRelatedRequestContext = {
+  articleId: string;
+  controller: AbortController;
+  likeSucceeded: boolean;
+  requestId: number;
+  response?: ReaderDiscoveryResponse;
+  failed?: boolean;
+};
+
+const idleDiscoveryState: ReaderDiscoveryPanelState = {
+  status: "idle",
+  items: []
 };
 
 async function withRequestTimeout<T>(
@@ -325,6 +341,10 @@ export function App() {
     initialRoute.articleId
   );
   const [articleDetail, setArticleDetail] = useState<ArticleDetail | null>(null);
+  const [relatedDiscovery, setRelatedDiscovery] =
+    useState<ReaderDiscoveryPanelState>(idleDiscoveryState);
+  const [personalizedDiscovery, setPersonalizedDiscovery] =
+    useState<ReaderDiscoveryPanelState>(idleDiscoveryState);
   const [rankExplanation, setRankExplanation] = useState<RankExplanation | null>(null);
   const [listRankExplanation, setListRankExplanation] = useState<RankExplanation | null>(null);
   const [isExplanationOpen, setIsExplanationOpen] = useState(false);
@@ -408,6 +428,10 @@ export function App() {
   const articleRequestVersion = useRef(0);
   const detailExplanationRequestVersion = useRef(0);
   const listExplanationRequestVersion = useRef(0);
+  const relatedDiscoveryRequestId = useRef(0);
+  const relatedDiscoveryAbort = useRef<AbortController | null>(null);
+  const personalizedDiscoveryRequestId = useRef(0);
+  const personalizedDiscoveryRequest = useRef<PersonalizedRelatedRequestContext | null>(null);
   const hasLoadedSettingsForSession = useRef(false);
   const hasAppliedDefaultHomeViewForSession = useRef(false);
   const appPageRef = useRef<AppPage>(appPage);
@@ -1621,6 +1645,18 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    relatedDiscoveryRequestId.current += 1;
+    relatedDiscoveryAbort.current?.abort();
+    relatedDiscoveryAbort.current = null;
+    setRelatedDiscovery(idleDiscoveryState);
+
+    personalizedDiscoveryRequestId.current += 1;
+    personalizedDiscoveryRequest.current?.controller.abort();
+    personalizedDiscoveryRequest.current = null;
+    setPersonalizedDiscovery(idleDiscoveryState);
+  }, [selectedArticleId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadDetail(articleId: string) {
@@ -2621,12 +2657,157 @@ export function App() {
     }
   }
 
+  async function handleLoadRelatedArticles() {
+    if (!articleDetail || relatedDiscovery.status === "loading" || relatedDiscovery.status === "ready") {
+      return;
+    }
+
+    const articleId = articleDetail.id;
+    const requestId = relatedDiscoveryRequestId.current + 1;
+    relatedDiscoveryRequestId.current = requestId;
+    relatedDiscoveryAbort.current?.abort();
+    const controller = new AbortController();
+    relatedDiscoveryAbort.current = controller;
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      READER_DISCOVERY_REQUEST_TIMEOUT_MS
+    );
+    setRelatedDiscovery({ status: "loading", items: [] });
+
+    try {
+      const response = await dibaoApi.getRelatedArticles(articleId, {
+        limit: 5,
+        signal: controller.signal
+      });
+      if (
+        relatedDiscoveryRequestId.current === requestId &&
+        selectedArticleIdRef.current === articleId
+      ) {
+        setRelatedDiscovery(discoveryStateForResponse(response));
+      }
+    } catch (error) {
+      if (
+        !isAbortError(error) &&
+        relatedDiscoveryRequestId.current === requestId &&
+        selectedArticleIdRef.current === articleId
+      ) {
+        setRelatedDiscovery({ status: "error", items: [] });
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (relatedDiscoveryAbort.current === controller) {
+        relatedDiscoveryAbort.current = null;
+      }
+    }
+  }
+
+  function startPersonalizedRelatedRequest(
+    articleId: string,
+    input: { likeSucceeded?: boolean } = {}
+  ) {
+    personalizedDiscoveryRequestId.current += 1;
+    personalizedDiscoveryRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const request: PersonalizedRelatedRequestContext = {
+      articleId,
+      controller,
+      likeSucceeded: input.likeSucceeded ?? false,
+      requestId: personalizedDiscoveryRequestId.current
+    };
+    personalizedDiscoveryRequest.current = request;
+    if (request.likeSucceeded) {
+      setPersonalizedDiscovery({ status: "loading", items: [] });
+    } else {
+      setPersonalizedDiscovery(idleDiscoveryState);
+    }
+
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      READER_DISCOVERY_REQUEST_TIMEOUT_MS
+    );
+
+    void dibaoApi.getPersonalizedRelatedArticles(articleId, {
+      limit: 5,
+      signal: controller.signal
+    })
+      .then((response) => {
+        if (
+          personalizedDiscoveryRequest.current !== request ||
+          selectedArticleIdRef.current !== articleId
+        ) {
+          return;
+        }
+        request.response = response;
+        if (request.likeSucceeded) {
+          setPersonalizedDiscovery(discoveryStateForResponse(response));
+        }
+      })
+      .catch((error) => {
+        if (
+          isAbortError(error) ||
+          personalizedDiscoveryRequest.current !== request ||
+          selectedArticleIdRef.current !== articleId
+        ) {
+          return;
+        }
+        request.failed = true;
+        if (request.likeSucceeded) {
+          setPersonalizedDiscovery({ status: "error", items: [] });
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+      });
+  }
+
+  function confirmPersonalizedRelatedLike(articleId: string) {
+    const request = personalizedDiscoveryRequest.current;
+    if (!request || request.articleId !== articleId) {
+      startPersonalizedRelatedRequest(articleId, { likeSucceeded: true });
+      return;
+    }
+
+    request.likeSucceeded = true;
+    if (request.response) {
+      setPersonalizedDiscovery(discoveryStateForResponse(request.response));
+    } else if (request.failed) {
+      setPersonalizedDiscovery({ status: "error", items: [] });
+    } else {
+      setPersonalizedDiscovery({ status: "loading", items: [] });
+    }
+  }
+
+  function discardPersonalizedRelated(articleId: string) {
+    const request = personalizedDiscoveryRequest.current;
+    if (request?.articleId === articleId) {
+      request.controller.abort();
+      personalizedDiscoveryRequest.current = null;
+    }
+    if (selectedArticleIdRef.current === articleId) {
+      setPersonalizedDiscovery(idleDiscoveryState);
+    }
+  }
+
+  function handleRetryPersonalizedRelated() {
+    if (!articleDetail?.state.liked) {
+      return;
+    }
+    startPersonalizedRelatedRequest(articleDetail.id, { likeSucceeded: true });
+  }
+
   async function handleArticleAction(article: ArticleActionTarget, intent: ArticleActionIntent) {
     setPendingArticleAction({ articleId: article.id, intent });
     setArticleActionError(null);
     const previousState =
       articleStateById.current.get(article.id) ??
       (articleDetail?.id === article.id ? articleDetail.state : article.state);
+    const shouldLoadPersonalizedRelated = intent === "like" && !previousState.liked;
+    const shouldDiscardPersonalizedRelated = intent === "like" && previousState.liked;
+    if (shouldLoadPersonalizedRelated) {
+      startPersonalizedRelatedRequest(article.id);
+    } else if (shouldDiscardPersonalizedRelated) {
+      discardPersonalizedRelated(article.id);
+    }
     applyArticleState(article.id, optimisticStateForArticleAction(intent, previousState));
 
     try {
@@ -2635,11 +2816,17 @@ export function App() {
         requestForArticleAction(intent, previousState)
       );
       applyArticleState(article.id, result.state);
+      if (shouldLoadPersonalizedRelated) {
+        confirmPersonalizedRelatedLike(article.id);
+      }
       if (isExplanationOpen && selectedArticleIdRef.current === article.id) {
         void refreshArticleExplanation(article.id);
       }
     } catch {
       applyArticleState(article.id, previousState);
+      if (shouldLoadPersonalizedRelated) {
+        discardPersonalizedRelated(article.id);
+      }
       setArticleActionError(actionErrorMessageFor(intent, t));
     } finally {
       setPendingArticleAction((current) =>
@@ -3559,7 +3746,10 @@ export function App() {
               }}
               onBackToList={handleBackToArticleList}
               onCloseExplanation={handleCloseExplanation}
+              onLoadRelatedArticles={handleLoadRelatedArticles}
               onOpenExplanation={handleOpenExplanation}
+              onRetryPersonalizedRelated={handleRetryPersonalizedRelated}
+              onSelectDiscoveryArticle={handleSelectArticle}
               onReadProgress={handleReadProgress}
               onRetryDetail={handleRetryArticleDetail}
               pendingAction={
@@ -3570,6 +3760,8 @@ export function App() {
               pluginBottomActions={pluginActionsForSlot("article.reader.bottomSheet.actions")}
               pluginToolbarActions={pluginActionsForSlot("article.reader.toolbar.end")}
               readerSettings={appSettings.reader}
+              relatedDiscovery={relatedDiscovery}
+              personalizedDiscovery={personalizedDiscovery}
             />
 
             <ArticleExplanationDialog
@@ -3696,7 +3888,10 @@ export function App() {
               }}
               onBackToList={handleBackToArticleList}
               onCloseExplanation={handleCloseExplanation}
+              onLoadRelatedArticles={handleLoadRelatedArticles}
               onOpenExplanation={handleOpenExplanation}
+              onRetryPersonalizedRelated={handleRetryPersonalizedRelated}
+              onSelectDiscoveryArticle={handleSelectArticle}
               onReadProgress={handleReadProgress}
               onRetryDetail={handleRetryArticleDetail}
               pendingAction={
@@ -3707,6 +3902,8 @@ export function App() {
               pluginBottomActions={pluginActionsForSlot("article.reader.bottomSheet.actions")}
               pluginToolbarActions={pluginActionsForSlot("article.reader.toolbar.end")}
               readerSettings={appSettings.reader}
+              relatedDiscovery={relatedDiscovery}
+              personalizedDiscovery={personalizedDiscovery}
             />
 
             <ArticleExplanationDialog
@@ -4084,6 +4281,29 @@ function isPluginArticleActionIntent(value: unknown): value is ArticleActionInte
 
 function isArticleView(value: unknown): value is ArticleView {
   return value === "latest" || value === "recommended" || value === "favorites" || value === "read_later";
+}
+
+function discoveryStateForResponse(response: ReaderDiscoveryResponse): ReaderDiscoveryPanelState {
+  if (response.status === "unavailable") {
+    return {
+      status: "unavailable",
+      items: [],
+      reason: response.reason
+    };
+  }
+
+  return {
+    status: "ready",
+    items: response.items
+  };
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof DOMException && error.name === "AbortError"
+  ) || (
+    error instanceof Error && error.name === "AbortError"
+  );
 }
 
 function isPluginJobStatus(value: unknown): value is JobListItem["status"] {

@@ -26,6 +26,7 @@ import {
   loadDefaultMigrations,
   openDatabase,
   runMigrations,
+  toVectorBlob,
   vectorToJson
 } from "./index.js";
 
@@ -1541,6 +1542,126 @@ describe("db package", () => {
         limit: 2
       });
       expect(rebuilt[0]?.articleId).toBe("article_ai_local");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("creates user-visible article vector tables with explicit cosine distance and migrates legacy L2 tables", () => {
+    const db = openDatabase(tempDatabasePath(), { migrate: true });
+    try {
+      const feeds = new SqliteFeedRepository(db);
+      feeds.upsert({
+        id: "feed_vec_metric",
+        title: "Vector Metric",
+        feedUrl: "https://example.com/vector-metric.xml",
+        now: 1000
+      });
+      const articles = new SqliteArticleRepository(db);
+      for (const articleId of ["article_cosine_axis", "article_l2_near"]) {
+        articles.upsert({
+          id: articleId,
+          feedId: "feed_vec_metric",
+          url: `https://example.com/${articleId}`,
+          title: articleId,
+          dedupeKey: articleId,
+          now: 1000
+        });
+      }
+
+      const embeddings = new SqliteEmbeddingRepository(db);
+      embeddings.upsertProvider({
+        id: "provider_vec_metric",
+        type: "embedded_local",
+        name: "Metric Fixture",
+        model: "metric-2d",
+        dimension: 2,
+        enabled: true,
+        now: 1000
+      });
+      embeddings.createIndex({
+        id: "index_vec_metric",
+        providerId: "provider_vec_metric",
+        model: "metric-2d",
+        dimension: 2,
+        now: 1000
+      });
+
+      db.exec("create virtual table vec_articles_index_vec_metric using vec0(embedding float[2])");
+      expect(
+        (
+          db
+            .prepare("select sql from sqlite_master where name = 'vec_articles_index_vec_metric'")
+            .get() as { sql: string }
+        ).sql
+      ).not.toContain("distance_metric=cosine");
+
+      const axisVector = toVectorBlob([10, 0]);
+      const l2NearVector = toVectorBlob([1, 1]);
+      db.prepare(
+        `
+          insert into article_embeddings (
+            article_id,
+            embedding_index_id,
+            vector_blob,
+            content_hash,
+            created_at,
+            updated_at
+          )
+          values (?, 'index_vec_metric', ?, ?, 1000, 1000)
+        `
+      ).run("article_cosine_axis", axisVector, "hash_axis");
+      db.prepare(
+        `
+          insert into article_embeddings (
+            article_id,
+            embedding_index_id,
+            vector_blob,
+            content_hash,
+            created_at,
+            updated_at
+          )
+          values (?, 'index_vec_metric', ?, ?, 1000, 1000)
+        `
+      ).run("article_l2_near", l2NearVector, "hash_l2");
+
+      const insertVec = db.prepare(
+        "insert into vec_articles_index_vec_metric (embedding) values (?)"
+      );
+      const axisRow = Number(insertVec.run(axisVector).lastInsertRowid);
+      const l2NearRow = Number(insertVec.run(l2NearVector).lastInsertRowid);
+      const insertRow = db.prepare(
+        `
+          insert into article_vector_rows (
+            article_id,
+            embedding_index_id,
+            vec_rowid,
+            created_at
+          )
+          values (?, 'index_vec_metric', ?, 1000)
+        `
+      );
+      insertRow.run("article_cosine_axis", axisRow);
+      insertRow.run("article_l2_near", l2NearRow);
+
+      const vectorStore = new SqliteVecVectorStore(db);
+      const result = vectorStore.searchSimilarArticles({
+        embeddingIndexId: "index_vec_metric",
+        vector: [1, 0],
+        limit: 2
+      });
+
+      expect(result.map((row) => row.articleId)).toEqual([
+        "article_cosine_axis",
+        "article_l2_near"
+      ]);
+      expect(
+        (
+          db
+            .prepare("select sql from sqlite_master where name = 'vec_articles_index_vec_metric'")
+            .get() as { sql: string }
+        ).sql
+      ).toContain("distance_metric=cosine");
     } finally {
       db.close();
     }

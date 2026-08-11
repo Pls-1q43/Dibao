@@ -1241,6 +1241,25 @@ export const zhCN = {
       pending: "正文正在等待处理，当前显示 Feed 内容或摘要。",
       noContent: "没有可用正文。"
     },
+    discovery: {
+      relatedTitle: "相关文章",
+      relatedPrompt: "想继续了解这个话题？",
+      relatedIntro: "寻找与你刚刚阅读的内容相近的文章",
+      relatedButton: "查找相关文章",
+      relatedLoading: "正在查找相关文章...",
+      relatedEmpty: "暂时没有找到合适的相关文章。",
+      relatedError: "相关文章加载失败。",
+      personalizedTitle: "你可能还喜欢",
+      personalizedLoading: "正在为你挑选...",
+      personalizedEmpty: "暂时没有找到合适的继续阅读推荐。",
+      personalizedError: "继续阅读推荐加载失败。",
+      retry: "重试",
+      unavailable: {
+        no_active_embedding: "这篇文章暂时没有可用的语义索引。",
+        article_embedding_missing: "这篇文章暂时没有可用的语义索引。",
+        insufficient_candidates: "暂时没有足够的候选文章。"
+      }
+    },
     noContent: "这篇文章暂无正文内容。",
     meta: (feedTitle: string, date?: string, author?: string | null) =>
       [feedTitle, date, author].filter(Boolean).join(" · ")
@@ -2608,6 +2627,25 @@ export const enUS = {
       pending: "Body processing is pending; current content is feed content or summary.",
       noContent: "No body content is available."
     },
+    discovery: {
+      relatedTitle: "Related Articles",
+      relatedPrompt: "Want to keep exploring this topic?",
+      relatedIntro: "Find articles close to what you just read",
+      relatedButton: "Find Related Articles",
+      relatedLoading: "Finding related articles...",
+      relatedEmpty: "No suitable related articles found yet.",
+      relatedError: "Related articles failed to load.",
+      personalizedTitle: "You Might Also Like",
+      personalizedLoading: "Picking articles for you...",
+      personalizedEmpty: "No suitable continue-reading picks found yet.",
+      personalizedError: "Continue-reading picks failed to load.",
+      retry: "Retry",
+      unavailable: {
+        no_active_embedding: "This article does not have an available semantic index yet.",
+        article_embedding_missing: "This article does not have an available semantic index yet.",
+        insufficient_candidates: "There are not enough candidate articles yet."
+      }
+    },
     noContent: "This article has no body content yet.",
     meta: (feedTitle: string, date?: string, author?: string | null) =>
       [feedTitle, date, author].filter(Boolean).join(" · ")
@@ -3969,6 +4007,25 @@ export const jaJP = {
       skipped: "Web 記事全文は使用されていません。現在の内容は Feed 由来です。",
       pending: "本文処理は待機中です。現在は Feed 内容または要約を表示しています。",
       noContent: "利用できる本文がありません。"
+    },
+    discovery: {
+      relatedTitle: "関連記事",
+      relatedPrompt: "この話題をもう少し追いますか？",
+      relatedIntro: "今読んだ内容に近い記事を探します",
+      relatedButton: "関連記事を探す",
+      relatedLoading: "関連記事を探しています...",
+      relatedEmpty: "適切な関連記事はまだ見つかりません。",
+      relatedError: "関連記事の読み込みに失敗しました。",
+      personalizedTitle: "こちらもおすすめ",
+      personalizedLoading: "あなた向けの記事を選んでいます...",
+      personalizedEmpty: "続けて読む候補はまだ見つかりません。",
+      personalizedError: "続けて読む候補の読み込みに失敗しました。",
+      retry: "再試行",
+      unavailable: {
+        no_active_embedding: "この記事ではまだ利用できる意味インデックスがありません。",
+        article_embedding_missing: "この記事ではまだ利用できる意味インデックスがありません。",
+        insufficient_candidates: "候補記事がまだ十分ではありません。"
+      }
     },
     noContent: "この記事にはまだ本文がありません。",
     meta: (feedTitle: string, date?: string, author?: string | null) =>

@@ -2,6 +2,7 @@ import { SqliteArticleFtsIndex, sanitizeFtsQuery } from "../fts/article-fts.js";
 import { performance } from "node:perf_hooks";
 import type {
   ArticleDetailRow,
+  ArticleDuplicateGroupMembershipRow,
   ArticleEmbeddingCandidateRow,
   ArticleInteractionStatus,
   ArticleListCursor,
@@ -103,6 +104,8 @@ export interface ArticleRepository {
   countUnreadForScope(scope: ArticleScope): number;
   findById(id: string): ArticleRow | null;
   findDetailById(id: string, input?: { rankContext?: string }): ArticleDetailRow | null;
+  findDuplicateGroupMemberships(articleIds: string[]): ArticleDuplicateGroupMembershipRow[];
+  findListItemsByIds(articleIds: string[], input?: { rankContext?: string }): ArticleListItemRow[];
   listUnreadArticleIdsForScope(scope: ArticleScope, limit?: number): string[];
   markScopeRead(scope: ArticleScope, now: number, auditSampleLimit?: number): MarkScopeReadAuditResult;
   listEmbeddingCandidates(input: {
@@ -340,6 +343,71 @@ export class SqliteArticleRepository implements ArticleRepository {
       .get(rankContext, BASE_RANK_CONTEXT, id) as ArticleDetailDbRow | undefined;
 
     return row ? mapArticleDetail(row) : null;
+  }
+
+  findDuplicateGroupMemberships(articleIds: string[]): ArticleDuplicateGroupMembershipRow[] {
+    const uniqueArticleIds = uniqueStrings(articleIds);
+    if (uniqueArticleIds.length === 0) {
+      return [];
+    }
+
+    const values = uniqueArticleIds.map(() => "(?)").join(", ");
+    return this.db
+      .prepare(
+        `
+          with requested(article_id) as (
+            values ${values}
+          )
+          select
+            dgm.article_id as articleId,
+            dgm.duplicate_group_id as duplicateGroupId
+          from requested r
+          join duplicate_group_members dgm on dgm.article_id = r.article_id
+          order by dgm.article_id, dgm.duplicate_group_id
+        `
+      )
+      .all(...uniqueArticleIds) as ArticleDuplicateGroupMembershipRow[];
+  }
+
+  findListItemsByIds(
+    articleIds: string[],
+    input: { rankContext?: string } = {}
+  ): ArticleListItemRow[] {
+    const uniqueArticleIds = uniqueStrings(articleIds);
+    if (uniqueArticleIds.length === 0) {
+      return [];
+    }
+
+    const rankContext = input.rankContext ?? BASE_RANK_CONTEXT;
+    const values = uniqueArticleIds.map(() => "(?, ?)").join(", ");
+    const params = uniqueArticleIds.flatMap((articleId, index) => [articleId, index]);
+    return (
+      this.db
+        .prepare(
+          `
+            with requested(id, displayOrder) as (
+              values ${values}
+            )
+            ${baseArticleReadSelect()}
+            from requested
+            join articles a on a.id = requested.id
+            join feeds f on f.id = a.feed_id
+              and f.deleted_at is null
+              and f.enabled = 1
+            left join article_states s on s.article_id = a.id
+            left join article_rank_scores rs
+              on rs.article_id = a.id
+              and rs.rank_context = ?
+            left join article_rank_scores base_rs
+              on base_rs.article_id = a.id
+              and base_rs.rank_context = ?
+            where a.deleted_at is null
+              and a.status != 'deleted'
+            order by requested.displayOrder asc
+          `
+        )
+        .all(...params, rankContext, BASE_RANK_CONTEXT) as ArticleReadDbRow[]
+    ).map(mapArticleListItem);
   }
 
   listEmbeddingCandidates(input: {
