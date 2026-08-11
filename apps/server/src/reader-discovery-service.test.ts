@@ -6,7 +6,12 @@ import {
   SqliteFeedRepository,
   SqliteRankingRepository,
   SqliteVecVectorStore,
-  type DibaoDatabase
+  toVectorBlob,
+  type ArticleDetailRow,
+  type ArticleListItemRow,
+  type ArticleStateSnapshot,
+  type DibaoDatabase,
+  type EmbeddingIndexRow
 } from "@dibao/db";
 import { ReaderDiscoveryService } from "./reader-discovery-service.js";
 
@@ -102,6 +107,82 @@ describe("ReaderDiscoveryService", () => {
     }
   });
 
+  it("excludes read, favorited, and liked articles from personalized related candidates", () => {
+    const vectors = new Map<string, readonly number[]>([
+      ["current", [1, 0]],
+      ["read_candidate", [10, 0]],
+      ["favorited_candidate", [10, 0]],
+      ["liked_candidate", [10, 0]],
+      ["valid_a", [5, 1]],
+      ["valid_b", [1, 1]]
+    ]);
+    const service = new ReaderDiscoveryService({
+      articles: {
+        findDetailById: (articleId: string) =>
+          articleId === "current" ? makeArticleDetail("current") : null,
+        findDuplicateGroupMemberships: () => [],
+        findListItemsByIds: () => [],
+        list: () => ({
+          items: [
+            makeArticleListItem("read_candidate", 10, {
+              read: true,
+              interactionStatus: "read"
+            }),
+            makeArticleListItem("favorited_candidate", 9, {
+              favorited: true,
+              interactionStatus: "saved"
+            }),
+            makeArticleListItem("liked_candidate", 8, {
+              liked: true,
+              interactionStatus: "saved"
+            }),
+            makeArticleListItem("valid_a", 7),
+            makeArticleListItem("valid_b", 6)
+          ],
+          nextOffset: null,
+          nextCursor: null,
+          unreadCount: null
+        })
+      },
+      embeddings: {
+        findActiveIndex: () => makeEmbeddingIndex(),
+        findArticleVectors: (input: { articleIds: string[] }) =>
+          input.articleIds.flatMap((articleId) => {
+            const vector = vectors.get(articleId);
+            return vector
+              ? [
+                  {
+                    articleId,
+                    embeddingIndexId: "index",
+                    vectorBlob: toVectorBlob(vector),
+                    contentHash: `hash_${articleId}`
+                  }
+                ]
+              : [];
+          })
+      },
+      vectorStore: {
+        searchSimilarArticles: () => {
+          throw new Error("personalized related must not run sqlite-vec KNN");
+        }
+      },
+      getActiveRankContext: () => RANK_CONTEXT
+    });
+
+    const result = service.findPersonalizedRelatedArticles({
+      articleId: "current",
+      limit: 3
+    });
+
+    expect(result).toEqual({
+      status: "ready",
+      items: [
+        expect.objectContaining({ id: "valid_a" }),
+        expect.objectContaining({ id: "valid_b" })
+      ]
+    });
+  });
+
   it("returns unavailable for personalized related when current or candidate vectors are insufficient", () => {
     const fixture = createFixture();
     try {
@@ -118,6 +199,66 @@ describe("ReaderDiscoveryService", () => {
     }
   });
 });
+
+function makeArticleDetail(articleId: string): ArticleDetailRow {
+  return {
+    ...makeArticleListItem(articleId, 1),
+    contentHtml: null,
+    contentText: null,
+    extractionStatus: "feed_only",
+    extractionError: null
+  };
+}
+
+function makeArticleListItem(
+  articleId: string,
+  score: number,
+  state: Partial<ArticleStateSnapshot> = {}
+): ArticleListItemRow {
+  return {
+    id: articleId,
+    feedId: "feed_active",
+    feedTitle: "Active Feed",
+    title: `Article ${articleId}`,
+    url: `https://example.com/${articleId}`,
+    author: null,
+    summary: `Summary ${articleId}`,
+    publishedAt: null,
+    discoveredAt: 1000,
+    state: {
+      read: false,
+      favorited: false,
+      liked: false,
+      readLater: false,
+      hidden: false,
+      notInterested: false,
+      readingProgress: 0,
+      interactionStatus: "unseen",
+      openedAt: null,
+      ignoredAt: null,
+      ...state
+    },
+    rank: {
+      score,
+      calculatedAt: 1000
+    }
+  };
+}
+
+function makeEmbeddingIndex(): EmbeddingIndexRow {
+  return {
+    id: "index",
+    providerId: "provider",
+    model: "fixture-2d",
+    dimension: 2,
+    textMaxChars: 8000,
+    distanceMetric: "cosine",
+    tableName: "vec_fixture",
+    status: "active",
+    createdAt: 1000,
+    updatedAt: 1000
+  };
+}
 
 function createFixture(input: {
   activeIndex?: boolean;

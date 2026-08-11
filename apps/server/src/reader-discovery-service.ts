@@ -146,6 +146,9 @@ export class ReaderDiscoveryService {
       (item) =>
         item.id !== input.articleId &&
         !item.state.read &&
+        item.state.interactionStatus !== "read" &&
+        !item.state.favorited &&
+        !item.state.liked &&
         !item.state.hidden &&
         !item.state.notInterested &&
         !hasAnyDuplicateGroup(duplicateGroupsByArticle.get(item.id), currentDuplicateGroups)

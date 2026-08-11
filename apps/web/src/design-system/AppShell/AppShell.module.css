@@ -3711,13 +3711,15 @@
   gap: var(--space-1);
   border: 0;
   border-bottom: var(--border-subtle);
-  padding: var(--space-3) 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
   background: transparent;
   color: inherit;
   text-align: left;
 }
 
-.readerDiscoveryItem:hover {
+.readerDiscoveryItem:hover,
+.readerDiscoveryItem:focus-visible {
   background: var(--color-paper);
 }
 
@@ -4574,7 +4576,7 @@
   }
 
   .readerDiscoveryItem {
-    padding: var(--space-3) 0;
+    padding: var(--space-3);
   }
 
   .mobileExplainAnchor {
