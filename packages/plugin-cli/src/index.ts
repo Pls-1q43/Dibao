@@ -58,7 +58,7 @@ function createPlugin(targetDir: string): void {
         name: basename(targetDir),
         version: "0.1.0",
         publisher: "Example",
-        dibao: { minVersion: "0.2.0", maxVersion: "<0.4.0" },
+        dibao: { minVersion: "0.3.0", maxVersion: "<0.4.0" },
         entry: { server: "server/index.mjs", web: "web/index.html" },
         capabilities: ["settings:plugin", "files:plugin-data", "jobs:write"],
         contributes: {
@@ -95,9 +95,9 @@ function createPlugin(targetDir: string): void {
   writeFileSync(join(targetDir, "RELEASE_CHECKLIST.md"), releaseChecklistTemplate());
   writeFileSync(join(targetDir, "tests/README.md"), testReadmeTemplate());
   writeFileSync(join(targetDir, "scripts/sign.example.sh"), signExampleTemplate());
-  writeFileSync(join(targetDir, "locales/zh-CN.json"), `${JSON.stringify({ name: "示例插件", description: "邸报 0.2 插件模板。" }, null, 2)}\n`);
-  writeFileSync(join(targetDir, "locales/en-US.json"), `${JSON.stringify({ name: "Example Plugin", description: "Dibao 0.2 plugin template." }, null, 2)}\n`);
-  writeFileSync(join(targetDir, "locales/ja-JP.json"), `${JSON.stringify({ name: "サンプルプラグイン", description: "Dibao 0.2 プラグインテンプレート。" }, null, 2)}\n`);
+  writeFileSync(join(targetDir, "locales/zh-CN.json"), `${JSON.stringify({ name: "示例插件", description: "邸报 0.3 插件模板。" }, null, 2)}\n`);
+  writeFileSync(join(targetDir, "locales/en-US.json"), `${JSON.stringify({ name: "Example Plugin", description: "Dibao 0.3 plugin template." }, null, 2)}\n`);
+  writeFileSync(join(targetDir, "locales/ja-JP.json"), `${JSON.stringify({ name: "サンプルプラグイン", description: "Dibao 0.3 プラグインテンプレート。" }, null, 2)}\n`);
   writeFileSync(join(targetDir, "migrations/README.md"), "Add raw SQL migrations here and list them in plugin.json when your plugin needs durable schema changes. Request the database:plugin capability only when needed.\n");
   console.log(`Created plugin template in ${targetDir}`);
 }
@@ -198,14 +198,14 @@ function webTemplate(pluginId: string): string {
 function readmeTemplate(pluginId: string): string {
   return `# ${pluginId}
 
-This is a Dibao 0.2 plugin template.
+This is a Dibao 0.3 plugin template.
 
 ## Development
 
 - Edit \`plugin.json\` to declare capabilities, contributions, and optional migrations.
 - Implement server code in \`server/index.mjs\`; host APIs are asynchronous JSON-RPC calls.
 - Implement web UI in \`web/index.html\`; use the sandboxed iframe bridge instead of direct \`fetch\`.
-- Keep third-party code trusted and auditable. Dibao 0.2 isolates plugins in a Node host process, but does not claim hostile-code sandboxing.
+- Keep third-party code trusted and auditable. Dibao 0.3 isolates plugins in a Node host process, but does not claim hostile-code sandboxing.
 
 ## Commands
 

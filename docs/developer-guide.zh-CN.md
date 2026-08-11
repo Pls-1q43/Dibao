@@ -1,6 +1,6 @@
 # 邸报开发者指南
 
-Last updated: 2026-06-16
+Last updated: 2026-08-11
 
 本文是从 `0.2.0` 开始维护的开发者文档入口。核心开发者文档提供简体中文和英文两个版本；插件开发文档是本指南的一个子单元，并单独维护简体中文、英文和日文版本。
 
@@ -22,7 +22,7 @@ Last updated: 2026-06-16
 
 ## 开发流程
 
-`0.3` 是当前下一大版本功能开发线。普通新功能、UI 改造、推荐算法迭代和插件系统工作默认进入 `0.3`。`0.2` 只用于当前稳定线维护修复。
+`0.3` 是当前 0.3.x 版本线。普通文档更新、UI 改造、推荐算法迭代、插件系统工作和 0.3.x 修复默认进入 `0.3`；除非明确维护旧版本，`0.2` 只用于上一稳定线修复。
 
 建议验证顺序：
 
@@ -58,7 +58,7 @@ npm run ops:migrate:core
 - [插件系统设计](./plugin-system-design.md)
 - [运行时性能准则](./runtime-performance.md)
 
-插件 API 稳定层级在 0.2 中分为 Stable 和 Beta。manifest v1、生命周期、settings/storage/secrets/deliveries/tasks、基础 hooks、iframe bridge 和 manifest migrations 属于 Stable；`database.defineTable`、ranking、article snapshot/content 和 diagnostics 类能力属于 Beta。
+插件 API 稳定层级在 0.3 中分为 Stable 和 Beta。manifest v1、生命周期、settings/storage/secrets/deliveries/tasks、基础 hooks、iframe bridge、manifest migrations、network outbound 和基础事件目录属于 Stable；`database.defineTable`、ranking、article snapshot/content、full-content extractor 和 diagnostics 类能力属于 Beta。
 
 ## 兼容性约定
 

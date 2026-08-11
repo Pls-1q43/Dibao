@@ -1,13 +1,13 @@
 # Dibao Plugin System Design
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-本文定义邸报 `0.2` 插件系统的产品和工程设计。目标是让非核心功能、官方可选功能和第三方功能可以在不改动主应用核心代码的情况下接入 UI、业务流程 Hook、前台任务和后台任务。
+本文定义邸报 `0.3.1` 插件系统的产品和工程设计。目标是让非核心功能、官方可选功能和第三方功能可以在不改动主应用核心代码的情况下接入 UI、业务流程 Hook、前台任务、后台任务和全文抓取器。
 
 相关 issue：
 
 - [#2 Plugin System](https://github.com/Pls-1q43/Dibao/issues/2)
-- [#1 Daily Brief](https://github.com/Pls-1q43/Dibao/issues/1)，已作为官方插件进入 0.2 插件体系
+- [#1 Daily Brief](https://github.com/Pls-1q43/Dibao/issues/1)，已作为官方插件进入插件体系
 
 ## Goals
 
@@ -21,8 +21,8 @@ Last updated: 2026-06-18
 
 ## Non-Goals
 
-- `0.2` 不把插件系统做成云市场，也不引入官方托管账号体系。
-- `0.2` 不承诺运行完全不可信的任意第三方代码。第三方插件按自托管管理员主动安装的本地代码处理，安装 UI 必须明确风险。
+- `0.3.x` 不把插件系统做成云市场，也不引入官方托管账号体系。
+- `0.3.x` 不承诺运行完全不可信的任意第三方代码。第三方插件按自托管管理员主动安装的本地代码处理，安装 UI 必须明确风险。
 - 插件不能任意修改 DOM、猴子补丁核心模块或绕过 Dibao API 直接访问用户数据。
 - 插件不能要求正式升级时自动重算 embedding、重建向量索引或长时间阻塞主产品 UI，除非用户在专门升级流程里明确批准。
 
@@ -30,7 +30,7 @@ Last updated: 2026-06-18
 
 插件由一个 manifest 和一个或多个运行时入口组成。
 
-0.2 的服务端运行时是独立 Node host 子进程。插件仍导出 `activate(ctx)`，但 `ctx` 通过 JSON-RPC 调用主进程白名单 Host API；主进程不向插件暴露 raw DB、`process`、Fastify request/reply 或内部 service。
+0.3 的服务端运行时是独立 Node host 子进程。插件仍导出 `activate(ctx)`，但 `ctx` 通过 JSON-RPC 调用主进程白名单 Host API；主进程不向插件暴露 raw DB、`process`、Fastify request/reply 或内部 service。
 
 ```text
 example.dibao-plugin
@@ -62,8 +62,8 @@ manifest 是安装、权限、兼容性和贡献点的唯一权威声明。
   "version": "0.1.0",
   "publisher": "Dibao",
   "dibao": {
-    "minVersion": "0.2.0",
-    "maxVersion": "<0.3.0"
+    "minVersion": "0.3.0",
+    "maxVersion": "<0.4.0"
   },
   "entry": {
     "server": "server/index.mjs",
@@ -361,7 +361,7 @@ plugin_update_checks
   error TEXT
 ```
 
-Secrets must not be stored in `plugin_settings` or manifest. 0.2 provides `plugin_secrets` and encrypted plugin secret APIs for official and trusted third-party plugins that declare `secrets:plugin`.
+Secrets must not be stored in `plugin_settings` or manifest. 0.3 provides `plugin_secrets` and encrypted plugin secret APIs for official and trusted third-party plugins that declare `secrets:plugin`.
 
 Plugin package and data paths:
 
@@ -558,10 +558,11 @@ Official plugins:
 - still declare capabilities and settings;
 - should use the same public plugin APIs as third-party plugins unless a private API is explicitly documented as internal.
 
-Official plugins in 0.2:
+Official plugins in 0.3.1:
 
 - `app.dibao.daily-brief`: scheduled daily brief from top personalized articles in the past 24 hours, diversified by interest cluster.
 - `app.dibao.webhook`: event-driven webhook rules, secrets, deliveries, and test delivery flow.
+- `app.dibao.full-content-selectors`: selector-based full-content extraction for sites that need custom extraction rules.
 
 Candidate future official plugins:
 
@@ -578,7 +579,7 @@ Update metadata:
 {
   "pluginId": "app.dibao.daily-brief",
   "latestVersion": "0.1.1",
-  "dibao": { "minVersion": "0.2.0", "maxVersion": "<0.3.0" },
+  "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
   "packageUrl": "https://example.com/daily-brief-0.1.1.dibao-plugin",
   "sha256": "...",
   "releaseNotes": {
@@ -637,7 +638,7 @@ Default third-party plugin trust rules:
 - No arbitrary app filesystem access; plugin data is namespaced.
 - Hook and task timeouts are mandatory.
 
-Server-side JavaScript plugins are isolated in a child process but are still trusted local code in `0.2`. The UI should say this plainly. A stronger future sandbox can use a worker/WASI-style runtime, but the Host API and manifest should be designed so that stronger isolation can replace the implementation later.
+Server-side JavaScript plugins are isolated in a child process but are still trusted local code in `0.3.x`. The UI should say this plainly. A stronger future sandbox can use a worker/WASI-style runtime, but the Host API and manifest should be designed so that stronger isolation can replace the implementation later.
 
 ## Compatibility And Versioning
 
@@ -705,7 +706,7 @@ System health may include a summarized plugin status:
 - Add manifest validation, compatibility checks, checksum/signature support.
 - Add update metadata check and staged update flow.
 - Publish `@dibao/plugin-sdk` and `@dibao/plugin-cli` or keep them as workspace packages until API stabilizes.
-- Add the plugin development docs as a child unit of the `0.2.0` developer documentation set, with independent Simplified Chinese and English files.
+- Add the plugin development docs as a child unit of the developer documentation set, with independent Simplified Chinese, English, and Japanese files.
 
 ### Phase 5: Daily Brief Official Plugin
 

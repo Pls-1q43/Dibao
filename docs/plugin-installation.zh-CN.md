@@ -1,15 +1,15 @@
 # 邸报插件安装说明
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-本文面向安装第三方插件的邸报管理员。0.2 插件会在独立 Node host 进程中运行，并使用 sandboxed iframe 展示 Web UI；但第三方服务端插件仍是可信本地代码，不是任意恶意代码沙箱。只安装你信任的来源。
+本文面向安装第三方插件的邸报管理员。0.3 插件会在独立 Node host 进程中运行，并使用 sandboxed iframe 展示 Web UI；但第三方服务端插件仍是可信本地代码，不是任意恶意代码沙箱。只安装你信任的来源。
 
 ## 安装前检查
 
 - 来源：开发者、发布页、版本号和更新记录是否可信。
 - 签名：优先安装已签名包，并确认 keyId 对应的公钥已加入 trusted keys。
 - capabilities：确认插件请求的能力与功能相符。
-- API 稳定层级：Stable API 适合长期依赖；Beta API 可能在 0.2.x 调整。
+- API 稳定层级：Stable API 适合长期依赖；Beta API 可能在 0.3.x 调整。
 - 服务端代码风险：插件启用后会执行 server entry。
 
 ## 推荐方式：上传 `.dibao-plugin`
@@ -50,7 +50,7 @@ URL metadata 建议包含：
 - `/data/plugins/data/<plugin-id>`
 - SQLite 表：`plugin_installs`、`plugin_capability_grants`、`plugin_settings`、`plugin_kv`、`plugin_migrations`、`plugin_update_checks`、`plugin_secrets`、`plugin_deliveries`
 
-官方 Daily Brief 和 Webhook 随镜像扫描；第三方插件保存在数据卷中。
+官方 Daily Brief、Webhook 和 Full Content Selectors 随 0.3.1 镜像扫描；第三方插件保存在数据卷中。
 
 ## 更新和回滚
 

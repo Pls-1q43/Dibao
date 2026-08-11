@@ -1,6 +1,6 @@
 # Dibao Developer Guide
 
-Last updated: 2026-06-16
+Last updated: 2026-08-11
 
 This is the developer documentation entry point maintained from `0.2.0` onward. Core developer documentation is maintained in Simplified Chinese and English. Plugin development is a sub-unit of this guide and is also maintained as standalone Simplified Chinese, English, and Japanese files.
 
@@ -22,7 +22,7 @@ Local planning notes, execution logs, temporary validation evidence, and machine
 
 ## Development Flow
 
-`0.3` is the active line for next-version feature work. Ordinary feature work, UI iteration, recommendation changes, and plugin-system work should target `0.3`. The `0.2` line is only for stable-line maintenance fixes.
+`0.3` is the active 0.3.x line. Ordinary documentation updates, UI iteration, recommendation changes, plugin-system work, and 0.3.x fixes should target `0.3`; use `0.2` only when explicitly maintaining the previous stable line.
 
 Recommended validation:
 
@@ -58,7 +58,7 @@ Read:
 - [Plugin system design](./plugin-system-design.md)
 - [Runtime performance guidelines](./runtime-performance.md)
 
-Plugin APIs in 0.2 are split into Stable and Beta. Manifest v1, lifecycle, settings/storage/secrets/deliveries/tasks, basic hooks, iframe bridge, and manifest migrations are Stable. `database.defineTable`, ranking, article snapshot/content, and diagnostics-style APIs are Beta.
+Plugin APIs in 0.3 are split into Stable and Beta. Manifest v1, lifecycle, settings/storage/secrets/deliveries/tasks, basic hooks, iframe bridge, manifest migrations, network outbound, and the basic event catalog are Stable. `database.defineTable`, ranking, article snapshot/content, full-content extractors, and diagnostics-style APIs are Beta.
 
 ## Compatibility Rules
 

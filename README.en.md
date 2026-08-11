@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.2.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.2.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.3.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.3.1-2f6f5e" /></a>
 </p>
 
 ---
@@ -38,8 +38,8 @@ Quick links:
 - [Backup And Upgrade](#backup-and-upgrade)
 - [License](#license)
 - [FAQ](#faq)
-- [Release notes](./docs/release-notes-v0.2.1.md)
-- [Roadmap](./docs/roadmap.md)
+- [Release notes](./docs/release-notes-v0.3.1.md)
+- [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [Chinese home page](./README.md)
 
 ### Why Dibao
@@ -80,7 +80,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:latest
+    image: ghcr.io/pls-1q43/dibao:v0.3.1
     restart: unless-stopped
     ports:
       - "8080:8080"

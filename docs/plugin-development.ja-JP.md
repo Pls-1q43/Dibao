@@ -1,8 +1,8 @@
-# Dibao 0.2 プラグイン開発ガイド
+# Dibao 0.3 プラグイン開発ガイド
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-この文書はサードパーティ開発者向けです。Dibao 0.2 のプラグイン system は「管理者が信頼してインストールするエコシステム版」です。プラグインは server task、hook、settings page、Web UI を拡張できますが、信頼済みローカルコードとして扱われます。任意の悪意あるコードを安全に実行できる sandbox ではありません。
+この文書はサードパーティ開発者向けです。Dibao 0.3 のプラグイン system は「管理者が信頼してインストールするエコシステム版」です。プラグインは server task、hook、settings page、Web UI、full-content extractor を拡張できますが、信頼済みローカルコードとして扱われます。任意の悪意あるコードを安全に実行できる sandbox ではありません。
 
 ## セキュリティモデル
 
@@ -24,7 +24,7 @@ Last updated: 2026-06-18
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.2.0", "maxVersion": "<0.3.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -44,7 +44,7 @@ Last updated: 2026-06-18
 }
 ```
 
-`id` は reverse-domain 形式を推奨します。互換範囲は `<0.3.0` のように上限を明示してください。
+`id` は reverse-domain 形式を推奨します。互換範囲は `<0.4.0` のように上限を明示してください。
 
 ### プラグインのローカライズ
 
@@ -71,7 +71,7 @@ Dibao は現在の UI locale で manifest string を解決します。fallback �
 
 ## Capabilities
 
-0.2 の capabilities:
+0.3 の capabilities:
 
 ```text
 articles:read
@@ -115,7 +115,7 @@ Beta:
 - `fullContent.extractor`
 - diagnostics / recommendation transparency APIs
 
-Beta API は 0.2.x 中に field や semantics が変わる可能性があります。長期運用する plugin は durable schema を manifest migrations で管理してください。
+Beta API は 0.3.x 中に field や semantics が変わる可能性があります。長期運用する plugin は durable schema を manifest migrations で管理してください。
 
 ## Server Entry
 
@@ -224,7 +224,7 @@ Dibao は Ed25519 signature を使います。signature は manifest、files、u
 - `/data/plugins/data/<plugin-id>`
 - SQLite tables: `plugin_installs`, `plugin_capability_grants`, `plugin_settings`, `plugin_kv`, `plugin_migrations`, `plugin_update_checks`, `plugin_secrets`, `plugin_deliveries`
 
-公式 Daily Brief と Webhook は image bundled plugin として scan されます。サードパーティ plugin は data volume に残ります。
+公式 Daily Brief、Webhook、Full Content Selectors は 0.3.1 image bundled plugin として scan されます。サードパーティ plugin は data volume に残ります。
 
 ## Update と Rollback
 

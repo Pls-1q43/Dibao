@@ -1,15 +1,15 @@
 # Dibao プラグインインストールガイド
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-この文書はサードパーティプラグインをインストールする Dibao 管理者向けです。0.2 では server plugin は独立 Node host process、Web plugin は sandbox iframe で動作します。ただしサードパーティ server plugin は信頼済みローカルコードです。悪意ある任意コードを安全に実行する sandbox ではありません。信頼できる source だけをインストールしてください。
+この文書はサードパーティプラグインをインストールする Dibao 管理者向けです。0.3 では server plugin は独立 Node host process、Web plugin は sandbox iframe で動作します。ただしサードパーティ server plugin は信頼済みローカルコードです。悪意ある任意コードを安全に実行する sandbox ではありません。信頼できる source だけをインストールしてください。
 
 ## インストール前の確認
 
 - Source: developer、release page、version、changelog を確認します。
 - Signature: 署名済み package を優先し、key id が trusted public key に対応していることを確認します。
 - Capabilities: requested capabilities が機能に見合っているか確認します。
-- API stability: Stable API は長期利用向けです。Beta API は 0.2.x で変わる可能性があります。
+- API stability: Stable API は長期利用向けです。Beta API は 0.3.x で変わる可能性があります。
 - Server-code risk: plugin を有効化すると server entry が実行されます。
 
 ## 推奨手順: `.dibao-plugin` upload
@@ -50,7 +50,7 @@ automation では次の API を使えます。
 - `/data/plugins/data/<plugin-id>`
 - SQLite tables: `plugin_installs`, `plugin_capability_grants`, `plugin_settings`, `plugin_kv`, `plugin_migrations`, `plugin_update_checks`, `plugin_secrets`, `plugin_deliveries`
 
-公式 Daily Brief と Webhook は image から scan されます。サードパーティ plugin は data volume に残ります。
+公式 Daily Brief、Webhook、Full Content Selectors は 0.3.1 image から scan されます。サードパーティ plugin は data volume に残ります。
 
 ## Update と Rollback
 

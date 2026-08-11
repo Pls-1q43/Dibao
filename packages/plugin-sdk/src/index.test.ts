@@ -74,7 +74,7 @@ describe("plugin-sdk", () => {
     ).toEqual({ ok: false, errors: ["Plugin signature verification failed"] });
   });
 
-  it("validates migrations and exposes 0.2 API stability constants", () => {
+  it("validates migrations and exposes plugin API stability constants", () => {
     expect(dibaoPluginStableApis).toContain("database.migrations");
     expect(dibaoPluginBetaApis).toContain("database.defineTable");
     expect(dibaoPluginBetaApis).toContain("fullContent.extractor");

@@ -2473,10 +2473,10 @@ POST /api/recommendation/ftrl/promote
 - [Plugin development guide](./plugin-development.en-US.md)
 - [プラグイン開発ガイド](./plugin-development.ja-JP.md)
 
-0.2 API 稳定层级：
+0.3 API 稳定层级：
 
-- Stable：manifest v1、安装/启停/更新、settings、storage、secrets、deliveries、tasks、基础 hooks、iframe bridge、manifest migrations。
-- Beta：`database.defineTable`、ranking、article snapshot/content、diagnostics/recommendation transparency 类能力。
+- Stable：manifest v1、安装/启停/更新、settings、storage、secrets、deliveries、tasks、基础 hooks、iframe bridge、manifest migrations、network outbound、基础事件目录。
+- Beta：`database.defineTable`、ranking、article snapshot/content、full-content extractor、diagnostics/recommendation transparency 类能力。
 
 插件状态：
 

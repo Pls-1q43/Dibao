@@ -1,8 +1,8 @@
-# Dibao 0.2 Plugin Development Guide
+# Dibao 0.3 Plugin Development Guide
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-This guide is for third-party plugin developers. Dibao 0.2 is an ecosystem-platform release for trusted administrator-installed plugins. Plugins can extend server tasks, hooks, settings pages, and web UI, but they are trusted local code. Dibao 0.2 does not claim to safely run arbitrary malicious code.
+This guide is for third-party plugin developers. Dibao 0.3 is an ecosystem-platform release for trusted administrator-installed plugins. Plugins can extend server tasks, hooks, settings pages, web UI, and full-content extractors, but they are trusted local code. Dibao 0.3 does not claim to safely run arbitrary malicious code.
 
 ## Security Model
 
@@ -24,7 +24,7 @@ This guide is for third-party plugin developers. Dibao 0.2 is an ecosystem-platf
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.2.0", "maxVersion": "<0.3.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -44,7 +44,7 @@ This guide is for third-party plugin developers. Dibao 0.2 is an ecosystem-platf
 }
 ```
 
-Use reverse-domain IDs and a bounded compatibility range such as `<0.3.0`.
+Use reverse-domain IDs and a bounded compatibility range such as `<0.4.0`.
 
 ### Plugin Localization
 
@@ -115,7 +115,7 @@ Beta:
 - `fullContent.extractor`
 - diagnostics and recommendation transparency APIs
 
-Beta fields and semantics may change during 0.2.x. Long-lived plugins should use manifest migrations for durable schema changes instead of relying only on `database.defineTable`.
+Beta fields and semantics may change during 0.3.x. Long-lived plugins should use manifest migrations for durable schema changes instead of relying only on `database.defineTable`.
 
 ## Server Entry
 
@@ -224,7 +224,7 @@ With `/data` mounted, these survive image upgrades:
 - `/data/plugins/data/<plugin-id>`
 - SQLite tables: `plugin_installs`, `plugin_capability_grants`, `plugin_settings`, `plugin_kv`, `plugin_migrations`, `plugin_update_checks`, `plugin_secrets`, `plugin_deliveries`
 
-Official Daily Brief and Webhook plugins are scanned from the bundled image. Third-party plugins remain in the data volume.
+Official Daily Brief, Webhook, and Full Content Selectors plugins are scanned from the bundled 0.3.1 image. Third-party plugins remain in the data volume.
 
 ## Updates And Rollback
 

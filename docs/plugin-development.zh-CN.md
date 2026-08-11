@@ -1,8 +1,8 @@
-# 邸报 0.2 插件开发指南
+# 邸报 0.3 插件开发指南
 
-Last updated: 2026-06-18
+Last updated: 2026-08-11
 
-本文面向第三方插件开发者。邸报 0.2 的插件系统定位是“可信管理员安装的生态平台版”：插件可以扩展服务端任务、Hook、设置页和 Web UI，但仍是可信本地代码，不承诺能安全运行任意恶意代码。
+本文面向第三方插件开发者。邸报 0.3 的插件系统定位是“可信管理员安装的生态平台版”：插件可以扩展服务端任务、Hook、设置页、Web UI 和全文抓取器，但仍是可信本地代码，不承诺能安全运行任意恶意代码。
 
 ## 安全模型
 
@@ -24,7 +24,7 @@ Last updated: 2026-06-18
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.2.0", "maxVersion": "<0.3.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -53,7 +53,7 @@ Last updated: 2026-06-18
 }
 ```
 
-`id` 建议使用反向域名；`dibao.maxVersion` 建议写成 `<0.3.0`，避免未来 breaking API 自动启用。
+`id` 建议使用反向域名；`dibao.maxVersion` 建议写成 `<0.4.0`，避免未来 breaking API 自动启用。
 
 ### 插件本地化
 
@@ -80,7 +80,7 @@ Last updated: 2026-06-18
 
 ## Capabilities
 
-0.2 支持：
+0.3 支持：
 
 ```text
 articles:read
@@ -124,7 +124,7 @@ Beta：
 - `fullContent.extractor`
 - diagnostics / recommendation transparency 类能力
 
-Beta API 可在 0.2.x 中调整字段或语义。长期插件应把持久 schema 写成 manifest migrations，而不是只依赖 `database.defineTable`。
+Beta API 可在 0.3.x 中调整字段或语义。长期插件应把持久 schema 写成 manifest migrations，而不是只依赖 `database.defineTable`。
 
 ## 服务端入口
 
@@ -237,7 +237,7 @@ dibao-plugin sign my-plugin.dibao-plugin \
 - `/data/plugins/data/<plugin-id>`
 - SQLite 表：`plugin_installs`、`plugin_capability_grants`、`plugin_settings`、`plugin_kv`、`plugin_migrations`、`plugin_update_checks`、`plugin_secrets`、`plugin_deliveries`
 
-官方 Daily Brief 和 Webhook 插件随 0.2 镜像扫描；第三方插件保留在数据卷中。
+官方 Daily Brief、Webhook 和 Full Content Selectors 插件随 0.3.1 镜像扫描；第三方插件保留在数据卷中。
 
 ## 更新与回滚
 
