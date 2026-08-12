@@ -38,6 +38,7 @@ import {
   type ReadLaterArticleSort,
   type ReaderSettings,
   type ReaderDiscoveryResponse,
+  type RelatedSearchResponse,
   type RecommendationInventory,
   type RecommendationStatus,
   type RecommendationClusterItem,
@@ -95,6 +96,7 @@ import {
   defaultSearchForm,
   downloadTextFile,
   isNavigationItemActive,
+  isRelatedSearchForm,
   isUtilityNavigationActive,
   maintenanceResultWasExisting,
   navigationItems,
@@ -324,11 +326,17 @@ export function App() {
   );
   const [searchForm, setSearchForm] = useState<SearchFormState>(initialSearchForm);
   const [hasSubmittedSearch, setHasSubmittedSearch] = useState(
-    () => initialRoute.page.type === "search" && initialSearchForm.q.trim().length > 0
+    () =>
+      initialRoute.page.type === "search" &&
+      (initialSearchForm.q.trim().length > 0 || isRelatedSearchForm(initialSearchForm))
   );
   const [submittedSearchForm, setSubmittedSearchForm] = useState<SearchFormState>(
     initialSearchForm
   );
+  const [relatedSearchMeta, setRelatedSearchMeta] = useState<{
+    threshold: number;
+    totalCount: number;
+  } | null>(null);
   const [favoriteSort, setFavoriteSort] = useState<FavoriteArticleSort>(
     () => urlFavoriteSortParam() ?? defaultFavoriteArticleSort
   );
@@ -571,6 +579,7 @@ export function App() {
     setReaderCommandError(null);
     setLoadMoreError(null);
     setIsLoadingMoreArticles(false);
+    setRelatedSearchMeta(null);
   }
 
   function handleSelectSource(source: SourceSelection) {
@@ -623,18 +632,30 @@ export function App() {
   }
 
   function handleSearchFormChange(nextForm: SearchFormState) {
+    if (nextForm.relatedArticle && !isRelatedSearchForm(nextForm)) {
+      setSearchForm({
+        ...nextForm,
+        relatedArticle: null
+      });
+      return;
+    }
+
     setSearchForm(nextForm);
   }
 
   function handleSearchSubmit(nextForm: SearchFormState) {
+    const isRelated = isRelatedSearchForm(nextForm);
     const normalizedForm = {
       ...nextForm,
-      q: nextForm.q.trim()
+      q: nextForm.q.trim(),
+      relatedArticle: isRelated ? nextForm.relatedArticle : null,
+      fullText: isRelated ? false : nextForm.fullText,
+      sort: isRelated ? "relevance" as const : nextForm.sort
     };
     resetArticleListForPendingQuery();
     setSearchForm(normalizedForm);
     setSubmittedSearchForm(normalizedForm);
-    setHasSubmittedSearch(normalizedForm.q.length > 0);
+    setHasSubmittedSearch(normalizedForm.q.length > 0 || isRelatedSearchForm(normalizedForm));
     window.history.pushState(
       { dibaoPage: "search" },
       "",
@@ -1289,12 +1310,13 @@ export function App() {
     setRecommendationStatusError(null);
 
     try {
+      const relatedArticleId = isRelatedSearchForm(form) ? form.relatedArticle?.id ?? null : null;
       const requestInput = {
         ...articleQueryFor(form.sourceSelection),
         q: form.q.trim(),
         state: form.state,
-        sort: form.sort,
-        fullText: form.fullText,
+        sort: relatedArticleId ? "relevance" as const : form.sort,
+        fullText: relatedArticleId ? false : form.fullText,
         from: form.from || null,
         to: form.to || null,
         limit: 50
@@ -1309,11 +1331,17 @@ export function App() {
           }
         },
         (signal) =>
-          dibaoApi.searchArticles({
-            ...requestInput,
-            includeUnreadCount: false,
-            signal
-          })
+          relatedArticleId
+            ? dibaoApi.getRelatedSearchArticles(relatedArticleId, {
+                limit: requestInput.limit,
+                state: form.state,
+                signal
+              })
+            : dibaoApi.searchArticles({
+                ...requestInput,
+                includeUnreadCount: false,
+                signal
+              })
       );
       if (requestVersion !== articleRequestVersion.current) {
         return;
@@ -1326,6 +1354,14 @@ export function App() {
       );
       rememberArticleStates(responseArticles, articleStateById.current);
       setArticles(responseArticles);
+      setRelatedSearchMeta(
+        relatedArticleId && isRelatedSearchResponse(response)
+          ? {
+              threshold: response.threshold,
+              totalCount: response.totalCount
+            }
+          : null
+      );
       logReaderPerformance("searchList.loaded", {
         requestMs: Math.round(performance.now() - requestStartedAt),
         articlesLength: responseArticles.length,
@@ -1342,35 +1378,37 @@ export function App() {
         );
       }
       setNextArticleCursor(response.page.nextCursor);
-      window.setTimeout(() => {
-        if (requestVersion !== articleRequestVersion.current) {
-          return;
-        }
-        void withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
-          dibaoApi.searchArticles({
-            ...requestInput,
-            limit: 1,
-            includeUnreadCount: true,
-            signal
-          })
-        )
-          .then((countResponse) => {
-            if (
-              requestVersion === articleRequestVersion.current &&
-              countResponse.meta.unreadCount !== null
-            ) {
-              setUnreadCount(
-                unreadCountWithKnownLocalStates(
-                  countResponse.meta.unreadCount,
-                  response.data,
-                  articleStateById.current,
-                  locallyUpdatedArticleIds.current
-                )
-              );
-            }
-          })
-          .catch(() => undefined);
-      }, 300);
+      if (!relatedArticleId) {
+        window.setTimeout(() => {
+          if (requestVersion !== articleRequestVersion.current) {
+            return;
+          }
+          void withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
+            dibaoApi.searchArticles({
+              ...requestInput,
+              limit: 1,
+              includeUnreadCount: true,
+              signal
+            })
+          )
+            .then((countResponse) => {
+              if (
+                requestVersion === articleRequestVersion.current &&
+                countResponse.meta.unreadCount !== null
+              ) {
+                setUnreadCount(
+                  unreadCountWithKnownLocalStates(
+                    countResponse.meta.unreadCount,
+                    response.data,
+                    articleStateById.current,
+                    locallyUpdatedArticleIds.current
+                  )
+                );
+              }
+            })
+            .catch(() => undefined);
+        }, 300);
+      }
     } catch (error) {
       if (requestVersion !== articleRequestVersion.current) {
         return;
@@ -1612,7 +1650,9 @@ export function App() {
         const nextSearchForm = searchFormFromLocation();
         setSearchForm(nextSearchForm);
         setSubmittedSearchForm(nextSearchForm);
-        setHasSubmittedSearch(nextSearchForm.q.trim().length > 0);
+        setHasSubmittedSearch(
+          nextSearchForm.q.trim().length > 0 || isRelatedSearchForm(nextSearchForm)
+        );
       }
       setSelectedArticleId(route.articleId);
       if (route.page.type === "reader" && supportsQuickFilters(route.page.view)) {
@@ -2505,22 +2545,33 @@ export function App() {
     setLoadMoreError(null);
 
     try {
+      const relatedSearchArticleId =
+        appPage.type === "search" && isRelatedSearchForm(submittedSearchForm)
+          ? submittedSearchForm.relatedArticle?.id ?? null
+          : null;
       const response =
         appPage.type === "search"
           ? await withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
-              dibaoApi.searchArticles({
-                ...articleQueryFor(submittedSearchForm.sourceSelection),
-                q: submittedSearchForm.q.trim(),
-                state: submittedSearchForm.state,
-                sort: submittedSearchForm.sort,
-                fullText: submittedSearchForm.fullText,
-                from: submittedSearchForm.from || null,
-                to: submittedSearchForm.to || null,
-                limit: 50,
-                cursor: nextArticleCursor,
-                includeUnreadCount: false,
-                signal
-              })
+              relatedSearchArticleId
+                ? dibaoApi.getRelatedSearchArticles(relatedSearchArticleId, {
+                    limit: 50,
+                    cursor: nextArticleCursor,
+                    state: submittedSearchForm.state,
+                    signal
+                  })
+                : dibaoApi.searchArticles({
+                    ...articleQueryFor(submittedSearchForm.sourceSelection),
+                    q: submittedSearchForm.q.trim(),
+                    state: submittedSearchForm.state,
+                    sort: submittedSearchForm.sort,
+                    fullText: submittedSearchForm.fullText,
+                    from: submittedSearchForm.from || null,
+                    to: submittedSearchForm.to || null,
+                    limit: 50,
+                    cursor: nextArticleCursor,
+                    includeUnreadCount: false,
+                    signal
+                  })
             )
           : await withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
               dibaoApi.listArticles({
@@ -2554,6 +2605,12 @@ export function App() {
       setArticles((current) =>
         appendUniqueArticles(current, visibleResponseArticles)
       );
+      if (relatedSearchArticleId && isRelatedSearchResponse(response)) {
+        setRelatedSearchMeta({
+          threshold: response.threshold,
+          totalCount: response.totalCount
+        });
+      }
       logReaderPerformance("articleList.loadMore", {
         view: appPage.type === "search" ? "search" : currentArticleView,
         requestMs: Math.round(performance.now() - requestStartedAt),
@@ -3032,6 +3089,34 @@ export function App() {
       resetArticleListForPendingQuery();
       setAppPage(page);
     }
+    setIsSourceDrawerOpen(false);
+  }
+
+  function handleOpenRelatedSearch() {
+    if (!articleDetail) {
+      return;
+    }
+
+    const relatedSearchForm: SearchFormState = {
+      ...defaultSearchForm(),
+      q: articleDetail.title,
+      relatedArticle: {
+        id: articleDetail.id,
+        title: articleDetail.title
+      },
+      fullText: false,
+      sort: "relevance"
+    };
+    resetArticleListForPendingQuery();
+    setAppPage({ type: "search" });
+    setSearchForm(relatedSearchForm);
+    setSubmittedSearchForm(relatedSearchForm);
+    setHasSubmittedSearch(true);
+    window.history.pushState(
+      { dibaoPage: "search" },
+      "",
+      urlForSearchPage(relatedSearchForm)
+    );
     setIsSourceDrawerOpen(false);
   }
 
@@ -3719,6 +3804,7 @@ export function App() {
               pendingAction={pendingArticleAction}
               pluginRowActions={pluginActionsForSlot("article.list.item.actions.end")}
               readerCommandError={readerCommandError}
+              relatedSearchMeta={relatedSearchMeta}
               resultUrlForm={submittedSearchForm}
               selectedArticleId={selectedArticleId}
               unreadCount={unreadCount}
@@ -3748,6 +3834,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onLoadRelatedArticles={handleLoadRelatedArticles}
               onOpenExplanation={handleOpenExplanation}
+              onOpenRelatedSearch={handleOpenRelatedSearch}
               onRetryPersonalizedRelated={handleRetryPersonalizedRelated}
               onSelectDiscoveryArticle={handleSelectArticle}
               onReadProgress={handleReadProgress}
@@ -3890,6 +3977,7 @@ export function App() {
               onCloseExplanation={handleCloseExplanation}
               onLoadRelatedArticles={handleLoadRelatedArticles}
               onOpenExplanation={handleOpenExplanation}
+              onOpenRelatedSearch={handleOpenRelatedSearch}
               onRetryPersonalizedRelated={handleRetryPersonalizedRelated}
               onSelectDiscoveryArticle={handleSelectArticle}
               onReadProgress={handleReadProgress}
@@ -4296,6 +4384,17 @@ function discoveryStateForResponse(response: ReaderDiscoveryResponse): ReaderDis
     status: "ready",
     items: response.items
   };
+}
+
+function isRelatedSearchResponse(response: unknown): response is RelatedSearchResponse {
+  return (
+    typeof response === "object" &&
+    response !== null &&
+    "threshold" in response &&
+    typeof (response as { threshold?: unknown }).threshold === "number" &&
+    "totalCount" in response &&
+    typeof (response as { totalCount?: unknown }).totalCount === "number"
+  );
 }
 
 function isAbortError(error: unknown): boolean {

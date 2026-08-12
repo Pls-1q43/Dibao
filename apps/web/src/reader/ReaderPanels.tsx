@@ -4,7 +4,7 @@ import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchSt
 import { useI18n, type Dictionary, type NavigationItemKey } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { articleInteractionStatusForState } from "../articleListState.js";
-import { articleSortForView, canLoadRankExplanation, classNames, clusterDisplayName, confidenceBucket, countFeedsByFolder, explanationReasonText, formatCompactNumber, formatPercent, pageForNavigationItem, plainTextSummary, readerStyleFor, recommendationStatusMetrics, safeArticleUrl, sanitizeArticleHtml, shouldLetBrowserHandleLinkClick, shouldLoadRankExplanation, sortExplanationForView, supportsQuickFilters, supportsUnreadOnly, urlForAppPage, urlForArticle, urlForSearchPage, clampNumber, type ArticleActionIntent, type ArticleActionTarget, type AppPage, type FeedDiagnosticsByFeedId, type PendingArticleAction, type ReadProgressMetadata, type ReadProgressPostOptions, type SearchFormState, type SourceSelection } from "../app/shared.js";
+import { articleSortForView, canLoadRankExplanation, classNames, clusterDisplayName, confidenceBucket, countFeedsByFolder, explanationReasonText, formatCompactNumber, formatPercent, isRelatedSearchForm, pageForNavigationItem, plainTextSummary, readerStyleFor, recommendationStatusMetrics, safeArticleUrl, sanitizeArticleHtml, shouldLetBrowserHandleLinkClick, shouldLoadRankExplanation, sortExplanationForView, supportsQuickFilters, supportsUnreadOnly, urlForAppPage, urlForArticle, urlForSearchPage, clampNumber, type ArticleActionIntent, type ArticleActionTarget, type AppPage, type FeedDiagnosticsByFeedId, type PendingArticleAction, type ReadProgressMetadata, type ReadProgressPostOptions, type SearchFormState, type SourceSelection } from "../app/shared.js";
 
 const ARTICLE_ROW_ESTIMATED_HEIGHT = 164;
 const ARTICLE_ROW_OVERSCAN = 8;
@@ -597,6 +597,7 @@ export function ArticleListPanel(props: {
         {!props.isArticlesLoading && props.loadMoreError ? (
           <p className={styles.paginationError}>{props.loadMoreError}</p>
         ) : null}
+
       </div>
     </section>
   );
@@ -885,6 +886,10 @@ export function SearchResultsPanel(props: {
   isMarkingScopeRead: boolean;
   loadMoreError: string | null;
   nextCursor: string | null;
+  relatedSearchMeta?: {
+    threshold: number;
+    totalCount: number;
+  } | null;
   onArticleAction?: (article: ArticleActionTarget, intent: ArticleActionIntent) => void;
   onPluginAction?: (action: PluginActionButton, context: PluginActionContext) => void;
   onChange: (form: SearchFormState) => void;
@@ -906,6 +911,7 @@ export function SearchResultsPanel(props: {
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const isInfiniteLoadingAvailable = supportsInfiniteArticleLoading();
   const isInfiniteLoadingEnabled = Boolean(props.infiniteArticleLoading) && isInfiniteLoadingAvailable;
+  const relatedSearchLocked = isRelatedSearchForm(props.form);
   useInfiniteArticleLoading({
     enabled:
       isInfiniteLoadingEnabled &&
@@ -944,17 +950,31 @@ export function SearchResultsPanel(props: {
         </div>
         <label className={styles.searchField}>
           <span>{t.search.inputLabel}</span>
-          <input
-            autoComplete="off"
-            onChange={(event) => update({ q: event.target.value })}
-            placeholder={t.search.inputPlaceholder}
-            type="search"
-            value={props.form.q}
-          />
+          {relatedSearchLocked && props.form.relatedArticle ? (
+            <div className={styles.relatedSearchBox}>
+              <span>{t.search.relatedPrefix}</span>
+              <input
+                autoComplete="off"
+                onChange={(event) => update({ q: event.target.value })}
+                placeholder={t.search.inputPlaceholder}
+                type="search"
+                value={props.form.q}
+              />
+            </div>
+          ) : (
+            <input
+              autoComplete="off"
+              onChange={(event) => update({ q: event.target.value })}
+              placeholder={t.search.inputPlaceholder}
+              type="search"
+              value={props.form.q}
+            />
+          )}
         </label>
         <label className={styles.searchInlineOption}>
           <input
-            checked={props.form.fullText}
+            checked={relatedSearchLocked ? false : props.form.fullText}
+            disabled={relatedSearchLocked}
             onChange={(event) => update({ fullText: event.target.checked })}
             type="checkbox"
           />
@@ -964,8 +984,9 @@ export function SearchResultsPanel(props: {
           <label className={styles.searchField}>
             <span>{t.search.sortLabel}</span>
             <select
+              disabled={relatedSearchLocked}
               onChange={(event) => update({ sort: event.target.value as ArticleSearchSort })}
-              value={props.form.sort}
+              value={relatedSearchLocked ? "relevance" : props.form.sort}
             >
               <option value="relevance">{t.search.sorts.relevance}</option>
               <option value="recommended">{t.search.sorts.recommended}</option>
@@ -987,7 +1008,10 @@ export function SearchResultsPanel(props: {
           </label>
           <button
             className={styles.primaryButton}
-            disabled={props.isArticlesLoading || props.form.q.trim().length === 0}
+            disabled={
+              props.isArticlesLoading ||
+              (props.form.q.trim().length === 0 && !relatedSearchLocked)
+            }
             type="submit"
           >
             {props.isArticlesLoading ? t.search.submitting : t.search.submit}
@@ -996,19 +1020,21 @@ export function SearchResultsPanel(props: {
         {props.form.sort === "recommended" ? (
           <p className={styles.searchHint}>{t.search.recommendedSortHint}</p>
         ) : null}
-        <button
-          aria-controls="search-advanced-filters"
-          aria-expanded={isAdvancedSearchOpen}
-          className={styles.searchAdvancedToggle}
-          onClick={() => setIsAdvancedSearchOpen((value) => !value)}
-          type="button"
-        >
-          <ActionIcon name="more" />
-          <span>
-            {isAdvancedSearchOpen ? t.search.hideAdvancedSearch : t.search.advancedSearch}
-          </span>
-        </button>
-        {isAdvancedSearchOpen ? (
+        {!relatedSearchLocked ? (
+          <button
+            aria-controls="search-advanced-filters"
+            aria-expanded={isAdvancedSearchOpen}
+            className={styles.searchAdvancedToggle}
+            onClick={() => setIsAdvancedSearchOpen((value) => !value)}
+            type="button"
+          >
+            <ActionIcon name="more" />
+            <span>
+              {isAdvancedSearchOpen ? t.search.hideAdvancedSearch : t.search.advancedSearch}
+            </span>
+          </button>
+        ) : null}
+        {isAdvancedSearchOpen && !relatedSearchLocked ? (
           <div
             className={`${styles.searchAdvanced} ${styles.searchAdvancedOpen}`}
             id="search-advanced-filters"
@@ -1195,6 +1221,18 @@ export function SearchResultsPanel(props: {
 
         {!props.isArticlesLoading && props.loadMoreError ? (
           <p className={styles.paginationError}>{props.loadMoreError}</p>
+        ) : null}
+
+        {!props.isArticlesLoading &&
+        props.hasSubmitted &&
+        relatedSearchLocked &&
+        props.relatedSearchMeta &&
+        props.nextCursor === null ? (
+          <p className={styles.relatedSearchFooter}>
+            {t.search.relatedThresholdFooter(
+              formatRelatedSearchThreshold(props.relatedSearchMeta.threshold)
+            )}
+          </p>
         ) : null}
       </div>
     </section>
@@ -2062,6 +2100,7 @@ export function ArticleDetailPanel(props: {
   onCloseExplanation: () => void;
   onLoadRelatedArticles?: () => void;
   onOpenExplanation: () => void;
+  onOpenRelatedSearch?: () => void;
   onRetryPersonalizedRelated?: () => void;
   onSelectDiscoveryArticle?: (articleId: string) => void;
   onReadProgress: (
@@ -2227,6 +2266,7 @@ export function ArticleDetailPanel(props: {
           />
           <ReaderDiscoverySections
             onLoadRelatedArticles={props.onLoadRelatedArticles}
+            onOpenRelatedSearch={props.onOpenRelatedSearch}
             onRetryPersonalizedRelated={props.onRetryPersonalizedRelated}
             onSelectArticle={props.onSelectDiscoveryArticle}
             personalized={props.personalizedDiscovery ?? idleReaderDiscoveryState}
@@ -2251,6 +2291,7 @@ function ReaderDiscoverySections(props: {
   personalized: ReaderDiscoveryPanelState;
   related: ReaderDiscoveryPanelState;
   onLoadRelatedArticles?: () => void;
+  onOpenRelatedSearch?: () => void;
   onRetryPersonalizedRelated?: () => void;
   onSelectArticle?: (articleId: string) => void;
 }) {
@@ -2263,6 +2304,7 @@ function ReaderDiscoverySections(props: {
       />
       <RelatedDiscoverySection
         onLoad={props.onLoadRelatedArticles}
+        onOpenRelatedSearch={props.onOpenRelatedSearch}
         onSelectArticle={props.onSelectArticle}
         state={props.related}
       />
@@ -2318,6 +2360,7 @@ function PersonalizedDiscoverySection(props: {
 function RelatedDiscoverySection(props: {
   state: ReaderDiscoveryPanelState;
   onLoad?: () => void;
+  onOpenRelatedSearch?: () => void;
   onSelectArticle?: (articleId: string) => void;
 }) {
   const { t } = useI18n();
@@ -2336,7 +2379,15 @@ function RelatedDiscoverySection(props: {
             <p>{discovery.relatedIntro}</p>
           ) : null}
         </div>
-        {props.state.status === "idle" || props.state.status === "error" ? (
+        {props.state.status === "ready" && props.state.items.length > 0 ? (
+          <button
+            className={styles.readerDiscoveryMoreButton}
+            onClick={props.onOpenRelatedSearch}
+            type="button"
+          >
+            {discovery.more}
+          </button>
+        ) : props.state.status === "idle" || props.state.status === "error" ? (
           <button
             className={styles.secondaryButton}
             onClick={props.onLoad}
@@ -2422,6 +2473,10 @@ function ReaderDiscoveryArticleList(props: {
 
 function truncateDiscoverySummary(value: string): string {
   return value.length > 150 ? `${value.slice(0, 150)}...` : value;
+}
+
+function formatRelatedSearchThreshold(value: number): string {
+  return value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function discoveryUnavailableMessage(

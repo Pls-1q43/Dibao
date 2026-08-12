@@ -58,6 +58,7 @@ export const zhCN = {
     body: "默认搜索标题和摘要；需要时可以启用全文搜索。",
     inputLabel: "关键词",
     inputPlaceholder: "搜索标题和摘要",
+    relatedPrefix: "与此相关：",
     fullTextLabel: "搜索全文",
     submit: "搜索",
     submitting: "搜索中",
@@ -68,6 +69,8 @@ export const zhCN = {
       latest: "最新"
     },
     recommendedSortHint: "仅在搜索结果中按你的推荐模型排序。",
+    relatedThresholdFooter: (threshold: string) =>
+      `相关文章搜索仅筛选相似阈值>${threshold}的文章。`,
     stateLabel: "状态",
     advancedSearch: "高级搜索",
     hideAdvancedSearch: "收起高级搜索",
@@ -1249,6 +1252,7 @@ export const zhCN = {
       relatedLoading: "正在查找相关文章...",
       relatedEmpty: "暂时没有找到合适的相关文章。",
       relatedError: "相关文章加载失败。",
+      more: "更多",
       personalizedTitle: "你可能还喜欢",
       personalizedLoading: "正在为你挑选...",
       personalizedEmpty: "暂时没有找到合适的继续阅读推荐。",
@@ -1448,6 +1452,7 @@ export const enUS = {
     body: "Search titles and summaries by default. Enable full-text search when needed.",
     inputLabel: "Keyword",
     inputPlaceholder: "Search titles and summaries",
+    relatedPrefix: "Related to:",
     fullTextLabel: "Search full text",
     submit: "Search",
     submitting: "Searching",
@@ -1458,6 +1463,8 @@ export const enUS = {
       latest: "Latest"
     },
     recommendedSortHint: "Reorders only the matched results using your personalization model.",
+    relatedThresholdFooter: (threshold: string) =>
+      `Related article search only includes articles with similarity > ${threshold}.`,
     stateLabel: "State",
     advancedSearch: "Advanced search",
     hideAdvancedSearch: "Hide advanced search",
@@ -2635,6 +2642,7 @@ export const enUS = {
       relatedLoading: "Finding related articles...",
       relatedEmpty: "No suitable related articles found yet.",
       relatedError: "Related articles failed to load.",
+      more: "More",
       personalizedTitle: "You Might Also Like",
       personalizedLoading: "Picking articles for you...",
       personalizedEmpty: "No suitable continue-reading picks found yet.",
@@ -2829,6 +2837,7 @@ export const jaJP = {
     body: "既定ではタイトルと要約を検索します。必要な場合は全文検索を有効にできます。",
     inputLabel: "キーワード",
     inputPlaceholder: "タイトルと要約を検索",
+    relatedPrefix: "関連元：",
     fullTextLabel: "全文検索",
     submit: "検索",
     submitting: "検索中",
@@ -2839,6 +2848,8 @@ export const jaJP = {
       latest: "新しい順"
     },
     recommendedSortHint: "検索結果の中だけを、あなたのおすすめモデルで並び替えます。",
+    relatedThresholdFooter: (threshold: string) =>
+      `関連記事検索は類似しきい値>${threshold}の記事のみを表示します。`,
     stateLabel: "状態",
     advancedSearch: "詳細検索",
     hideAdvancedSearch: "詳細検索を閉じる",
@@ -4016,6 +4027,7 @@ export const jaJP = {
       relatedLoading: "関連記事を探しています...",
       relatedEmpty: "適切な関連記事はまだ見つかりません。",
       relatedError: "関連記事の読み込みに失敗しました。",
+      more: "もっと見る",
       personalizedTitle: "こちらもおすすめ",
       personalizedLoading: "あなた向けの記事を選んでいます...",
       personalizedEmpty: "続けて読む候補はまだ見つかりません。",

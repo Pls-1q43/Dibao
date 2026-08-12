@@ -190,6 +190,7 @@ import {
 } from "./reader-command-service.js";
 import {
   ReaderDiscoveryService,
+  type RelatedSearchResponse,
   type ReaderDiscoveryResponse
 } from "./reader-discovery-service.js";
 import {
@@ -304,6 +305,12 @@ type ArticleQuery = {
 
 type ReaderDiscoveryQuery = {
   limit?: string;
+};
+
+type RelatedSearchQuery = {
+  limit?: string;
+  cursor?: string;
+  state?: string;
 };
 
 type RecommendationInventoryQuery = ArticleQuery & {
@@ -3128,6 +3135,72 @@ export function buildServer(options: BuildServerOptions = {}) {
 
       return {
         data: mapReaderDiscoveryResponse(result)
+      };
+    }
+  );
+
+  app.get<{ Params: ArticleParams; Querystring: RelatedSearchQuery }>(
+    "/api/articles/:id/related-search",
+    async (request, reply) => {
+      const limit = parseRelatedSearchLimit(request.query.limit);
+      if (limit === null) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", "limit must be an integer between 1 and 100", {
+          field: "limit",
+          min: 1,
+          max: 100
+        });
+      }
+
+      const offset = decodeOffsetCursor(request.query.cursor);
+      if (offset === null) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", "cursor is invalid", {
+          field: "cursor"
+        });
+      }
+
+      const state = parseSearchState(request.query.state);
+      if (state === null) {
+        return sendApiError(reply, 400, "VALIDATION_ERROR", "state must be all, unread, read, favorites, or read_later", {
+          field: "state"
+        });
+      }
+
+      const startedAt = performance.now();
+      const result = readerDiscoveryService.findRelatedSearchArticles({
+        articleId: request.params.id,
+        limit,
+        offset,
+        state
+      });
+      const responseMapStartedAt = performance.now();
+      const data = result ? mapRelatedSearchResponse(result) : null;
+      const responseMapMs = performance.now() - responseMapStartedAt;
+      app.log.info(
+        {
+          route: "/api/articles/:id/related-search",
+          status: result?.status ?? "not_found",
+          itemCount: result?.items.length ?? 0,
+          hasMore: result?.nextOffset !== null,
+          state: state ?? "all",
+          limit: limit ?? null,
+          offset: offset ?? 0,
+          responseMapMs: roundDuration(responseMapMs),
+          durationMs: roundDuration(performance.now() - startedAt)
+        },
+        "performance.route"
+      );
+      if (!result || !data) {
+        return sendApiError(reply, 404, "NOT_FOUND", "Article not found");
+      }
+
+      return {
+        data,
+        page: {
+          nextCursor: encodeCursor(result.nextOffset)
+        },
+        meta: {
+          unreadCount: null
+        }
       };
     }
   );
@@ -6781,6 +6854,19 @@ function parseReaderDiscoveryLimit(value: string | undefined): number | undefine
   return parsed;
 }
 
+function parseRelatedSearchLimit(value: string | undefined): number | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function encodeCursor(cursor: number | ArticleListCursor | null): string | null {
   if (cursor === null) {
     return null;
@@ -7016,6 +7102,17 @@ function mapReaderDiscoveryResponse(response: ReaderDiscoveryResponse) {
   return {
     status: response.status,
     items: response.items.map(mapArticleListItem),
+    ...(response.status === "unavailable" ? { reason: response.reason } : {})
+  };
+}
+
+function mapRelatedSearchResponse(response: RelatedSearchResponse) {
+  return {
+    status: response.status,
+    sourceArticle: mapArticleListItem(response.sourceArticle),
+    items: response.items.map(mapArticleListItem),
+    threshold: response.threshold,
+    totalCount: response.totalCount,
     ...(response.status === "unavailable" ? { reason: response.reason } : {})
   };
 }

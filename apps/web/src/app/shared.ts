@@ -83,6 +83,12 @@ export type PersistedReaderFilters = {
 export type SearchFormState = {
   q: string;
   fullText: boolean;
+  relatedArticle:
+    | {
+        id: string;
+        title: string;
+      }
+    | null;
   sourceSelection: SourceSelection;
   state: ArticleSearchState;
   sort: ArticleSearchSort;
@@ -986,6 +992,10 @@ export function paramsForSearchForm(form: SearchFormState): URLSearchParams {
   if (form.q.trim()) {
     params.set("q", form.q.trim());
   }
+  if (form.relatedArticle && form.q.trim() === form.relatedArticle.title.trim()) {
+    params.set("relatedArticleId", form.relatedArticle.id);
+    params.set("relatedTitle", form.relatedArticle.title);
+  }
   if (form.fullText) {
     params.set("scope", "full_text");
   }
@@ -1063,12 +1073,21 @@ export function defaultSearchForm(): SearchFormState {
   return {
     q: "",
     fullText: false,
+    relatedArticle: null,
     sourceSelection: { type: "all" },
     state: "all",
     sort: "relevance",
     from: "",
     to: ""
   };
+}
+
+export function isRelatedSearchForm(form: SearchFormState): boolean {
+  return Boolean(
+    form.relatedArticle &&
+      form.relatedArticle.id.trim().length > 0 &&
+      form.q.trim() === form.relatedArticle.title.trim()
+  );
 }
 
 export function searchFormFromLocation(): SearchFormState {
@@ -1079,16 +1098,26 @@ export function searchFormFromLocation(): SearchFormState {
   const params = new URLSearchParams(window.location.search);
   const feedId = params.get("feedId");
   const folderId = params.get("folderId");
+  const q = params.get("q") ?? "";
+  const relatedArticleId = params.get("relatedArticleId")?.trim() ?? "";
+  const relatedTitle = params.get("relatedTitle") ?? q;
+  const hasRelatedContext = relatedArticleId.length > 0 && relatedTitle.trim().length > 0;
   return {
-    q: params.get("q") ?? "",
-    fullText: params.get("scope") === "full_text",
+    q,
+    fullText: hasRelatedContext ? false : params.get("scope") === "full_text",
+    relatedArticle: hasRelatedContext
+      ? {
+          id: relatedArticleId,
+          title: relatedTitle
+        }
+      : null,
     sourceSelection: feedId
       ? { type: "feed", feedId }
       : folderId
         ? { type: "folder", folderId }
         : { type: "all" },
     state: parseArticleSearchStateValue(params.get("state")) ?? "all",
-    sort: parseArticleSearchSortValue(params.get("sort")) ?? "relevance",
+    sort: hasRelatedContext ? "relevance" : parseArticleSearchSortValue(params.get("sort")) ?? "relevance",
     from: params.get("from") ?? "",
     to: params.get("to") ?? ""
   };

@@ -2,6 +2,7 @@ import {
   fromVectorBlob,
   type ArticleListItemRow,
   type ArticleRepository,
+  type ArticleSearchState,
   type ArticleVectorRow,
   type EmbeddingRepository,
   type VectorStore
@@ -26,9 +27,34 @@ export type ReaderDiscoveryResponse =
 
 export type ReaderDiscoveryResult = ReaderDiscoveryResponse | null;
 
+export type RelatedSearchResponse =
+  | {
+      status: "ready";
+      sourceArticle: ArticleListItemRow;
+      items: ArticleListItemRow[];
+      threshold: number;
+      nextOffset: number | null;
+      totalCount: number;
+    }
+  | {
+      status: "unavailable";
+      sourceArticle: ArticleListItemRow;
+      items: [];
+      threshold: number;
+      nextOffset: null;
+      totalCount: 0;
+      reason: ReaderDiscoveryUnavailableReason;
+    };
+
+export type RelatedSearchResult = RelatedSearchResponse | null;
+
 const DEFAULT_DISCOVERY_LIMIT = 5;
 const MAX_DISCOVERY_LIMIT = 10;
 const RELATED_KNN_OVERFETCH = 30;
+export const RELATED_SEARCH_SIMILARITY_THRESHOLD = 0.35;
+const DEFAULT_RELATED_SEARCH_LIMIT = 50;
+const MAX_RELATED_SEARCH_LIMIT = 100;
+const RELATED_SEARCH_KNN_LIMIT = 500;
 const PERSONALIZED_CANDIDATE_LIMIT = 80;
 const PERSONALIZED_RANK_WEIGHT = 0.65;
 const CONTEXT_RANK_WEIGHT = 0.35;
@@ -106,6 +132,88 @@ export class ReaderDiscoveryService {
     return {
       status: "ready",
       items
+    };
+  }
+
+  findRelatedSearchArticles(input: {
+    articleId: string;
+    limit?: number;
+    offset?: number;
+    state?: ArticleSearchState;
+    threshold?: number;
+  }): RelatedSearchResult {
+    const rankContext = this.options.getActiveRankContext();
+    const article = this.options.articles.findDetailById(input.articleId, { rankContext });
+    if (!article) {
+      return null;
+    }
+
+    const threshold = normalizeSimilarityThreshold(input.threshold);
+    const index = this.options.embeddings.findActiveIndex();
+    if (!index) {
+      return unavailableRelatedSearch(article, threshold, "no_active_embedding");
+    }
+
+    const currentVector = this.findArticleVector(index.id, input.articleId);
+    if (!currentVector) {
+      return unavailableRelatedSearch(article, threshold, "article_embedding_missing");
+    }
+
+    const relatedIds = uniqueStrings(
+      this.options.vectorStore
+        .searchSimilarArticles({
+          embeddingIndexId: index.id,
+          vector: currentVector.vectorBlob,
+          limit: RELATED_SEARCH_KNN_LIMIT
+        })
+        .filter((result) => result.articleId !== input.articleId)
+        .filter((result) => similarityForVectorDistance(result.distance) > threshold)
+        .map((result) => result.articleId)
+    );
+    if (relatedIds.length === 0) {
+      return {
+        status: "ready",
+        sourceArticle: article,
+        items: [],
+        threshold,
+        nextOffset: null,
+        totalCount: 0
+      };
+    }
+
+    const duplicateGroupsByArticle = duplicateGroupMap(
+      this.options.articles.findDuplicateGroupMemberships([input.articleId, ...relatedIds])
+    );
+    const currentDuplicateGroups = duplicateGroupsByArticle.get(input.articleId) ?? new Set();
+    const hydratedItems = this.options.articles.findListItemsByIds(relatedIds, { rankContext });
+    const itemsById = new Map(hydratedItems.map((item) => [item.id, item]));
+    const filteredItems: ArticleListItemRow[] = [];
+
+    for (const articleId of relatedIds) {
+      if (hasAnyDuplicateGroup(duplicateGroupsByArticle.get(articleId), currentDuplicateGroups)) {
+        continue;
+      }
+      const item = itemsById.get(articleId);
+      if (!item || item.state.hidden || item.state.notInterested) {
+        continue;
+      }
+      if (!matchesRelatedSearchState(item, input.state ?? "all")) {
+        continue;
+      }
+      filteredItems.push(item);
+    }
+
+    const limit = normalizeRelatedSearchLimit(input.limit);
+    const offset = normalizeRelatedSearchOffset(input.offset);
+    const items = filteredItems.slice(offset, offset + limit);
+
+    return {
+      status: "ready",
+      sourceArticle: article,
+      items,
+      threshold,
+      nextOffset: offset + limit < filteredItems.length ? offset + limit : null,
+      totalCount: filteredItems.length
     };
   }
 
@@ -263,11 +371,70 @@ function unavailable(reason: ReaderDiscoveryUnavailableReason): ReaderDiscoveryR
   };
 }
 
+function unavailableRelatedSearch(
+  sourceArticle: ArticleListItemRow,
+  threshold: number,
+  reason: ReaderDiscoveryUnavailableReason
+): RelatedSearchResponse {
+  return {
+    status: "unavailable",
+    sourceArticle,
+    items: [],
+    threshold,
+    nextOffset: null,
+    totalCount: 0,
+    reason
+  };
+}
+
 function normalizeDiscoveryLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) {
     return DEFAULT_DISCOVERY_LIMIT;
   }
   return Math.min(Math.max(Math.trunc(limit), 1), MAX_DISCOVERY_LIMIT);
+}
+
+function normalizeRelatedSearchLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return DEFAULT_RELATED_SEARCH_LIMIT;
+  }
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_RELATED_SEARCH_LIMIT);
+}
+
+function normalizeRelatedSearchOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isFinite(offset)) {
+    return 0;
+  }
+  return Math.max(Math.trunc(offset), 0);
+}
+
+function normalizeSimilarityThreshold(threshold: number | undefined): number {
+  if (threshold === undefined || !Number.isFinite(threshold)) {
+    return RELATED_SEARCH_SIMILARITY_THRESHOLD;
+  }
+  return Math.min(Math.max(threshold, 0), 1);
+}
+
+function similarityForVectorDistance(distance: number): number {
+  return 1 - distance;
+}
+
+function matchesRelatedSearchState(
+  item: ArticleListItemRow,
+  state: ArticleSearchState
+): boolean {
+  switch (state) {
+    case "unread":
+      return item.state.interactionStatus === "unseen";
+    case "read":
+      return item.state.read || item.state.readingProgress >= 0.9;
+    case "favorites":
+      return item.state.favorited;
+    case "read_later":
+      return item.state.readLater;
+    case "all":
+      return true;
+  }
 }
 
 function duplicateGroupMap(

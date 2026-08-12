@@ -183,6 +183,14 @@ export type ReaderDiscoveryResponse = {
   reason?: ReaderDiscoveryUnavailableReason;
 };
 
+export type RelatedSearchResponse = ArticleListResponse & {
+  status: "ready" | "unavailable";
+  sourceArticle: ArticleListItem;
+  threshold: number;
+  totalCount: number;
+  reason?: ReaderDiscoveryUnavailableReason;
+};
+
 export type ArticleActionRequest =
   | {
       type: "impression" | "open" | "hide" | "not_interested";
@@ -2274,6 +2282,52 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
           { signal: input.signal }
         )
       ).data;
+    },
+
+    async getRelatedSearchArticles(
+      articleId: string,
+      input: {
+        limit?: number;
+        cursor?: string | null;
+        state?: ArticleSearchState;
+        signal?: AbortSignal;
+      } = {}
+    ): Promise<RelatedSearchResponse> {
+      const params = new URLSearchParams();
+      if (input.limit !== undefined) {
+        params.set("limit", String(input.limit));
+      }
+      if (input.cursor) {
+        params.set("cursor", input.cursor);
+      }
+      if (input.state && input.state !== "all") {
+        params.set("state", input.state);
+      }
+      const query = params.toString();
+      const response = await request<{
+        status: "ready" | "unavailable";
+        sourceArticle: ArticleListItem;
+        items: ArticleListItem[];
+        threshold: number;
+        totalCount: number;
+        reason?: ReaderDiscoveryUnavailableReason;
+      }>(
+        `/api/articles/${encodeURIComponent(articleId)}/related-search${query ? `?${query}` : ""}`,
+        { signal: input.signal }
+      );
+
+      return {
+        data: response.data.items,
+        page: response.page ?? { nextCursor: null },
+        meta: {
+          unreadCount: response.meta?.unreadCount ?? null
+        },
+        status: response.data.status,
+        sourceArticle: response.data.sourceArticle,
+        threshold: response.data.threshold,
+        totalCount: response.data.totalCount,
+        reason: response.data.reason
+      };
     },
 
     async getPersonalizedRelatedArticles(

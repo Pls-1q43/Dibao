@@ -110,7 +110,52 @@ describe("web API client", () => {
   it("fetches feed folders", async () => {
     const calls: string[] = [];
     const api = createDibaoApi(async (input) => {
-      calls.push(String(input));
+      const path = String(input);
+      calls.push(path);
+      if (path.includes("/related-search")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              status: "ready",
+              sourceArticle: {
+                id: "article/one",
+                feedId: "feed",
+                feedTitle: "Feed",
+                title: "Source title",
+                url: "https://example.com/one",
+                author: null,
+                summary: null,
+                publishedAt: null,
+                discoveredAt: "2026-08-12T00:00:00.000Z",
+                state: {
+                  read: false,
+                  favorited: false,
+                  liked: false,
+                  readLater: false,
+                  hidden: false,
+                  notInterested: false,
+                  readingProgress: 0,
+                  interactionStatus: "unseen",
+                  openedAt: null,
+                  ignoredAt: null
+                }
+              },
+              items: [],
+              threshold: 0.35,
+              totalCount: 0
+            },
+            page: {
+              nextCursor: "next"
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
 
       return new Response(
         JSON.stringify({
@@ -958,7 +1003,53 @@ describe("web API client", () => {
   it("fetches reader discovery modules with encoded article ids", async () => {
     const calls: string[] = [];
     const api = createDibaoApi(async (input) => {
-      calls.push(String(input));
+      const path = String(input);
+      calls.push(path);
+
+      if (path.includes("/related-search")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              status: "ready",
+              sourceArticle: {
+                id: "article/one",
+                feedId: "feed",
+                feedTitle: "Feed",
+                title: "Source title",
+                url: "https://example.com/one",
+                author: null,
+                summary: null,
+                publishedAt: null,
+                discoveredAt: "2026-08-12T00:00:00.000Z",
+                state: {
+                  read: false,
+                  favorited: false,
+                  liked: false,
+                  readLater: false,
+                  hidden: false,
+                  notInterested: false,
+                  readingProgress: 0,
+                  interactionStatus: "unseen",
+                  openedAt: null,
+                  ignoredAt: null
+                }
+              },
+              items: [],
+              threshold: 0.35,
+              totalCount: 0
+            },
+            page: {
+              nextCursor: "next"
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
 
       return new Response(
         JSON.stringify({
@@ -986,10 +1077,30 @@ describe("web API client", () => {
       status: "ready",
       items: []
     });
+    await expect(
+      api.getRelatedSearchArticles("article/one", {
+        limit: 50,
+        cursor: "cursor_1",
+        state: "favorites"
+      })
+    ).resolves.toMatchObject({
+      status: "ready",
+      data: [],
+      threshold: 0.35,
+      totalCount: 0,
+      page: {
+        nextCursor: "next"
+      },
+      sourceArticle: {
+        id: "article/one",
+        title: "Source title"
+      }
+    });
 
     expect(calls).toEqual([
       "/api/articles/article%2Fone/related?limit=5",
-      "/api/articles/article%2Fone/personalized-related?limit=3"
+      "/api/articles/article%2Fone/personalized-related?limit=3",
+      "/api/articles/article%2Fone/related-search?limit=50&cursor=cursor_1&state=favorites"
     ]);
   });
 

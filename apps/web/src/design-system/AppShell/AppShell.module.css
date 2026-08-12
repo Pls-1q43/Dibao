@@ -2498,6 +2498,34 @@
   font-size: var(--text-sm);
 }
 
+.relatedSearchBox {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  min-height: var(--input-height-md);
+  border: var(--input-border);
+  border-radius: var(--input-radius);
+  background: var(--input-background);
+  color: var(--color-ink);
+  overflow: hidden;
+}
+
+.relatedSearchBox span {
+  padding-left: var(--input-padding-x);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.relatedSearchBox input {
+  height: calc(var(--input-height-md) - 2px);
+  border: 0;
+  background: transparent;
+  padding-left: var(--space-1);
+}
+
 .listVirtualWindow {
   position: relative;
   min-height: 1px;
@@ -2516,6 +2544,14 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4) 0;
+}
+
+.relatedSearchFooter {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) var(--space-5);
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
 .addFeedForm {
@@ -3700,6 +3736,23 @@
   height: 16px;
 }
 
+.readerDiscoveryMoreButton {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: var(--space-1) 0;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.readerDiscoveryMoreButton:hover,
+.readerDiscoveryMoreButton:focus-visible {
+  border-bottom-color: currentColor;
+  color: var(--color-ink);
+}
+
 .readerDiscoveryList {
   display: grid;
   border-top: var(--border-subtle);
@@ -4211,6 +4264,20 @@
   .searchActions,
   .searchFilters {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relatedSearchBox {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding-block: var(--space-1);
+  }
+
+  .relatedSearchBox span {
+    padding-right: var(--input-padding-x);
+  }
+
+  .relatedSearchBox input {
+    padding-left: var(--input-padding-x);
   }
 
   .searchActions .primaryButton {

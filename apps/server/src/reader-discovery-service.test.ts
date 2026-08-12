@@ -73,6 +73,66 @@ describe("ReaderDiscoveryService", () => {
     }
   });
 
+  it("finds related search articles above the similarity threshold with pagination", () => {
+    const fixture = createFixture();
+    try {
+      fixture.addArticle("current", [1, 0]);
+      fixture.addArticle("read_candidate", [0.99, 0.03]);
+      fixture.addArticle("favorited_candidate", [0.98, 0.05]);
+      fixture.addArticle("liked_candidate", [0.97, 0.06]);
+      fixture.addArticle("duplicate_current", [0.96, 0.07]);
+      fixture.addArticle("below_threshold", [0, 1]);
+      fixture.addArticle("hidden", [0.95, 0.08]);
+      fixture.markState("read_candidate", { readAt: 1000 });
+      fixture.markState("favorited_candidate", { favoritedAt: 1000 });
+      fixture.markState("liked_candidate", { likedAt: 1000 });
+      fixture.markState("hidden", { hiddenAt: 1000 });
+      fixture.addDuplicateGroup("dup_current", ["current", "duplicate_current"]);
+
+      const firstPage = fixture.service.findRelatedSearchArticles({
+        articleId: "current",
+        limit: 2,
+        threshold: 0.35
+      });
+      const secondPage = fixture.service.findRelatedSearchArticles({
+        articleId: "current",
+        limit: 2,
+        offset: 2,
+        threshold: 0.35
+      });
+      const favoriteResults = fixture.service.findRelatedSearchArticles({
+        articleId: "current",
+        state: "favorites",
+        threshold: 0.35
+      });
+
+      expect(firstPage).toMatchObject({
+        status: "ready",
+        sourceArticle: expect.objectContaining({ id: "current" }),
+        threshold: 0.35,
+        totalCount: 3,
+        nextOffset: 2,
+        items: [
+          expect.objectContaining({ id: "read_candidate" }),
+          expect.objectContaining({ id: "favorited_candidate" })
+        ]
+      });
+      expect(secondPage).toMatchObject({
+        status: "ready",
+        totalCount: 3,
+        nextOffset: null,
+        items: [expect.objectContaining({ id: "liked_candidate" })]
+      });
+      expect(favoriteResults).toMatchObject({
+        status: "ready",
+        totalCount: 1,
+        items: [expect.objectContaining({ id: "favorited_candidate" })]
+      });
+    } finally {
+      fixture.db.close();
+    }
+  });
+
   it("reranks personalized candidates by current liked article context without running KNN", () => {
     const fixture = createFixture({
       vectorStore: {
@@ -384,7 +444,13 @@ function createFixture(input: {
     },
     markState: (
       articleId: string,
-      state: { readAt?: number; hiddenAt?: number; notInterestedAt?: number }
+      state: {
+        readAt?: number;
+        favoritedAt?: number;
+        likedAt?: number;
+        hiddenAt?: number;
+        notInterestedAt?: number;
+      }
     ) => markState(db, articleId, state),
     addDuplicateGroup: (groupId: string, articleIds: string[]) =>
       addDuplicateGroup(db, groupId, articleIds)
@@ -394,7 +460,13 @@ function createFixture(input: {
 function markState(
   db: DibaoDatabase,
   articleId: string,
-  state: { readAt?: number; hiddenAt?: number; notInterestedAt?: number }
+  state: {
+    readAt?: number;
+    favoritedAt?: number;
+    likedAt?: number;
+    hiddenAt?: number;
+    notInterestedAt?: number;
+  }
 ) {
   db.prepare(
     `
@@ -410,9 +482,11 @@ function markState(
         last_opened_at,
         updated_at
       )
-      values (?, ?, null, null, null, ?, ?, ?, null, ?)
+      values (?, ?, ?, ?, null, ?, ?, ?, null, ?)
       on conflict(article_id) do update set
         read_at = excluded.read_at,
+        favorited_at = excluded.favorited_at,
+        liked_at = excluded.liked_at,
         hidden_at = excluded.hidden_at,
         not_interested_at = excluded.not_interested_at,
         reading_progress = excluded.reading_progress,
@@ -421,6 +495,8 @@ function markState(
   ).run(
     articleId,
     state.readAt ?? null,
+    state.favoritedAt ?? null,
+    state.likedAt ?? null,
     state.hiddenAt ?? null,
     state.notInterestedAt ?? null,
     state.readAt ? 1 : 0,
