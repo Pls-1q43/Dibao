@@ -25,6 +25,7 @@ export type RecordArticleActionServiceInput = {
   type: ArticleActionType;
   progress?: number;
   metadata?: Record<string, unknown>;
+  eventId?: string;
 };
 
 export type ArticleActionServiceOptions = {
@@ -54,6 +55,10 @@ export class ArticleActionService {
 
     if (!result) {
       throw new ArticleActionServiceError(404, "NOT_FOUND", "Article not found");
+    }
+
+    if (result.deduplicated) {
+      return result;
     }
 
     let finalResult = result;

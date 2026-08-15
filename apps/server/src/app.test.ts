@@ -9970,6 +9970,110 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("serves an ordered offline manifest and batched readable article details", async () => {
+    const db = createFixtureDatabase();
+    const app = buildServer({ db, logger: false, now: () => 50_000 });
+
+    try {
+      const manifestResponse = await app.inject({
+        method: "GET",
+        url: "/api/offline/manifest?recommendedLimit=50"
+      });
+      const batchResponse = await postJson(app, "/api/offline/articles/batch", {
+        articleIds: ["article_recent", "article_recommended"]
+      });
+
+      expect(manifestResponse.statusCode, manifestResponse.body).toBe(200);
+      expect(manifestResponse.json().data).toMatchObject({
+        snapshotId: expect.stringMatching(/^[a-f0-9]{24}$/),
+        generatedAt: new Date(50_000).toISOString(),
+        rankContext: expect.any(String),
+        recommendedTarget: 50,
+        recommended: [
+          expect.objectContaining({
+            position: 0,
+            contentRevision: expect.any(String),
+            article: expect.objectContaining({ id: "article_recommended" })
+          })
+        ],
+        readLater: [],
+        recent: [
+          expect.objectContaining({ article: expect.objectContaining({ id: "article_recent" }) })
+        ]
+      });
+      expect(batchResponse.statusCode, batchResponse.body).toBe(200);
+      expect(batchResponse.json().data.map((item: { id: string }) => item.id)).toEqual([
+        "article_recent",
+        "article_recommended"
+      ]);
+      expect(batchResponse.json().data[0]).toMatchObject({
+        contentText: "Reader density without visual clutter."
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("validates offline manifest and article batch bounds", async () => {
+    const db = createFixtureDatabase();
+    const app = buildServer({ db, logger: false });
+
+    try {
+      const lowTarget = await app.inject({
+        method: "GET",
+        url: "/api/offline/manifest?recommendedLimit=49"
+      });
+      const duplicateBatch = await postJson(app, "/api/offline/articles/batch", {
+        articleIds: ["article_recent", "article_recent"]
+      });
+      const oversizedBatch = await postJson(app, "/api/offline/articles/batch", {
+        articleIds: Array.from({ length: 51 }, (_, index) => `article-${index}`)
+      });
+
+      expect(lowTarget.statusCode).toBe(400);
+      expect(duplicateBatch.statusCode).toBe(400);
+      expect(oversizedBatch.statusCode).toBe(400);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("deduplicates repeated client article action ids", async () => {
+    const db = createFixtureDatabase();
+    const app = buildServer({ db, logger: false, now: () => 60_000 });
+    const behaviorCountBefore = countTable(db, "behavior_events");
+
+    try {
+      const first = await postJson(app, "/api/articles/article_recommended/actions", {
+        type: "favorite",
+        clientActionId: "offline-action-0001"
+      });
+      const repeated = await postJson(app, "/api/articles/article_recommended/actions", {
+        type: "favorite",
+        clientActionId: "offline-action-0001"
+      });
+
+      expect(first.statusCode, first.body).toBe(200);
+      expect(first.json().data).toMatchObject({
+        eventId: "offline-action-0001",
+        deduplicated: false,
+        state: { favorited: true }
+      });
+      expect(repeated.statusCode, repeated.body).toBe(200);
+      expect(repeated.json().data).toMatchObject({
+        eventId: "offline-action-0001",
+        deduplicated: true,
+        state: { favorited: true }
+      });
+      expect(countTable(db, "behavior_events")).toBe(behaviorCountBefore + 1);
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("returns a contract-shaped error for missing articles", async () => {
     const db = createFixtureDatabase();
     const app = buildServer({ db, logger: false });

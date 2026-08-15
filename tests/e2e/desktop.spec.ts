@@ -149,10 +149,12 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
     await page.getByTitle("只看未读").click();
     await page.getByRole("link", { name: "推荐" }).click();
     await expect(page.getByRole("heading", { name: "推荐文章" })).toBeVisible();
-    await expect(page.getByText("推荐状态", { exact: true })).toBeVisible();
-    await expect(page.getByText("基础排序中")).toBeVisible();
-    await expect(page.getByText(/行为 \d+/)).toBeVisible();
-    await expect(page.getByText(/Coverage \d+%/)).toBeVisible();
+    await page.getByRole("button", { name: /查看推荐库存/ }).click();
+    const recommendationInventory = page.getByRole("dialog");
+    await expect(recommendationInventory.getByText("推荐库存", { exact: true })).toBeVisible();
+    await expect(recommendationInventory.getByText(/行为 \d+/)).toBeVisible();
+    await expect(recommendationInventory.getByText(/Coverage \d+%/)).toBeVisible();
+    await page.getByRole("button", { name: "关闭推荐库存" }).last().click();
     await expect(page.getByRole("link", { name: /E2E Article Alpha/ })).toBeVisible();
     await page.getByRole("link", { name: /E2E Article Alpha/ }).click();
     const recommendedReader = page.getByTestId("reader-scroll-container");
@@ -254,7 +256,9 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
 
     await page.context().setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-    await expect(page.getByText("当前离线。已缓存的应用壳仍可打开")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /查看离线阅读状态：离线 · \d+ 篇可用/ })
+    ).toBeVisible();
     await page.goto("/");
     await expect(page.locator("#root main")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("ERR_INTERNET_DISCONNECTED");

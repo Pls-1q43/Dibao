@@ -163,6 +163,10 @@ export type ArticleListItem = {
   publishedAt: string | null;
   discoveredAt: string;
   state: ArticleState;
+  rank?: {
+    score: number;
+    calculatedAt: string;
+  };
 };
 
 export type ArticleDetail = ArticleListItem & {
@@ -196,21 +200,44 @@ export type ArticleActionRequest =
       type: "impression" | "open" | "hide" | "not_interested";
       value?: true;
       metadata?: Record<string, unknown>;
+      clientActionId?: string;
     }
   | {
       type: "favorite" | "like" | "read_later" | "mark_read";
       value: boolean;
       metadata?: Record<string, unknown>;
+      clientActionId?: string;
     }
   | {
       type: "read_progress";
       progress: number;
       metadata?: Record<string, unknown>;
+      clientActionId?: string;
     };
 
 export type ArticleActionResponse = {
   eventId: string;
   state: ArticleState;
+  deduplicated?: boolean;
+};
+
+export type OfflineManifestArticle = {
+  article: ArticleListItem;
+  contentRevision: string;
+  position: number;
+  favoritedAt: string | null;
+  readLaterAt: string | null;
+  openedAt: string | null;
+};
+
+export type OfflineManifest = {
+  snapshotId: string;
+  generatedAt: string;
+  rankContext: string;
+  recommendedTarget: number;
+  recommended: OfflineManifestArticle[];
+  readLater: OfflineManifestArticle[];
+  recent: OfflineManifestArticle[];
 };
 
 export type BulkArticleActionRequest = {
@@ -2254,6 +2281,31 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
     async getArticle(articleId: string, input: { signal?: AbortSignal } = {}): Promise<ArticleDetail> {
       return (
         await request<ArticleDetail>(`/api/articles/${encodeURIComponent(articleId)}`, {
+          signal: input.signal
+        })
+      ).data;
+    },
+
+    async getOfflineManifest(
+      recommendedLimit: number,
+      input: { signal?: AbortSignal } = {}
+    ): Promise<OfflineManifest> {
+      const params = new URLSearchParams({ recommendedLimit: String(recommendedLimit) });
+      return (
+        await request<OfflineManifest>(`/api/offline/manifest?${params.toString()}`, {
+          signal: input.signal
+        })
+      ).data;
+    },
+
+    async getOfflineArticles(
+      articleIds: string[],
+      input: { signal?: AbortSignal } = {}
+    ): Promise<ArticleDetail[]> {
+      return (
+        await request<ArticleDetail[]>("/api/offline/articles/batch", {
+          method: "POST",
+          body: JSON.stringify({ articleIds }),
           signal: input.signal
         })
       ).data;

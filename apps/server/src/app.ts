@@ -165,6 +165,13 @@ import {
   JobHistoryCleanupScheduler
 } from "./job-history-cleanup-scheduler.js";
 import { LatestReleaseService } from "./latest-release-service.js";
+import {
+  OFFLINE_ARTICLE_BATCH_LIMIT,
+  OFFLINE_RECOMMENDED_LIMIT_MAX,
+  OFFLINE_RECOMMENDED_LIMIT_MIN,
+  OfflineReadingService,
+  type OfflineManifestArticle
+} from "./offline-reading-service.js";
 import { OpmlService, OpmlServiceError } from "./opml-service.js";
 import { PluginService, PluginServiceError } from "./plugin-service.js";
 import { pluginUiCss } from "./plugin-ui.js";
@@ -393,10 +400,19 @@ type ArticleParams = {
 };
 
 type ArticleActionBody = {
+  clientActionId?: unknown;
   type?: unknown;
   value?: unknown;
   progress?: unknown;
   metadata?: unknown;
+};
+
+type OfflineManifestQuery = {
+  recommendedLimit?: string;
+};
+
+type OfflineArticleBatchBody = {
+  articleIds?: unknown;
 };
 
 type BulkArticleActionBody = {
@@ -671,6 +687,11 @@ export function buildServer(options: BuildServerOptions = {}) {
     embeddings,
     vectorStore,
     getActiveRankContext: () => rankingService.getActiveRankContext()
+  });
+  const offlineReadingService = new OfflineReadingService({
+    articles,
+    getActiveRankContext: () => rankingService.getActiveRankContext(),
+    now: options.now
   });
   const articleExplanationCache = new Map<
     string,
@@ -3103,6 +3124,75 @@ export function buildServer(options: BuildServerOptions = {}) {
     };
   });
 
+  app.get<{ Querystring: OfflineManifestQuery }>(
+    "/api/offline/manifest",
+    async (request, reply) => {
+      const recommendedLimit = parseIntegerInRange(
+        request.query.recommendedLimit,
+        200,
+        OFFLINE_RECOMMENDED_LIMIT_MIN,
+        OFFLINE_RECOMMENDED_LIMIT_MAX
+      );
+      if (recommendedLimit === null) {
+        return sendApiError(
+          reply,
+          400,
+          "VALIDATION_ERROR",
+          `recommendedLimit must be an integer between ${OFFLINE_RECOMMENDED_LIMIT_MIN} and ${OFFLINE_RECOMMENDED_LIMIT_MAX}`,
+          {
+            field: "recommendedLimit",
+            min: OFFLINE_RECOMMENDED_LIMIT_MIN,
+            max: OFFLINE_RECOMMENDED_LIMIT_MAX
+          }
+        );
+      }
+
+      const startedAt = performance.now();
+      const manifest = offlineReadingService.createManifest(recommendedLimit);
+      app.log.info(
+        {
+          route: "/api/offline/manifest",
+          recommendedTarget: manifest.recommendedTarget,
+          recommendedCount: manifest.recommended.length,
+          readLaterCount: manifest.readLater.length,
+          recentCount: manifest.recent.length,
+          durationMs: roundDuration(performance.now() - startedAt)
+        },
+        "performance.route"
+      );
+      return {
+        data: {
+          snapshotId: manifest.snapshotId,
+          generatedAt: timestampToIsoValue(manifest.generatedAt),
+          rankContext: manifest.rankContext,
+          recommendedTarget: manifest.recommendedTarget,
+          recommended: manifest.recommended.map(mapOfflineManifestArticle),
+          readLater: manifest.readLater.map(mapOfflineManifestArticle),
+          recent: manifest.recent.map(mapOfflineManifestArticle)
+        }
+      };
+    }
+  );
+
+  app.post<{ Body: OfflineArticleBatchBody }>(
+    "/api/offline/articles/batch",
+    async (request, reply) => {
+      const articleIds = parseOfflineArticleIds(request.body?.articleIds);
+      if (articleIds === null) {
+        return sendApiError(
+          reply,
+          400,
+          "VALIDATION_ERROR",
+          `articleIds must contain between 1 and ${OFFLINE_ARTICLE_BATCH_LIMIT} unique ids`,
+          { field: "articleIds", min: 1, max: OFFLINE_ARTICLE_BATCH_LIMIT }
+        );
+      }
+      return {
+        data: offlineReadingService.getArticles(articleIds).map(mapArticleDetail)
+      };
+    }
+  );
+
   app.get<{ Params: ArticleParams; Querystring: ReaderDiscoveryQuery }>(
     "/api/articles/:id/related",
     async (request, reply) => {
@@ -3323,17 +3413,20 @@ export function buildServer(options: BuildServerOptions = {}) {
           },
           "performance.route"
         );
-        void pluginService.emitHook("article.actionRecorded", {
-          articleId: request.params.id,
-          eventId: result.eventId,
-          action: parsed.input.type,
-          state: result.state
-        }).catch((error) => app.log.error(error));
+        if (!result.deduplicated) {
+          void pluginService.emitHook("article.actionRecorded", {
+            articleId: request.params.id,
+            eventId: result.eventId,
+            action: parsed.input.type,
+            state: result.state
+          }).catch((error) => app.log.error(error));
+        }
 
         return {
           data: {
             eventId: result.eventId,
-            state: result.state
+            state: result.state,
+            deduplicated: result.deduplicated ?? false
           }
         };
       } catch (error) {
@@ -6448,6 +6541,7 @@ function parseArticleActionBody(body: ArticleActionBody | undefined):
         type: ArticleActionType;
         progress?: number;
         metadata?: Record<string, unknown>;
+        eventId?: string;
       };
     }
   | { ok: false; message: string; details?: unknown } {
@@ -6469,6 +6563,15 @@ function parseArticleActionBody(body: ArticleActionBody | undefined):
     return { ok: false, message: "metadata must be an object" };
   }
 
+  const eventId = parseOptionalClientActionId(body.clientActionId);
+  if (eventId === null) {
+    return {
+      ok: false,
+      message: "clientActionId must be a UUID-like string between 8 and 128 characters",
+      details: { fields: ["clientActionId"], minLength: 8, maxLength: 128 }
+    };
+  }
+
   if (type === "read_progress") {
     const progress = parseProgress(body.progress ?? body.value);
     if (progress === null) {
@@ -6484,6 +6587,7 @@ function parseArticleActionBody(body: ArticleActionBody | undefined):
       input: {
         type,
         progress,
+        ...(eventId !== undefined ? { eventId } : {}),
         ...(metadata !== undefined ? { metadata } : {})
       }
     };
@@ -6493,9 +6597,59 @@ function parseArticleActionBody(body: ArticleActionBody | undefined):
     ok: true,
     input: {
       type,
+      ...(eventId !== undefined ? { eventId } : {}),
       ...(metadata !== undefined ? { metadata } : {})
     }
   };
+}
+
+function parseOptionalClientActionId(value: unknown): string | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length >= 8 &&
+    normalized.length <= 128 &&
+    /^[A-Za-z0-9._:-]+$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function parseIntegerInRange(
+  value: string | undefined,
+  defaultValue: number,
+  min: number,
+  max: number
+): number | null {
+  if (value === undefined || value.trim() === "") {
+    return defaultValue;
+  }
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function parseOfflineArticleIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const articleIds = value.flatMap((item) =>
+    typeof item === "string" && item.trim().length > 0 ? [item.trim()] : []
+  );
+  const uniqueIds = Array.from(new Set(articleIds));
+  if (
+    uniqueIds.length !== value.length ||
+    uniqueIds.length < 1 ||
+    uniqueIds.length > OFFLINE_ARTICLE_BATCH_LIMIT
+  ) {
+    return null;
+  }
+  return uniqueIds;
 }
 
 function parseBulkArticleActionBody(body: BulkArticleActionBody | undefined):
@@ -7095,6 +7249,17 @@ function mapArticleDetail(article: ArticleDetailRow) {
     summary: hasBody ? articleListSummaryPreview(article.summary) : article.summary,
     extractionStatus: article.extractionStatus,
     extractionError: article.extractionError
+  };
+}
+
+function mapOfflineManifestArticle(article: OfflineManifestArticle) {
+  return {
+    article: mapArticleListItem(article.article),
+    contentRevision: article.contentRevision,
+    position: article.position,
+    favoritedAt: timestampToIso(article.favoritedAt),
+    readLaterAt: timestampToIso(article.readLaterAt),
+    openedAt: timestampToIso(article.openedAt)
   };
 }
 

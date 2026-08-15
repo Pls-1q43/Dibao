@@ -168,7 +168,7 @@ test("mobile recommended list keeps a dense first screen without horizontal over
 
   await page.getByRole("link", { name: "推荐" }).click();
   await expect(page.getByRole("heading", { name: "推荐" })).toBeVisible();
-  await expect(page.getByText("推荐状态", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /查看推荐库存/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /E2E Article Alpha/ })).toBeVisible();
 
   const visibleArticles = await page.evaluate(visibleArticleCountInListViewport);

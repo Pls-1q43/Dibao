@@ -10,6 +10,7 @@ import type {
   ArticleListItemRow,
   ArticleListResult,
   ArticleListTiming,
+  OfflineArticleMetadataRow,
   ArticleRetentionCandidateRow,
   ArticleRetentionCleanupResult,
   RecommendedArticleInventory,
@@ -104,6 +105,8 @@ export interface ArticleRepository {
   countUnreadForScope(scope: ArticleScope): number;
   findById(id: string): ArticleRow | null;
   findDetailById(id: string, input?: { rankContext?: string }): ArticleDetailRow | null;
+  findDetailsByIds(articleIds: string[], input?: { rankContext?: string }): ArticleDetailRow[];
+  findOfflineMetadataByIds(articleIds: string[]): OfflineArticleMetadataRow[];
   findDuplicateGroupMemberships(articleIds: string[]): ArticleDuplicateGroupMembershipRow[];
   findListItemsByIds(articleIds: string[], input?: { rankContext?: string }): ArticleListItemRow[];
   listUnreadArticleIdsForScope(scope: ArticleScope, limit?: number): string[];
@@ -120,6 +123,7 @@ export interface ArticleRepository {
     limit?: number;
   }): ArticleRetentionCandidateRow[];
   list(input?: ArticleListInput): ArticleListResult;
+  listRecentlyOpened(input?: { limit?: number; rankContext?: string }): ArticleListItemRow[];
   getRecommendedInventory(input: ArticleListInput & { rankContext: string }): RecommendedArticleInventory;
   markArticleIdsRead(articleIds: string[], now: number): number;
   search(input: ArticleSearchInput): ArticleSearchResult;
@@ -343,6 +347,81 @@ export class SqliteArticleRepository implements ArticleRepository {
       .get(rankContext, BASE_RANK_CONTEXT, id) as ArticleDetailDbRow | undefined;
 
     return row ? mapArticleDetail(row) : null;
+  }
+
+  findDetailsByIds(
+    articleIds: string[],
+    input: { rankContext?: string } = {}
+  ): ArticleDetailRow[] {
+    const uniqueArticleIds = uniqueStrings(articleIds);
+    if (uniqueArticleIds.length === 0) {
+      return [];
+    }
+    const rankContext = input.rankContext ?? BASE_RANK_CONTEXT;
+    const placeholders = uniqueArticleIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+          ${baseArticleReadSelect()},
+          ac.content_html as contentHtml,
+          ac.content_text as contentText,
+          coalesce(ac.extraction_status, 'pending') as extractionStatus,
+          ac.extraction_error as extractionError
+          ${baseArticleReadFrom()}
+          left join article_contents ac on ac.article_id = a.id
+          where a.id in (${placeholders})
+            and a.deleted_at is null
+            and a.status != 'deleted'
+        `
+      )
+      .all(rankContext, BASE_RANK_CONTEXT, ...uniqueArticleIds) as ArticleDetailDbRow[];
+    const rowsById = new Map(rows.map((row) => [row.id, row]));
+    return uniqueArticleIds.flatMap((articleId) => {
+      const row = rowsById.get(articleId);
+      return row ? [mapArticleDetail(row)] : [];
+    });
+  }
+
+  findOfflineMetadataByIds(articleIds: string[]): OfflineArticleMetadataRow[] {
+    const uniqueArticleIds = uniqueStrings(articleIds);
+    if (uniqueArticleIds.length === 0) {
+      return [];
+    }
+    const placeholders = uniqueArticleIds.map(() => "?").join(", ");
+    return this.db
+      .prepare(
+        `
+          select
+            a.id as articleId,
+            coalesce(a.content_hash, '') || ':' || a.updated_at || ':' ||
+              coalesce(ac.updated_at, 0) as contentRevision,
+            case
+              when trim(coalesce(ac.content_text, '')) != '' then 1
+              when trim(coalesce(ac.content_html, '')) != '' then 1
+              when trim(coalesce(a.summary, '')) != '' then 1
+              else 0
+            end as hasReadableContent,
+            s.favorited_at as favoritedAt,
+            s.read_later_at as readLaterAt,
+            s.last_opened_at as openedAt
+          from articles a
+          left join article_contents ac on ac.article_id = a.id
+          left join article_states s on s.article_id = a.id
+          where a.id in (${placeholders})
+            and a.deleted_at is null
+            and a.status != 'deleted'
+        `
+      )
+      .all(...uniqueArticleIds)
+      .map((row) => {
+        const typed = row as Omit<OfflineArticleMetadataRow, "hasReadableContent"> & {
+          hasReadableContent: 0 | 1;
+        };
+        return {
+          ...typed,
+          hasReadableContent: typed.hasReadableContent === 1
+        };
+      });
   }
 
   findDuplicateGroupMemberships(articleIds: string[]): ArticleDuplicateGroupMembershipRow[] {
@@ -619,6 +698,29 @@ export class SqliteArticleRepository implements ArticleRepository {
       unreadCount,
       timing
     };
+  }
+
+  listRecentlyOpened(
+    input: { limit?: number; rankContext?: string } = {}
+  ): ArticleListItemRow[] {
+    const limit = normalizeOfflineLimit(input.limit, 200);
+    const rankContext = input.rankContext ?? BASE_RANK_CONTEXT;
+    const rows = this.db
+      .prepare(
+        `
+          ${baseArticleReadSelect({ includeRank: true })}
+          ${baseArticleReadFrom({ includeRank: true })}
+          where a.deleted_at is null
+            and a.status != 'deleted'
+            and s.last_opened_at is not null
+            and s.hidden_at is null
+            and s.not_interested_at is null
+          order by s.last_opened_at desc, a.id desc
+          limit ?
+        `
+      )
+      .all(rankContext, BASE_RANK_CONTEXT, limit) as ArticleReadDbRow[];
+    return rows.map(mapArticleListItem);
   }
 
   getRecommendedInventory(
@@ -2308,6 +2410,13 @@ function normalizeEmbeddingCandidateLimit(limit: number | undefined): number {
   }
 
   return Math.min(Math.max(Math.trunc(limit), 1), 1_000);
+}
+
+function normalizeOfflineLimit(limit: number | undefined, max: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return Math.min(50, max);
+  }
+  return Math.min(Math.max(Math.trunc(limit), 1), max);
 }
 
 function normalizeOffset(offset: number | undefined): number {

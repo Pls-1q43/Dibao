@@ -6,6 +6,7 @@ import { useI18n, type Dictionary } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { NumberSettingField, RangeSettingField } from "../ui/FormFields.js";
 import { ActionIcon } from "../reader/ReaderPanels.js";
+import type { OfflineCacheSummary } from "../offline/offlineReading.js";
 import { classNames, closestInterestClusterPresetIndex, defaultFavoriteArticleSort, defaultReadLaterArticleSort, draftForEmbeddingProvider, draftForSettings, draftWithProviderType, embeddingCoverageText, interestClusterLimitPresets, interestClusterPresetIndexFromSliderValue, newEmbeddingProviderId, parseEmbeddingProviderDraft, parseSettingsDraft, presetIndexForInterestClusterLimitDraft, presetIndexForInterestClusterLimits, retentionSettingsRequireCleanupConfirmation, shouldLetBrowserHandleLinkClick, urlForAppPage, type EmbeddingProviderDraft, type SettingsDraft } from "../app/shared.js";
 
 type CoreSettingsTabId = "basic" | "algorithm" | "plugins";
@@ -144,6 +145,7 @@ export function SettingsWorkspace(props: {
   embeddingProviders: EmbeddingProvider[];
   error: string | null;
   isEmbeddingLoading: boolean;
+  isOffline?: boolean;
   isLoading: boolean;
   activatingProviderId: string | null;
   isSavingEmbeddingProvider: boolean;
@@ -163,6 +165,12 @@ export function SettingsWorkspace(props: {
     input: CreateEmbeddingProviderInput | UpdateEmbeddingProviderInput
   ) => Promise<string | null>;
   onTestEmbeddingProvider: (providerId: string) => Promise<void>;
+  offlineSummary?: OfflineCacheSummary | null;
+  offlineTarget?: number;
+  isOfflineCacheRefreshing?: boolean;
+  onOfflineTargetChange?: (target: number) => Promise<void>;
+  onRefreshOfflineCache?: () => Promise<void>;
+  onClearOfflineCache?: () => Promise<void>;
   settings: AppSettings;
 }) {
   const { t, formatDate } = useI18n();
@@ -191,6 +199,9 @@ export function SettingsWorkspace(props: {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordNotice, setPasswordNotice] = useState<string | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [offlineTarget, setOfflineTarget] = useState(props.offlineTarget ?? 200);
+  const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
+  const [offlineError, setOfflineError] = useState<string | null>(null);
   const [latestRelease, setLatestRelease] = useState<LatestReleaseStatus | null>(null);
   const [latestReleaseError, setLatestReleaseError] = useState<string | null>(null);
   const [isLoadingLatestRelease, setIsLoadingLatestRelease] = useState(false);
@@ -211,6 +222,49 @@ export function SettingsWorkspace(props: {
         closestInterestClusterPresetIndex(props.settings.ranking)
     );
   }, [props.settings]);
+
+  useEffect(() => {
+    setOfflineTarget(props.offlineTarget ?? props.offlineSummary?.targetCount ?? 200);
+  }, [props.offlineSummary?.targetCount, props.offlineTarget]);
+
+  async function saveOfflineTarget(target: number) {
+    setOfflineTarget(target);
+    setOfflineNotice(null);
+    setOfflineError(null);
+    try {
+      await props.onOfflineTargetChange?.(target);
+      setOfflineNotice(t.offlineReading.settings.saved);
+    } catch {
+      setOfflineError(t.offlineReading.settings.refreshFailed);
+    }
+  }
+
+  async function refreshOfflineCache() {
+    setOfflineNotice(null);
+    setOfflineError(null);
+    try {
+      await props.onRefreshOfflineCache?.();
+    } catch {
+      setOfflineError(t.offlineReading.settings.refreshFailed);
+    }
+  }
+
+  async function clearOfflineCache() {
+    const pending = (props.offlineSummary?.pendingActionCount ?? 0) +
+      (props.offlineSummary?.failedActionCount ?? 0);
+    const message = pending > 0
+      ? t.offlineReading.settings.clearPendingConfirm(pending)
+      : t.offlineReading.settings.clearConfirm;
+    if (!window.confirm(message)) return;
+    setOfflineNotice(null);
+    setOfflineError(null);
+    try {
+      await props.onClearOfflineCache?.();
+      setOfflineNotice(t.offlineReading.settings.cleared);
+    } catch {
+      setOfflineError(t.offlineReading.settings.refreshFailed);
+    }
+  }
 
   useEffect(() => {
     if (pendingProviderSelectionId) {
@@ -487,7 +541,7 @@ export function SettingsWorkspace(props: {
         </div>
         <button
           className={styles.primaryButton}
-          disabled={props.isSaving}
+          disabled={props.isSaving || props.isOffline}
           hidden={!isCoreSaveVisible}
           type="submit"
         >
@@ -547,6 +601,88 @@ export function SettingsWorkspace(props: {
           </label>
         </section>
 
+        <section
+          aria-labelledby="settings-offline-reading-title"
+          className={classNames(styles.settingsSection, "settings-card")}
+          hidden={activeTab !== "basic"}
+        >
+          <div>
+            <h3 id="settings-offline-reading-title">{t.offlineReading.settings.title}</h3>
+            <p>{t.offlineReading.settings.body}</p>
+          </div>
+          <label className={styles.settingsField} htmlFor="settings-offline-target">
+            <span>{t.offlineReading.settings.targetLabel}</span>
+            <div className={styles.settingsRangeRow}>
+              <input
+                aria-valuetext={t.offlineReading.settings.targetValue(offlineTarget)}
+                id="settings-offline-target"
+                max={1000}
+                min={50}
+                onChange={(event) => void saveOfflineTarget(Number(event.target.value))}
+                step={50}
+                type="range"
+                value={offlineTarget}
+              />
+              <output htmlFor="settings-offline-target">
+                {t.offlineReading.settings.targetValue(offlineTarget)}
+              </output>
+            </div>
+          </label>
+          <p className={styles.managementHint}>
+            {t.offlineReading.settings.actualValue(
+              props.offlineSummary?.recommendedCount ?? 0,
+              offlineTarget
+            )}
+          </p>
+          <p className={styles.managementHint}>
+            {t.offlineReading.settings.totalValue(props.offlineSummary?.availableCount ?? 0)}
+          </p>
+          {offlineTarget === 1000 ? (
+            <p className={styles.settingsNotice}>{t.offlineReading.settings.maxWarning}</p>
+          ) : null}
+          {props.offlineSummary?.usageBytes !== null && props.offlineSummary?.usageBytes !== undefined ? (
+            <p className={styles.managementHint}>
+              {t.offlineReading.settings.storageValue(formatOfflineBytes(props.offlineSummary.usageBytes))}
+            </p>
+          ) : null}
+          {props.offlineSummary?.bodyBytes !== null && props.offlineSummary?.bodyBytes !== undefined ? (
+            <p className={styles.managementHint}>
+              {t.offlineReading.settings.bodyStorageValue(formatOfflineBytes(props.offlineSummary.bodyBytes))}
+            </p>
+          ) : null}
+          {props.offlineSummary?.imageBytes !== null && props.offlineSummary?.imageBytes !== undefined ? (
+            <p className={styles.managementHint}>
+              {t.offlineReading.settings.imageStorageValue(formatOfflineBytes(props.offlineSummary.imageBytes))}
+            </p>
+          ) : null}
+          {props.offlineSummary?.persisted === false ? (
+            <p className={styles.settingsNotice}>{t.offlineReading.settings.persistentWarning}</p>
+          ) : null}
+          <div className={styles.managementActions}>
+            <button
+              className={styles.secondaryButton}
+              disabled={props.isOffline || !props.onRefreshOfflineCache || props.isOfflineCacheRefreshing}
+              onClick={() => void refreshOfflineCache()}
+              title={props.isOffline ? t.offlineReading.unavailable : undefined}
+              type="button"
+            >
+              {props.isOfflineCacheRefreshing
+                ? t.offlineReading.settings.refreshing
+                : t.offlineReading.settings.refresh}
+            </button>
+            <button
+              className={styles.dangerButton}
+              disabled={!props.onClearOfflineCache || (props.offlineSummary?.availableCount ?? 0) === 0}
+              onClick={() => void clearOfflineCache()}
+              type="button"
+            >
+              {t.offlineReading.settings.clear}
+            </button>
+          </div>
+          {offlineNotice ? <p className={styles.settingsNotice}>{offlineNotice}</p> : null}
+          {offlineError ? <p className={styles.errorText}>{offlineError}</p> : null}
+        </section>
+
         <section className={classNames(styles.settingsSection, "settings-card")} hidden={activeTab !== "basic"} aria-labelledby="settings-account-title">
           <div>
             <h3 id="settings-account-title">{t.settings.sections.account.title}</h3>
@@ -601,7 +737,7 @@ export function SettingsWorkspace(props: {
           </div>
           <button
             className={styles.secondaryButton}
-            disabled={isChangingPassword}
+            disabled={isChangingPassword || props.isOffline}
             onClick={() => void handleChangePassword()}
             type="button"
           >
@@ -1900,4 +2036,11 @@ function latestReleaseText(
     return t.settings.sections.about.latestUpdateAvailable(latestRelease.latestVersion);
   }
   return t.settings.sections.about.latestCurrent(latestRelease.latestVersion);
+}
+
+function formatOfflineBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

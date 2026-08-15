@@ -1374,10 +1374,74 @@ export const zhCN = {
     opmlExported: "OPML 已导出。"
   },
   pwa: {
-    offline: "当前离线。已缓存的应用壳仍可打开，但文章数据需要网络连接。",
+    offline: "当前离线，已缓存文章仍可继续阅读。",
     updateAvailable: "邸报有新版本可用。",
     updateNow: "刷新更新",
     dismiss: "稍后"
+  },
+  offlineReading: {
+    eyebrow: "离线阅读",
+    open: (status: string) => `查看离线阅读状态：${status}`,
+    close: "关闭离线阅读状态",
+    statuses: {
+      online: "在线",
+      offline: (count: number) => `离线 · ${count} 篇可用`,
+      reconnecting: (count: number) => `已联网 · 正在同步 ${count} 项操作`,
+      serverUnavailable: "服务器不可用 · 正在使用缓存",
+      empty: "离线 · 无可用缓存",
+      syncFailed: (count: number) => `${count} 项操作同步失败`
+    },
+    summaries: {
+      online: "在线内容可用，离线副本将在后台更新。",
+      offline: "当前列表和正文来自本设备的离线快照。",
+      reconnecting: "继续显示稳定的离线快照，完成同步后恢复在线内容。",
+      serverUnavailable: "网络可用，但服务器暂时无法响应，正在使用本地缓存。",
+      empty: "此设备尚无可离线文章。联网后会自动准备。",
+      syncFailed: "部分离线操作尚未同步，可继续阅读并稍后重试。"
+    },
+    metrics: {
+      available: "可离线文章",
+      recommended: "自动推荐",
+      readLater: "稍后读副本",
+      recent: "最近阅读",
+      pending: "待同步操作",
+      failed: "失败操作",
+      snapshot: "快照时间",
+      lastConnected: "最近成功连接",
+      storage: "浏览器存储估算",
+      bodyStorage: "正文与状态估算",
+      imageStorage: "离线图片估算",
+      persistent: "持久存储",
+      persistentYes: "已获准",
+      persistentNo: "可能被系统清理",
+      unknown: "未知"
+    },
+    cachedOnly: "离线时仅显示本设备已缓存的文章。",
+    unavailable: "联网后可用",
+    retry: "重试同步",
+    articleUnavailable: "这篇文章尚未缓存，需要联网后才能打开。",
+    backToCached: "返回缓存列表",
+    settings: {
+      title: "离线阅读",
+      body: "自动保存已排序的未读推荐，并为稍后读和最近阅读保留离线副本。此设置只保存在当前设备。",
+      targetLabel: "自动离线文章数量",
+      targetValue: (value: number) => `${value} 篇`,
+      actualValue: (actual: number, target: number) => `当前可离线 ${actual} / ${target} 篇`,
+      totalValue: (count: number) => `去重后共缓存 ${count} 篇正文`,
+      maxWarning: "1000 篇可能占用较多空间，实际数量取决于浏览器可用存储。",
+      storageValue: (value: string) => `浏览器当前总存储估算：${value}`,
+      bodyStorageValue: (value: string) => `离线正文与状态估算：${value}`,
+      imageStorageValue: (value: string) => `离线图片估算：${value}`,
+      refresh: "立即更新离线缓存",
+      refreshing: "正在更新",
+      clear: "清除离线缓存",
+      clearConfirm: "确定清除此设备的离线文章、图片和本地操作吗？服务器上的文章状态不会改变。",
+      clearPendingConfirm: (count: number) => `还有 ${count} 个待同步操作。清除会永久丢失这些操作，仍要继续吗？`,
+      cleared: "此设备的离线缓存已清除。",
+      saved: "离线文章目标已保存在当前设备。",
+      refreshFailed: "离线缓存更新失败，可稍后重试。",
+      persistentWarning: "浏览器未授予持久存储，离线内容可能在空间不足时被系统清理。"
+    }
   },
   errors: {
     api: {
@@ -2769,11 +2833,74 @@ export const enUS = {
     opmlExported: "OPML exported."
   },
   pwa: {
-    offline:
-      "You are offline. The cached app shell can still open, but article data requires a network connection.",
+    offline: "You are offline. Cached articles remain available to read.",
     updateAvailable: "A new Dibao version is available.",
     updateNow: "Refresh to update",
     dismiss: "Later"
+  },
+  offlineReading: {
+    eyebrow: "Offline reading",
+    open: (status: string) => `View offline reading status: ${status}`,
+    close: "Close offline reading status",
+    statuses: {
+      online: "Online",
+      offline: (count: number) => `Offline · ${count} available`,
+      reconnecting: (count: number) => `Online · Syncing ${count} actions`,
+      serverUnavailable: "Server unavailable · Using cache",
+      empty: "Offline · No cache available",
+      syncFailed: (count: number) => `${count} actions failed to sync`
+    },
+    summaries: {
+      online: "Online content is available. Offline copies update in the background.",
+      offline: "This list and its article bodies come from this device's offline snapshot.",
+      reconnecting: "The stable offline snapshot remains visible until synchronization completes.",
+      serverUnavailable: "The network is available, but the server is not responding. Local cache is in use.",
+      empty: "This device has no offline articles yet. Dibao will prepare them when online.",
+      syncFailed: "Some offline actions have not synchronized. Reading remains available."
+    },
+    metrics: {
+      available: "Offline articles",
+      recommended: "Auto recommendations",
+      readLater: "Read Later copies",
+      recent: "Recent reading",
+      pending: "Pending actions",
+      failed: "Failed actions",
+      snapshot: "Snapshot time",
+      lastConnected: "Last successful connection",
+      storage: "Browser storage estimate",
+      bodyStorage: "Article and state estimate",
+      imageStorage: "Offline image estimate",
+      persistent: "Persistent storage",
+      persistentYes: "Granted",
+      persistentNo: "May be cleared by the system",
+      unknown: "Unknown"
+    },
+    cachedOnly: "Offline mode shows only articles cached on this device.",
+    unavailable: "Available when online",
+    retry: "Retry sync",
+    articleUnavailable: "This article is not cached and needs a connection to open.",
+    backToCached: "Back to cached articles",
+    settings: {
+      title: "Offline reading",
+      body: "Automatically save sorted unread recommendations and keep offline copies of Read Later and recently read articles. This setting stays on this device.",
+      targetLabel: "Automatic offline article count",
+      targetValue: (value: number) => `${value} articles`,
+      actualValue: (actual: number, target: number) => `${actual} / ${target} currently available offline`,
+      totalValue: (count: number) => `${count} unique article bodies cached`,
+      maxWarning: "1,000 articles may use substantial space. The actual count depends on browser storage.",
+      storageValue: (value: string) => `Current total browser storage estimate: ${value}`,
+      bodyStorageValue: (value: string) => `Offline articles and states estimate: ${value}`,
+      imageStorageValue: (value: string) => `Offline images estimate: ${value}`,
+      refresh: "Update offline cache now",
+      refreshing: "Updating",
+      clear: "Clear offline cache",
+      clearConfirm: "Clear offline articles, images, and local actions from this device? Server article states will not change.",
+      clearPendingConfirm: (count: number) => `${count} actions are waiting to sync. Clearing permanently loses them. Continue?`,
+      cleared: "Offline cache cleared from this device.",
+      saved: "Offline article target saved on this device.",
+      refreshFailed: "Offline cache update failed. Try again later.",
+      persistentWarning: "Persistent storage was not granted. The system may clear offline content under storage pressure."
+    }
   },
   errors: {
     api: {
@@ -4154,11 +4281,74 @@ export const jaJP = {
     opmlExported: "OPML をエクスポートしました。"
   },
   pwa: {
-    offline:
-      "現在オフラインです。キャッシュされたアプリシェルは開けますが、記事データにはネットワーク接続が必要です。",
+    offline: "現在オフラインです。キャッシュ済みの記事は引き続き読めます。",
     updateAvailable: "邸報の新しいバージョンがあります。",
     updateNow: "更新する",
     dismiss: "あとで"
+  },
+  offlineReading: {
+    eyebrow: "オフライン閲覧",
+    open: (status: string) => `オフライン閲覧の状態を表示：${status}`,
+    close: "オフライン閲覧の状態を閉じる",
+    statuses: {
+      online: "オンライン",
+      offline: (count: number) => `オフライン · ${count} 件利用可能`,
+      reconnecting: (count: number) => `オンライン · ${count} 件の操作を同期中`,
+      serverUnavailable: "サーバー利用不可 · キャッシュを使用中",
+      empty: "オフライン · 利用可能なキャッシュなし",
+      syncFailed: (count: number) => `${count} 件の操作の同期に失敗`
+    },
+    summaries: {
+      online: "オンライン記事を利用できます。オフラインコピーはバックグラウンドで更新されます。",
+      offline: "現在の一覧と本文は、この端末のオフラインスナップショットから表示しています。",
+      reconnecting: "同期が完了するまで、安定したオフラインスナップショットを表示します。",
+      serverUnavailable: "ネットワークには接続されていますが、サーバーが応答しないためローカルキャッシュを使用しています。",
+      empty: "この端末にはオフライン記事がありません。オンライン時に自動で準備します。",
+      syncFailed: "一部のオフライン操作はまだ同期されていません。閲覧は続けられます。"
+    },
+    metrics: {
+      available: "オフライン記事",
+      recommended: "自動おすすめ",
+      readLater: "あとで読むのコピー",
+      recent: "最近読んだ記事",
+      pending: "同期待ち操作",
+      failed: "失敗した操作",
+      snapshot: "スナップショット時刻",
+      lastConnected: "最終接続成功",
+      storage: "ブラウザ保存容量の推定",
+      bodyStorage: "本文と状態の推定",
+      imageStorage: "オフライン画像の推定",
+      persistent: "永続ストレージ",
+      persistentYes: "許可済み",
+      persistentNo: "システムに削除される可能性あり",
+      unknown: "不明"
+    },
+    cachedOnly: "オフライン中は、この端末にキャッシュ済みの記事のみ表示します。",
+    unavailable: "オンライン時に利用可能",
+    retry: "同期を再試行",
+    articleUnavailable: "この記事はキャッシュされていないため、開くには接続が必要です。",
+    backToCached: "キャッシュ済み一覧に戻る",
+    settings: {
+      title: "オフライン閲覧",
+      body: "並び替え済みの未読おすすめを自動保存し、あとで読む記事と最近読んだ記事のオフラインコピーを保持します。この設定は現在の端末だけに保存されます。",
+      targetLabel: "自動オフライン記事数",
+      targetValue: (value: number) => `${value} 件`,
+      actualValue: (actual: number, target: number) => `現在 ${actual} / ${target} 件をオフラインで利用可能`,
+      totalValue: (count: number) => `重複を除き ${count} 件の本文をキャッシュ済み`,
+      maxWarning: "1,000 件は多くの容量を使用する可能性があります。実際の件数はブラウザの空き容量によります。",
+      storageValue: (value: string) => `ブラウザ全体の現在の使用量推定：${value}`,
+      bodyStorageValue: (value: string) => `オフライン本文と状態の推定：${value}`,
+      imageStorageValue: (value: string) => `オフライン画像の推定：${value}`,
+      refresh: "オフラインキャッシュを今すぐ更新",
+      refreshing: "更新中",
+      clear: "オフラインキャッシュを消去",
+      clearConfirm: "この端末のオフライン記事、画像、ローカル操作を消去しますか？サーバー上の記事状態は変更されません。",
+      clearPendingConfirm: (count: number) => `${count} 件の操作が同期待ちです。消去すると永久に失われます。続行しますか？`,
+      cleared: "この端末のオフラインキャッシュを消去しました。",
+      saved: "オフライン記事の目標数をこの端末に保存しました。",
+      refreshFailed: "オフラインキャッシュの更新に失敗しました。あとでもう一度お試しください。",
+      persistentWarning: "永続ストレージが許可されていません。容量不足時にシステムがオフライン内容を削除する可能性があります。"
+    }
   },
   errors: {
     api: {

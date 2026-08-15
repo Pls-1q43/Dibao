@@ -4,6 +4,7 @@ import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchSt
 import { useI18n, type Dictionary, type NavigationItemKey } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { articleInteractionStatusForState } from "../articleListState.js";
+import type { OfflineCacheSummary } from "../offline/offlineReading.js";
 import { articleSortForView, canLoadRankExplanation, classNames, clusterDisplayName, confidenceBucket, countFeedsByFolder, explanationReasonText, formatCompactNumber, formatPercent, isRelatedSearchForm, pageForNavigationItem, plainTextSummary, readerStyleFor, recommendationStatusMetrics, safeArticleUrl, sanitizeArticleHtml, shouldLetBrowserHandleLinkClick, shouldLoadRankExplanation, sortExplanationForView, supportsQuickFilters, supportsUnreadOnly, urlForAppPage, urlForArticle, urlForSearchPage, clampNumber, type ArticleActionIntent, type ArticleActionTarget, type AppPage, type FeedDiagnosticsByFeedId, type PendingArticleAction, type ReadProgressMetadata, type ReadProgressPostOptions, type SearchFormState, type SourceSelection } from "../app/shared.js";
 
 const ARTICLE_ROW_ESTIMATED_HEIGHT = 164;
@@ -21,6 +22,14 @@ export type ReaderDiscoveryPanelState = {
   status: "idle" | "loading" | "ready" | "unavailable" | "error";
   items: ArticleListItem[];
   reason?: ReaderDiscoveryUnavailableReason;
+};
+
+export type OfflineReaderStatus = {
+  mode: "offline" | "reconnecting" | "server-unavailable" | "empty" | "sync-failed";
+  summary: OfflineCacheSummary;
+  lastConnectedAt: number | null;
+  error?: string | null;
+  onRetry?: () => void;
 };
 
 const idleReaderDiscoveryState: ReaderDiscoveryPanelState = {
@@ -44,6 +53,7 @@ export function FeedPanel(props: {
   feeds: Feed[];
   isOpen: boolean;
   isFeedsLoading: boolean;
+  refreshDisabled?: boolean;
   onRefreshFeed: (feed: Feed) => void;
   onCloseSources: () => void;
   onSelectSource: (source: SourceSelection) => void;
@@ -138,9 +148,13 @@ export function FeedPanel(props: {
               </button>
               <button
                 className={styles.iconButton}
-                disabled={props.refreshingFeedId === feed.id}
+                disabled={props.refreshDisabled || props.refreshingFeedId === feed.id}
                 onClick={() => props.onRefreshFeed(feed)}
-                title={t.feeds.refreshTitle(feed.title)}
+                title={
+                  props.refreshDisabled
+                    ? t.offlineReading.unavailable
+                    : t.feeds.refreshTitle(feed.title)
+                }
                 type="button"
               >
                 {props.refreshingFeedId === feed.id ? t.feeds.refreshing : t.feeds.refresh}
@@ -193,7 +207,9 @@ export function ArticleListPanel(props: {
   recommendationStatusError: string | null;
   recommendationInventory?: RecommendationInventory | null;
   recommendationInventoryError?: string | null;
+  offlineStatus?: OfflineReaderStatus | null;
   readerCommandError: string | null;
+  readerCommandsDisabled?: boolean;
   selectedArticleId: string | null;
   selectedFeed: Feed | null;
   selectedFolder: FeedFolder | null;
@@ -373,7 +389,9 @@ export function ArticleListPanel(props: {
           <p className={styles.kicker}>{sourceTitle}</p>
           <div className={styles.articleTitleLine}>
             <h2 id="articles-title">{t.articles.views[props.articleView]}</h2>
-            {props.showRecommendationStatus ? (
+            {props.offlineStatus ? (
+              <OfflineReadingStatusControl status={props.offlineStatus} />
+            ) : props.showRecommendationStatus ? (
               <RecommendationInventoryControl
                 error={props.recommendationInventoryError ?? null}
                 inventory={props.recommendationInventory ?? null}
@@ -454,6 +472,7 @@ export function ArticleListPanel(props: {
               />
               <UnreadDebtControl
                 clearWindow={props.timeWindow}
+                clearDisabled={props.readerCommandsDisabled}
                 isClearing={props.isMarkingScopeRead}
                 onConfirmClear={props.onMarkScopeRead}
                 onPreviewClear={props.onPreviewMarkScopeRead}
@@ -476,6 +495,9 @@ export function ArticleListPanel(props: {
       ) : null}
       {props.readerCommandError ? (
         <p className={styles.errorText}>{props.readerCommandError}</p>
+      ) : null}
+      {props.offlineStatus && props.articleView !== "recommended" ? (
+        <p className={styles.settingsNotice}>{t.offlineReading.cachedOnly}</p>
       ) : null}
 
       <div className={styles.list} aria-live="polite">
@@ -511,6 +533,7 @@ export function ArticleListPanel(props: {
                 <ArticleListRow
                   article={article}
                   articleView={props.articleView}
+                  canExplain={!props.offlineStatus}
                   favoriteSort={props.favoriteSort}
                   formatArticleDate={formatArticleDate}
                   key={article.id}
@@ -544,6 +567,7 @@ export function ArticleListPanel(props: {
               <ArticleListRow
                 article={article}
                 articleView={props.articleView}
+                canExplain={!props.offlineStatus}
                 favoriteSort={props.favoriteSort}
                 formatArticleDate={formatArticleDate}
                 key={article.id}
@@ -606,6 +630,7 @@ export function ArticleListPanel(props: {
 function ArticleListRow(props: {
   article: ArticleListItem;
   articleView: ArticleView;
+  canExplain: boolean;
   favoriteSort: FavoriteArticleSort;
   formatArticleDate: (value: string | Date) => string;
   onArticleAction?: (article: ArticleListItem, intent: ArticleActionIntent) => void;
@@ -690,7 +715,7 @@ function ArticleListRow(props: {
       </a>
       <ArticleRowActions
         article={article}
-        canExplain={shouldLoadRankExplanation(props.articleView)}
+        canExplain={props.canExplain && shouldLoadRankExplanation(props.articleView)}
         onAction={(intent) => props.onArticleAction?.(article, intent)}
         onExplain={() => props.onExplainArticle(article.id)}
         onPluginAction={(action) =>
@@ -707,6 +732,7 @@ function ArticleListRow(props: {
 
 function UnreadDebtControl(props: {
   clearWindow: ArticleTimeWindow;
+  clearDisabled?: boolean;
   unreadCount: number;
   unreadOnly: boolean;
   isClearing: boolean;
@@ -750,9 +776,13 @@ function UnreadDebtControl(props: {
       </button>
       <button
         className={styles.unreadDebtClear}
-        disabled={!canOpenClear || props.isClearing}
+        disabled={props.clearDisabled || !canOpenClear || props.isClearing}
         onClick={openConfirm}
-        title={t.readerCommands.markScopeRead.clearTitleForWindow(props.clearWindow)}
+        title={
+          props.clearDisabled
+            ? t.offlineReading.unavailable
+            : t.readerCommands.markScopeRead.clearTitleForWindow(props.clearWindow)
+        }
         type="button"
       >
         <span className={styles.unreadDebtClearLabel}>
@@ -1516,6 +1546,169 @@ function RecommendationInventoryControl(props: {
   );
 }
 
+function OfflineReadingStatusControl(props: { status: OfflineReaderStatus }) {
+  const { t, formatDate } = useI18n();
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const popoverId = useId();
+  const { summary } = props.status;
+  const statusText = offlineStatusText(props.status, t);
+  const statusSummary = t.offlineReading.summaries[offlineSummaryKey(props.status.mode)];
+  const statusClass = offlineStatusClass(props.status.mode);
+  const rows = [
+    [t.offlineReading.metrics.available, formatCompactNumber(summary.availableCount)],
+    [t.offlineReading.metrics.recommended, `${summary.recommendedCount} / ${summary.targetCount}`],
+    [t.offlineReading.metrics.readLater, formatCompactNumber(summary.readLaterCount)],
+    [t.offlineReading.metrics.recent, formatCompactNumber(summary.recentCount)],
+    [t.offlineReading.metrics.pending, formatCompactNumber(summary.pendingActionCount)],
+    [t.offlineReading.metrics.failed, formatCompactNumber(summary.failedActionCount)],
+    [
+      t.offlineReading.metrics.snapshot,
+      summary.generatedAt ? formatDate(new Date(summary.generatedAt)) : t.offlineReading.metrics.unknown
+    ],
+    [
+      t.offlineReading.metrics.lastConnected,
+      props.status.lastConnectedAt
+        ? formatDate(new Date(props.status.lastConnectedAt))
+        : t.offlineReading.metrics.unknown
+    ],
+    [t.offlineReading.metrics.storage, formatStorageBytes(summary.usageBytes, t)],
+    [t.offlineReading.metrics.bodyStorage, formatStorageBytes(summary.bodyBytes, t)],
+    [t.offlineReading.metrics.imageStorage, formatStorageBytes(summary.imageBytes, t)],
+    [
+      t.offlineReading.metrics.persistent,
+      summary.persisted === null
+        ? t.offlineReading.metrics.unknown
+        : summary.persisted
+          ? t.offlineReading.metrics.persistentYes
+          : t.offlineReading.metrics.persistentNo
+    ]
+  ];
+
+  useEffect(() => {
+    if (!isOpen || typeof document === "undefined") return;
+    const closeForPointer = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !rootRef.current?.contains(event.target)) setIsOpen(false);
+    };
+    const closeForKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeForPointer);
+    document.addEventListener("keydown", closeForKey);
+    return () => {
+      document.removeEventListener("pointerdown", closeForPointer);
+      document.removeEventListener("keydown", closeForKey);
+    };
+  }, [isOpen]);
+
+  return (
+    <div className={styles.recommendationInventoryControl} ref={rootRef}>
+      <button
+        aria-controls={isOpen ? popoverId : undefined}
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        aria-label={t.offlineReading.open(statusText)}
+        className={classNames(styles.recommendationInventoryButton, statusClass)}
+        onClick={() => setIsOpen((open) => !open)}
+        title={statusSummary}
+        type="button"
+      >
+        <span className={styles.recommendationInventoryDot} aria-hidden="true" />
+        <span>{statusText}</span>
+      </button>
+      {isOpen ? (
+        <>
+          <button
+            aria-label={t.offlineReading.close}
+            className={styles.recommendationInventoryOverlay}
+            onClick={() => setIsOpen(false)}
+            type="button"
+          />
+          <section
+            aria-labelledby={`${popoverId}-title`}
+            className={styles.recommendationInventoryPopover}
+            id={popoverId}
+            role="dialog"
+          >
+            <div className={styles.recommendationInventoryHeader}>
+              <div>
+                <span className={styles.recommendationInventoryEyebrow}>{t.offlineReading.eyebrow}</span>
+                <h3 id={`${popoverId}-title`}>{statusText}</h3>
+              </div>
+              <button
+                aria-label={t.offlineReading.close}
+                className={styles.iconButton}
+                onClick={() => setIsOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <p className={styles.recommendationInventorySummary}>{statusSummary}</p>
+            {props.status.error ? (
+              <p className={styles.recommendationInventoryWarning}>{props.status.error}</p>
+            ) : null}
+            {props.status.onRetry && (
+              props.status.mode === "sync-failed" ||
+              props.status.mode === "server-unavailable"
+            ) ? (
+              <button
+                className={styles.secondaryButton}
+                disabled={typeof navigator !== "undefined" && navigator.onLine === false}
+                onClick={props.status.onRetry}
+                type="button"
+              >
+                {t.offlineReading.retry}
+              </button>
+            ) : null}
+            <dl className={styles.recommendationInventoryMetrics}>
+              {rows.map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function offlineStatusText(status: OfflineReaderStatus, t: Dictionary): string {
+  switch (status.mode) {
+    case "offline": return t.offlineReading.statuses.offline(status.summary.availableCount);
+    case "reconnecting": return t.offlineReading.statuses.reconnecting(status.summary.pendingActionCount);
+    case "server-unavailable": return t.offlineReading.statuses.serverUnavailable;
+    case "sync-failed": return t.offlineReading.statuses.syncFailed(
+      Math.max(status.summary.failedActionCount, status.summary.pendingActionCount)
+    );
+    case "empty": return t.offlineReading.statuses.empty;
+  }
+}
+
+function offlineSummaryKey(mode: OfflineReaderStatus["mode"]): keyof Dictionary["offlineReading"]["summaries"] {
+  if (mode === "server-unavailable") return "serverUnavailable";
+  if (mode === "sync-failed") return "syncFailed";
+  return mode;
+}
+
+function offlineStatusClass(mode: OfflineReaderStatus["mode"]): string {
+  if (mode === "empty" || mode === "sync-failed") return styles.recommendationInventoryEmpty;
+  if (mode === "reconnecting") return styles.recommendationInventoryLoading;
+  if (mode === "server-unavailable") return styles.recommendationInventoryUnavailable;
+  return styles.recommendationInventoryRanking;
+}
+
+function formatStorageBytes(value: number | null, t: Dictionary): string {
+  if (value === null) return t.offlineReading.metrics.unknown;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function recommendationInventoryStatusClass(status: RecommendationInventoryDisplayStatus): string {
   switch (status) {
     case "available":
@@ -2094,6 +2287,7 @@ export function ArticleDetailPanel(props: {
   isExplanationOpen: boolean;
   isDetailLoading: boolean;
   isExplanationLoading: boolean;
+  isOffline?: boolean;
   onArticleAction: (article: ArticleDetail, intent: ArticleActionIntent) => void;
   onPluginAction?: (action: PluginActionButton, context: PluginActionContext) => void;
   onBackToList: () => void;
@@ -2122,7 +2316,7 @@ export function ArticleDetailPanel(props: {
   const [safeHtml, setSafeHtml] = useState<string | null>(null);
   const sourceNotice = props.article ? contentSourceNotice(props.article, t) : null;
   const showReaderActions = useReaderActionVisibility(readerPanelRef, props.article?.id ?? null);
-  const canExplainDetail = shouldLoadRankExplanation(props.articleView);
+  const canExplainDetail = !props.isOffline && shouldLoadRankExplanation(props.articleView);
   const originalArticleUrl = safeOriginalArticleUrl(props.article?.url ?? null);
 
   useReaderReadProgress({
@@ -2182,7 +2376,7 @@ export function ArticleDetailPanel(props: {
             >
               {t.reader.reload}
             </button>
-            {originalArticleUrl ? (
+            {originalArticleUrl && !props.isOffline ? (
               <a
                 className={styles.secondaryButton}
                 href={originalArticleUrl}
@@ -2191,6 +2385,15 @@ export function ArticleDetailPanel(props: {
               >
                 {t.reader.originalLink}
               </a>
+            ) : props.isOffline ? (
+              <button
+                className={styles.secondaryButton}
+                disabled
+                title={t.offlineReading.unavailable}
+                type="button"
+              >
+                {t.reader.originalLink}
+              </button>
             ) : null}
           </div>
         </div>
@@ -2207,7 +2410,7 @@ export function ArticleDetailPanel(props: {
               <button className={styles.secondaryButton} onClick={props.onBackToList} type="button">
                 {t.reader.backToList}
               </button>
-              {originalArticleUrl ? (
+              {originalArticleUrl && !props.isOffline ? (
                 <a
                   className={styles.secondaryButton}
                   href={originalArticleUrl}
@@ -2216,6 +2419,15 @@ export function ArticleDetailPanel(props: {
                 >
                   {t.reader.originalLink}
                 </a>
+              ) : props.isOffline ? (
+                <button
+                  className={styles.secondaryButton}
+                  disabled
+                  title={t.offlineReading.unavailable}
+                  type="button"
+                >
+                  {t.reader.originalLink}
+                </button>
               ) : null}
             </div>
             <h2 id="reader-title">{props.article.title}</h2>
@@ -2265,6 +2477,7 @@ export function ArticleDetailPanel(props: {
             pluginActions={props.pluginBottomActions ?? []}
           />
           <ReaderDiscoverySections
+            isOffline={props.isOffline}
             onLoadRelatedArticles={props.onLoadRelatedArticles}
             onOpenRelatedSearch={props.onOpenRelatedSearch}
             onRetryPersonalizedRelated={props.onRetryPersonalizedRelated}
@@ -2272,15 +2485,17 @@ export function ArticleDetailPanel(props: {
             personalized={props.personalizedDiscovery ?? idleReaderDiscoveryState}
             related={props.relatedDiscovery ?? idleReaderDiscoveryState}
           />
-          <ArticleExplanationEntry
-            articleView={props.articleView}
-            error={props.explanationError}
-            explanation={props.explanation}
-            isOpen={props.isExplanationOpen}
-            isLoading={props.isExplanationLoading}
-            onClose={props.onCloseExplanation}
-            onOpen={props.onOpenExplanation}
-          />
+          {!props.isOffline ? (
+            <ArticleExplanationEntry
+              articleView={props.articleView}
+              error={props.explanationError}
+              explanation={props.explanation}
+              isOpen={props.isExplanationOpen}
+              isLoading={props.isExplanationLoading}
+              onClose={props.onCloseExplanation}
+              onOpen={props.onOpenExplanation}
+            />
+          ) : null}
         </article>
       ) : null}
     </section>
@@ -2294,6 +2509,7 @@ function ReaderDiscoverySections(props: {
   onOpenRelatedSearch?: () => void;
   onRetryPersonalizedRelated?: () => void;
   onSelectArticle?: (articleId: string) => void;
+  isOffline?: boolean;
 }) {
   return (
     <section className={styles.readerDiscovery} aria-label="Reader discovery">
@@ -2303,6 +2519,7 @@ function ReaderDiscoverySections(props: {
         state={props.personalized}
       />
       <RelatedDiscoverySection
+        isOffline={props.isOffline}
         onLoad={props.onLoadRelatedArticles}
         onOpenRelatedSearch={props.onOpenRelatedSearch}
         onSelectArticle={props.onSelectArticle}
@@ -2362,6 +2579,7 @@ function RelatedDiscoverySection(props: {
   onLoad?: () => void;
   onOpenRelatedSearch?: () => void;
   onSelectArticle?: (articleId: string) => void;
+  isOffline?: boolean;
 }) {
   const { t } = useI18n();
   const { discovery } = t.reader;
@@ -2379,7 +2597,17 @@ function RelatedDiscoverySection(props: {
             <p>{discovery.relatedIntro}</p>
           ) : null}
         </div>
-        {props.state.status === "ready" && props.state.items.length > 0 ? (
+        {props.isOffline ? (
+          <button
+            className={styles.secondaryButton}
+            disabled
+            title={t.offlineReading.unavailable}
+            type="button"
+          >
+            <ActionIcon name="search" />
+            <span>{t.offlineReading.unavailable}</span>
+          </button>
+        ) : props.state.status === "ready" && props.state.items.length > 0 ? (
           <button
             className={styles.readerDiscoveryMoreButton}
             onClick={props.onOpenRelatedSearch}

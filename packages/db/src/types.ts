@@ -592,6 +592,7 @@ export type RecordArticleActionInput = {
 export type RecordArticleActionResult = {
   state: ArticleStateSnapshot;
   eventId: string;
+  deduplicated?: boolean;
 };
 
 export type ArticleRankSnapshot = {
@@ -986,6 +987,15 @@ export type ArticleDetailRow = ArticleListItemRow & {
   contentText: string | null;
   extractionStatus: "pending" | "feed_only" | "success" | "failed" | "skipped";
   extractionError: string | null;
+};
+
+export type OfflineArticleMetadataRow = {
+  articleId: string;
+  contentRevision: string;
+  hasReadableContent: boolean;
+  favoritedAt: number | null;
+  readLaterAt: number | null;
+  openedAt: number | null;
 };
 
 export type ArticleListResult = {

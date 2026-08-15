@@ -1,6 +1,9 @@
-const CACHE_VERSION = "dibao-pwa-v4";
+const CACHE_VERSION = "dibao-pwa-v5";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
+const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
+const ARTICLE_IMAGE_TRIM_COUNT = 24;
+const imageScopesByClientId = new Map();
 
 const PUBLIC_ICON_URLS = [
   "/logo.svg",
@@ -37,7 +40,11 @@ self.addEventListener("activate", (event) => {
       .then((cacheNames) =>
         Promise.all(
           cacheNames
-            .filter((cacheName) => !cacheName.startsWith(CACHE_VERSION))
+            .filter(
+              (cacheName) =>
+                !cacheName.startsWith(CACHE_VERSION) &&
+                !cacheName.startsWith(ARTICLE_IMAGE_CACHE_PREFIX)
+            )
             .map((cacheName) => caches.delete(cacheName))
         )
       )
@@ -46,8 +53,36 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") {
+  const message = event.data;
+  if (message && message.type === "SKIP_WAITING") {
     event.waitUntil(self.skipWaiting());
+    return;
+  }
+  if (message && message.type === "SET_OFFLINE_SCOPE") {
+    const clientId = event.source?.id;
+    if (clientId) {
+      if (validScopeKey(message.scopeKey)) {
+        imageScopesByClientId.set(clientId, message.scopeKey);
+      } else {
+        imageScopesByClientId.delete(clientId);
+      }
+    }
+    return;
+  }
+  if (message && message.type === "CACHE_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
+    event.waitUntil(cacheArticleImages(message.scopeKey, validHttpUrls(message.urls)));
+    return;
+  }
+  if (message && message.type === "PRUNE_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
+    event.waitUntil(pruneArticleImages(message.scopeKey, validHttpUrls(message.urls)));
+    return;
+  }
+  if (message && message.type === "CLEAR_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
+    event.waitUntil(
+      caches.delete(articleImageCacheName(message.scopeKey)).finally(() => {
+        event.ports[0]?.postMessage({ ok: true });
+      })
+    );
   }
 });
 
@@ -59,6 +94,11 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(request.url);
+  const imageScope = imageScopesByClientId.get(event.clientId);
+  if (request.destination === "image" && imageScope) {
+    event.respondWith(articleImageCacheFirst(request, imageScope));
+    return;
+  }
   if (requestUrl.origin !== self.location.origin) {
     return;
   }
@@ -96,6 +136,83 @@ async function precacheAppShell() {
       }
     })
   );
+}
+
+async function cacheArticleImages(scopeKey, urls) {
+  if (urls.length === 0) return;
+  const cache = await caches.open(articleImageCacheName(scopeKey));
+  for (const url of urls) {
+    const request = new Request(url, { mode: "no-cors", credentials: "omit" });
+    try {
+      const response = await fetch(request);
+      if (isCacheableImageResponse(response)) {
+        await putArticleImageWithTrim(cache, request, response);
+      }
+    } catch {
+      // Article images are best effort and never block the text snapshot.
+    }
+  }
+}
+
+async function pruneArticleImages(scopeKey, urls) {
+  const cache = await caches.open(articleImageCacheName(scopeKey));
+  const retained = new Set(urls);
+  const keys = await cache.keys();
+  await Promise.all(keys.filter((request) => !retained.has(request.url)).map((request) => cache.delete(request)));
+}
+
+async function articleImageCacheFirst(request, scopeKey) {
+  const cache = await caches.open(articleImageCacheName(scopeKey));
+  const cached = await cache.match(request, { ignoreVary: true });
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    if (isCacheableImageResponse(response)) {
+      await putArticleImageWithTrim(cache, request, response.clone());
+    }
+    return response;
+  } catch {
+    return new Response(null, { status: 204, statusText: "Offline image unavailable" });
+  }
+}
+
+async function putArticleImageWithTrim(cache, request, response) {
+  try {
+    await cache.put(request, response);
+  } catch {
+    const keys = await cache.keys();
+    await Promise.all(keys.slice(0, ARTICLE_IMAGE_TRIM_COUNT).map((key) => cache.delete(key)));
+    try {
+      await cache.put(request, response);
+    } catch {
+      // Storage pressure may still reject the image; structured article data has priority.
+    }
+  }
+}
+
+function articleImageCacheName(scopeKey) {
+  return `${ARTICLE_IMAGE_CACHE_PREFIX}${encodeURIComponent(scopeKey)}`;
+}
+
+function isCacheableImageResponse(response) {
+  return response.ok || response.type === "opaque";
+}
+
+function validScopeKey(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 1024;
+}
+
+function validHttpUrls(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.flatMap((item) => {
+    if (typeof item !== "string") return [];
+    try {
+      const url = new URL(item);
+      return url.protocol === "http:" || url.protocol === "https:" ? [url.href] : [];
+    } catch {
+      return [];
+    }
+  })));
 }
 
 async function networkFirstNavigation(request) {

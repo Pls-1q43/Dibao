@@ -2,6 +2,7 @@ import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent, RefObject } fro
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dibaoVersion } from "@dibao/shared";
 import {
+  ApiRequestError,
   defaultAppSettings,
   dibaoApi,
   userMessageForError,
@@ -81,7 +82,28 @@ import {
   storeTelemetryPreference
 } from "./telemetry.js";
 import { PwaStatusBanner, SetupWelcomePanel, AuthGatePanel, DerivedDataUpgradePanel, SetupSourcesPanel, SetupOptionalPluginsPanel } from "./setup/SetupPanels.js";
-import { FeedPanel, ArticleListPanel, SearchResultsPanel, ArticleDetailPanel, ArticleExplanationDialog, NavigationIcon, ActionIcon, type PluginActionButton, type PluginActionContext, type ReaderDiscoveryPanelState } from "./reader/ReaderPanels.js";
+import { FeedPanel, ArticleListPanel, SearchResultsPanel, ArticleDetailPanel, ArticleExplanationDialog, NavigationIcon, ActionIcon, type OfflineReaderStatus, type PluginActionButton, type PluginActionContext, type ReaderDiscoveryPanelState } from "./reader/ReaderPanels.js";
+import {
+  activateOfflineImageScope,
+  cacheOnlineArticleDetail,
+  clearOfflineCache,
+  clearOfflineScope,
+  getOfflineArticleDetail,
+  getOfflineCacheSummary,
+  isOfflineFallbackError,
+  listOfflineArticles,
+  offlineScopeKey,
+  queueOfflineArticleAction,
+  readOfflineBootstrap,
+  refreshOfflineSnapshot,
+  rememberOfflineSession,
+  retryFailedOfflineActions,
+  setOfflineRecommendedTarget,
+  syncOfflineArticleActions,
+  updateOfflineProfile,
+  type OfflineCacheSummary,
+  type OfflineProfileRecord
+} from "./offline/offlineReading.js";
 import {
   actionErrorMessageFor,
   appendUniqueArticles,
@@ -189,6 +211,26 @@ type PersonalizedRelatedRequestContext = {
   response?: ReaderDiscoveryResponse;
   failed?: boolean;
 };
+
+type OfflineConnectionMode = OfflineReaderStatus["mode"] | "online";
+
+function emptyOfflineCacheSummary(targetCount = 200): OfflineCacheSummary {
+  return {
+    targetCount,
+    availableCount: 0,
+    recommendedCount: 0,
+    readLaterCount: 0,
+    recentCount: 0,
+    pendingActionCount: 0,
+    failedActionCount: 0,
+    generatedAt: null,
+    usageBytes: null,
+    bodyBytes: null,
+    imageBytes: null,
+    quotaBytes: null,
+    persisted: null
+  };
+}
 
 const idleDiscoveryState: ReaderDiscoveryPanelState = {
   status: "idle",
@@ -422,6 +464,18 @@ export function App() {
   const [isOffline, setIsOffline] = useState(
     () => typeof navigator !== "undefined" && navigator.onLine === false
   );
+  const [offlineScope, setOfflineScope] = useState<string | null>(null);
+  const [offlineProfile, setOfflineProfile] = useState<OfflineProfileRecord | null>(null);
+  const [offlineSummary, setOfflineSummary] = useState<OfflineCacheSummary>(() =>
+    emptyOfflineCacheSummary()
+  );
+  const [isUsingOfflineData, setIsUsingOfflineData] = useState(false);
+  const [offlineConnectionMode, setOfflineConnectionMode] =
+    useState<OfflineConnectionMode>("online");
+  const [isOfflineCacheRefreshing, setIsOfflineCacheRefreshing] = useState(false);
+  const [offlineCacheError, setOfflineCacheError] = useState<string | null>(null);
+  const [lastConnectedAt, setLastConnectedAt] = useState<number | null>(null);
+  const [reconnectRetryToken, setReconnectRetryToken] = useState(0);
   const [pwaUpdateApply, setPwaUpdateApply] = useState<(() => void) | null>(null);
   const openedArticleIds = useRef(new Set<string>());
   const ignoredArticleIds = useRef(new Set<string>());
@@ -440,6 +494,11 @@ export function App() {
   const relatedDiscoveryAbort = useRef<AbortController | null>(null);
   const personalizedDiscoveryRequestId = useRef(0);
   const personalizedDiscoveryRequest = useRef<PersonalizedRelatedRequestContext | null>(null);
+  const reconnectInFlight = useRef(false);
+  const reconnectAttempt = useRef(0);
+  const deferredOnlineActivation = useRef(false);
+  const hasScheduledOfflineRefresh = useRef<string | null>(null);
+  const offlineTargetRefreshTimer = useRef<number | null>(null);
   const hasLoadedSettingsForSession = useRef(false);
   const hasAppliedDefaultHomeViewForSession = useRef(false);
   const appPageRef = useRef<AppPage>(appPage);
@@ -644,6 +703,7 @@ export function App() {
   }
 
   function handleSearchSubmit(nextForm: SearchFormState) {
+    if (isUsingOfflineData) return;
     const isRelated = isRelatedSearchForm(nextForm);
     const normalizedForm = {
       ...nextForm,
@@ -732,6 +792,18 @@ export function App() {
     setNextArticleCursor(null);
     setPendingArticleAction(null);
     setNotice(null);
+    setOfflineScope(null);
+    setOfflineProfile(null);
+    setOfflineSummary(emptyOfflineCacheSummary());
+    setIsUsingOfflineData(false);
+    setOfflineConnectionMode("online");
+    setIsOfflineCacheRefreshing(false);
+    setOfflineCacheError(null);
+    setLastConnectedAt(null);
+    setReconnectRetryToken(0);
+    reconnectAttempt.current = 0;
+    deferredOnlineActivation.current = false;
+    activateOfflineImageScope(null);
     hasLoadedSettingsForSession.current = false;
     hasAppliedDefaultHomeViewForSession.current = hasExplicitUrlPageIntent.current;
     openedArticleIds.current.clear();
@@ -742,8 +814,61 @@ export function App() {
       window.clearTimeout(ignoredArticleFlushTimer.current);
       ignoredArticleFlushTimer.current = null;
     }
+    if (offlineTargetRefreshTimer.current !== null) {
+      window.clearTimeout(offlineTargetRefreshTimer.current);
+      offlineTargetRefreshTimer.current = null;
+    }
     articleRequestVersion.current += 1;
   }, [setLocale]);
+
+  const applySettings = useCallback(
+    (settings: AppSettings) => {
+      setAppSettings(settings);
+      setLocale(settings.ui.locale);
+      setTelemetryEnabled(settings.telemetry.enabled);
+      configureClientTelemetry(settings.telemetry.enabled);
+    },
+    [setLocale]
+  );
+
+  const applyOfflineBootstrap = useCallback(async (
+    bootstrap: Awaited<ReturnType<typeof readOfflineBootstrap>>,
+    mode: "offline" | "server-unavailable",
+    options: { coldStart?: boolean } = {}
+  ): Promise<boolean> => {
+    if (!bootstrap) return false;
+    const { profile, snapshot } = bootstrap;
+    setOfflineScope(profile.scopeKey);
+    setOfflineProfile(profile);
+    setAuthUsername(profile.username);
+    setFeeds(profile.feeds);
+    setFeedFolders(profile.folders);
+    setIsFeedsLoading(false);
+    setFeedError(null);
+    applySettings(profile.settings ?? defaultAppSettings);
+    setIsSettingsLoading(false);
+    setLastConnectedAt(profile.lastConnectedAt ?? null);
+    reconnectAttempt.current = 0;
+    setIsUsingOfflineData(true);
+    setOfflineConnectionMode(snapshot ? mode : "empty");
+    setOfflineSummary(await getOfflineCacheSummary(profile.scopeKey));
+    setAppStage({ type: "reader" });
+    const shouldOpenRecommended = options.coldStart ||
+      !["reader", "settings"].includes(appPageRef.current.type);
+    if (shouldOpenRecommended) {
+      setAppPage({ type: "reader", view: "recommended" });
+      setHasSubmittedSearch(false);
+      setSearchForm(defaultSearchForm());
+      setSubmittedSearchForm(defaultSearchForm());
+      clearSelectedArticle();
+      window.history.replaceState(
+        { dibaoPage: "recommended" },
+        "",
+        urlForAppPage({ type: "reader", view: "recommended" })
+      );
+    }
+    return true;
+  }, [applySettings]);
 
   const handleRetryAuthGate = useCallback(() => {
     setAuthError(null);
@@ -764,6 +889,22 @@ export function App() {
           if (!cancelled) {
             const nextStage = stageForAuthSession(session);
             setAuthUsername(session.authenticated ? session.username : null);
+            if (session.authenticated && session.username) {
+              try {
+                const profile = await rememberOfflineSession(session.username);
+                if (cancelled) return;
+                setOfflineScope(profile.scopeKey);
+                setOfflineProfile(profile);
+                setOfflineSummary(await getOfflineCacheSummary(profile.scopeKey));
+                setIsUsingOfflineData(false);
+                setOfflineConnectionMode("online");
+                const connectedAt = Date.now();
+                setLastConnectedAt(connectedAt);
+                void updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
+              } catch {
+                // IndexedDB availability must not block normal online startup.
+              }
+            }
             if (nextStage.type === "welcome" || nextStage.type === "login") {
               resetReaderState();
             }
@@ -771,6 +912,20 @@ export function App() {
           }
           return;
         } catch (error) {
+          if (isOfflineFallbackError(error)) {
+            try {
+              const activated = await applyOfflineBootstrap(
+                await readOfflineBootstrap(),
+                error instanceof ApiRequestError && error.status >= 500
+                  ? "server-unavailable"
+                  : "offline",
+                { coldStart: true }
+              );
+              if (activated || cancelled) return;
+            } catch {
+              // Continue the auth retry path when local storage is unavailable or empty.
+            }
+          }
           if (!cancelled) {
             setAuthError(
               attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
@@ -789,7 +944,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [authGateRetryToken, resetReaderState, t.auth.errors.session, t.errors.api]);
+  }, [
+    applyOfflineBootstrap,
+    authGateRetryToken,
+    resetReaderState,
+    t.auth.errors.session,
+    t.errors.api
+  ]);
 
   useEffect(() => {
     function updateOnlineStatus() {
@@ -909,7 +1070,7 @@ export function App() {
   }, [appStage.type, t.errors.api]);
 
   useEffect(() => {
-    if (appStage.type !== "reader") {
+    if (appStage.type !== "reader" || isUsingOfflineData) {
       return;
     }
 
@@ -934,17 +1095,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [appStage.type, t.errors.api]);
-
-  const applySettings = useCallback(
-    (settings: AppSettings) => {
-      setAppSettings(settings);
-      setLocale(settings.ui.locale);
-      setTelemetryEnabled(settings.telemetry.enabled);
-      configureClientTelemetry(settings.telemetry.enabled);
-    },
-    [setLocale]
-  );
+  }, [appStage.type, isUsingOfflineData, t.errors.api]);
 
   useEffect(() => {
     appPageRef.current = appPage;
@@ -959,6 +1110,13 @@ export function App() {
       return;
     }
 
+    if (isUsingOfflineData) {
+      hasLoadedSettingsForSession.current = true;
+      applySettings(offlineProfile?.settings ?? defaultAppSettings);
+      setIsSettingsLoading(false);
+      return;
+    }
+
     hasLoadedSettingsForSession.current = true;
     let cancelled = false;
 
@@ -970,6 +1128,7 @@ export function App() {
         const settings = await dibaoApi.getSettings();
         if (!cancelled) {
           applySettings(settings);
+          if (offlineScope) void updateOfflineProfile(offlineScope, { settings });
           const currentAppPage = appPageRef.current;
           if (
             !hasAppliedDefaultHomeViewForSession.current &&
@@ -1000,7 +1159,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [appStage.type, applySettings, t.errors.api]);
+  }, [appStage.type, applySettings, isUsingOfflineData, offlineProfile?.settings, offlineScope, t.errors.api]);
 
   const loadEmbeddingSettings = useCallback(async (options: { includeIndexes?: boolean } = {}) => {
     setIsEmbeddingLoading(true);
@@ -1023,6 +1182,7 @@ export function App() {
 
   useEffect(() => {
     if (
+      isUsingOfflineData ||
       (appStage.type !== "reader" || appPage.type !== "settings") &&
       appStage.type !== "setup-provider"
     ) {
@@ -1030,7 +1190,7 @@ export function App() {
     }
 
     void loadEmbeddingSettings({ includeIndexes: false });
-  }, [appPage.type, appStage.type, loadEmbeddingSettings]);
+  }, [appPage.type, appStage.type, isUsingOfflineData, loadEmbeddingSettings]);
 
   const refreshArticleExplanation = useCallback(async (articleId: string) => {
     const requestVersion = detailExplanationRequestVersion.current + 1;
@@ -1129,9 +1289,15 @@ export function App() {
     setIsFeedsLoading(true);
     setFeedError(null);
 
+    if (isUsingOfflineData) {
+      setIsFeedsLoading(false);
+      return;
+    }
+
     try {
       const nextFeeds = await dibaoApi.listFeeds();
       setFeeds(nextFeeds);
+      if (offlineScope) void updateOfflineProfile(offlineScope, { feeds: nextFeeds });
       setSourceSelection((current) =>
         current.type === "feed" && !nextFeeds.some((feed) => feed.id === current.feedId)
           ? { type: "all" }
@@ -1142,7 +1308,7 @@ export function App() {
     } finally {
       setIsFeedsLoading(false);
     }
-  }, [t.errors.api]);
+  }, [isUsingOfflineData, offlineScope, t.errors.api]);
 
   const loadFeedDiagnostics = useCallback(async () => {
     setIsFeedDiagnosticsLoading(true);
@@ -1157,9 +1323,11 @@ export function App() {
   }, [t.errors.api]);
 
   const loadFeedFolders = useCallback(async () => {
+    if (isUsingOfflineData) return;
     try {
       const nextFolders = await dibaoApi.listFeedFolders();
       setFeedFolders(nextFolders);
+      if (offlineScope) void updateOfflineProfile(offlineScope, { folders: nextFolders });
       setSourceSelection((current) =>
         current.type === "folder" &&
         !nextFolders.some((folder) => folder.id === current.folderId)
@@ -1169,7 +1337,162 @@ export function App() {
     } catch (error) {
       setFeedError(userMessageForError(error, t.errors.api));
     }
-  }, [t.errors.api]);
+  }, [isUsingOfflineData, offlineScope, t.errors.api]);
+
+  const refreshOfflineCacheNow = useCallback(async (): Promise<OfflineCacheSummary> => {
+    if (!offlineScope) throw new Error("Offline profile is not available");
+    setIsOfflineCacheRefreshing(true);
+    setOfflineCacheError(null);
+    try {
+      await syncOfflineArticleActions(offlineScope, dibaoApi);
+      const summary = await refreshOfflineSnapshot(offlineScope, dibaoApi);
+      setOfflineSummary(summary);
+      return summary;
+    } catch (error) {
+      const summary = await getOfflineCacheSummary(offlineScope).catch(() => emptyOfflineCacheSummary());
+      setOfflineSummary(summary);
+      setOfflineCacheError(userMessageForError(error, t.errors.api));
+      throw error;
+    } finally {
+      setIsOfflineCacheRefreshing(false);
+    }
+  }, [offlineScope, t.errors.api]);
+
+  const reconnectToServer = useCallback(async (): Promise<boolean> => {
+    if (!offlineScope || navigator.onLine === false) return false;
+    setOfflineConnectionMode("reconnecting");
+    setOfflineCacheError(null);
+    try {
+      const session = await dibaoApi.getAuthSession();
+      if (
+        !session.authenticated ||
+        !session.username ||
+        offlineScopeKey(session.username) !== offlineScope
+      ) {
+        throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
+      }
+      await syncOfflineArticleActions(offlineScope, dibaoApi);
+      await withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
+        dibaoApi.listArticles({ view: "recommended", limit: 1, includeUnreadCount: false, signal })
+      );
+      const summary = await refreshOfflineSnapshot(offlineScope, dibaoApi);
+      setOfflineSummary(summary);
+      setOfflineConnectionMode(summary.failedActionCount > 0 ? "sync-failed" : "online");
+      deferredOnlineActivation.current = selectedArticleIdRef.current !== null;
+      if (!deferredOnlineActivation.current) setIsUsingOfflineData(false);
+      const connectedAt = Date.now();
+      setLastConnectedAt(connectedAt);
+      await updateOfflineProfile(offlineScope, { lastConnectedAt: connectedAt });
+      setArticleError(null);
+      return true;
+    } catch (error) {
+      setOfflineSummary(
+        await getOfflineCacheSummary(offlineScope).catch(() => emptyOfflineCacheSummary())
+      );
+      setOfflineConnectionMode(
+        error instanceof ApiRequestError && error.status >= 500
+          ? "server-unavailable"
+          : error instanceof ApiRequestError && error.status < 500
+            ? "sync-failed"
+            : "offline"
+      );
+      setOfflineCacheError(userMessageForError(error, t.errors.api));
+      return false;
+    }
+  }, [offlineScope, t.errors.api]);
+
+  const retryOfflineSync = useCallback(async () => {
+    if (!offlineScope || navigator.onLine === false || reconnectInFlight.current) return;
+    reconnectInFlight.current = true;
+    try {
+      await retryFailedOfflineActions(offlineScope);
+      setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+      const connected = await reconnectToServer();
+      reconnectAttempt.current = connected ? 0 : reconnectAttempt.current + 1;
+      if (!connected) setReconnectRetryToken((value) => value + 1);
+    } finally {
+      reconnectInFlight.current = false;
+    }
+  }, [offlineScope, reconnectToServer]);
+
+  useEffect(() => {
+    if (!isOffline || appStage.type !== "reader") return;
+    void readOfflineBootstrap()
+      .then((bootstrap) => applyOfflineBootstrap(bootstrap, "offline"))
+      .catch(() => undefined);
+  }, [appStage.type, applyOfflineBootstrap, isOffline]);
+
+  useEffect(() => {
+    if (isOffline || !isUsingOfflineData || !offlineScope) return;
+    const delayMs = reconnectAttempt.current === 0
+      ? 0
+      : Math.min(1_000 * 2 ** (reconnectAttempt.current - 1), 30_000);
+    const timer = window.setTimeout(() => {
+      if (reconnectInFlight.current) return;
+      reconnectInFlight.current = true;
+      void reconnectToServer()
+        .then((connected) => {
+          reconnectAttempt.current = connected ? 0 : reconnectAttempt.current + 1;
+          if (!connected && navigator.onLine !== false) {
+            setReconnectRetryToken((value) => value + 1);
+          }
+        })
+        .finally(() => {
+          reconnectInFlight.current = false;
+        });
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [isOffline, isUsingOfflineData, offlineScope, reconnectRetryToken, reconnectToServer]);
+
+  useEffect(() => {
+    if (selectedArticleId !== null || !deferredOnlineActivation.current) return;
+    deferredOnlineActivation.current = false;
+    setIsUsingOfflineData(false);
+  }, [selectedArticleId]);
+
+  useEffect(() => {
+    if (
+      appStage.type !== "reader" ||
+      isUsingOfflineData ||
+      isOffline ||
+      !offlineScope ||
+      hasScheduledOfflineRefresh.current === offlineScope
+    ) {
+      return;
+    }
+    hasScheduledOfflineRefresh.current = offlineScope;
+    const timer = window.setTimeout(() => {
+      void refreshOfflineCacheNow().catch(() => {
+        hasScheduledOfflineRefresh.current = null;
+      });
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [appStage.type, isOffline, isUsingOfflineData, offlineScope, refreshOfflineCacheNow]);
+
+  useEffect(() => {
+    if (!offlineScope) return;
+    const updateSummary = () => {
+      void getOfflineCacheSummary(offlineScope).then(setOfflineSummary).catch(() => undefined);
+    };
+    const handleLocalStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ scopeKey?: string }>).detail;
+      if (detail?.scopeKey === offlineScope) updateSummary();
+    };
+    window.addEventListener("dibao:offline-status-changed", handleLocalStatus);
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("dibao-offline-sync");
+      channel.onmessage = (event: MessageEvent<{ scopeKey?: string }>) => {
+        if (event.data?.scopeKey === offlineScope) updateSummary();
+      };
+    } catch {
+      channel = null;
+    }
+    return () => {
+      window.removeEventListener("dibao:offline-status-changed", handleLocalStatus);
+      channel?.close();
+    };
+  }, [offlineScope]);
 
   const loadArticles = useCallback(async (
     selection: SourceSelection,
@@ -1206,6 +1529,33 @@ export function App() {
         timeWindow: supportsQuickFilters(view) ? selectedTimeWindow : "all",
         sort: articleSortForView(view, sort, laterSort)
       };
+      if (isUsingOfflineData && offlineScope) {
+        if (offlineConnectionMode === "empty") {
+          setArticles([]);
+          setUnreadCount(0);
+          setNextArticleCursor(null);
+          return;
+        }
+        const response = await listOfflineArticles(offlineScope, {
+          ...articleQueryFor(selection),
+          view,
+          unreadOnly: supportsUnreadOnly(view) ? onlyUnread : false,
+          timeWindow: supportsQuickFilters(view) ? selectedTimeWindow : "all",
+          favoriteSort: sort,
+          readLaterSort: laterSort,
+          limit: 50
+        });
+        const responseArticles = articleListWithKnownLocalStates(
+          response.data,
+          articleStateById.current,
+          locallyUpdatedArticleIds.current
+        );
+        rememberArticleStates(responseArticles, articleStateById.current);
+        setArticles(responseArticles);
+        setUnreadCount(response.unreadCount);
+        setNextArticleCursor(response.nextCursor);
+        return;
+      }
       const requestStartedAt = performance.now();
       const response = await withLongLoadingNotice(
         ARTICLE_LIST_REQUEST_TIMEOUT_MS,
@@ -1285,6 +1635,43 @@ export function App() {
       if (requestVersion !== articleRequestVersion.current) {
         return;
       }
+      if (!isUsingOfflineData && isOfflineFallbackError(error)) {
+        try {
+          const bootstrap = await readOfflineBootstrap();
+          const activated = await applyOfflineBootstrap(
+            bootstrap,
+            error instanceof ApiRequestError && error.status >= 500
+              ? "server-unavailable"
+              : "offline"
+          );
+          if (activated && bootstrap?.snapshot) {
+            const response = await listOfflineArticles(bootstrap.profile.scopeKey, {
+              ...articleQueryFor(selection),
+              view,
+              unreadOnly: supportsUnreadOnly(view) ? onlyUnread : false,
+              timeWindow: supportsQuickFilters(view) ? selectedTimeWindow : "all",
+              favoriteSort: sort,
+              readLaterSort: laterSort,
+              limit: 50
+            });
+            rememberArticleStates(response.data, articleStateById.current);
+            setArticles(response.data);
+            setUnreadCount(response.unreadCount);
+            setNextArticleCursor(response.nextCursor);
+            setArticleError(null);
+            return;
+          }
+          if (activated) {
+            setArticles([]);
+            setUnreadCount(0);
+            setNextArticleCursor(null);
+            setArticleError(null);
+            return;
+          }
+        } catch {
+          // Fall through to the online request error when no local snapshot can be read.
+        }
+      }
       setArticleLoadingNotice(null);
       setArticleError(userMessageForError(error, t.errors.api));
       setNextArticleCursor(null);
@@ -1293,7 +1680,15 @@ export function App() {
         setIsArticlesLoading(false);
       }
     }
-  }, [appPage.type, t.articles.loadingSlow, t.errors.api]);
+  }, [
+    appPage.type,
+    applyOfflineBootstrap,
+    isUsingOfflineData,
+    offlineConnectionMode,
+    offlineScope,
+    t.articles.loadingSlow,
+    t.errors.api
+  ]);
 
   const loadSearchArticles = useCallback(async (form: SearchFormState) => {
     const requestVersion = articleRequestVersion.current + 1;
@@ -1424,7 +1819,7 @@ export function App() {
   }, [t.articles.loadingSlow, t.errors.api]);
 
   useEffect(() => {
-    if (appStage.type !== "reader") {
+    if (appStage.type !== "reader" || isUsingOfflineData) {
       return;
     }
 
@@ -1446,6 +1841,7 @@ export function App() {
     appPage.type,
     appStage.type,
     currentArticleView,
+    isUsingOfflineData,
     favoriteSort,
     loadArticles,
     readLaterSort,
@@ -1453,6 +1849,18 @@ export function App() {
     timeWindow,
     unreadOnly
   ]);
+
+  useEffect(() => {
+    if (appStage.type !== "reader" || !isUsingOfflineData || appPage.type !== "search") return;
+    resetArticleListForPendingQuery();
+    setAppPage({ type: "reader", view: "recommended" });
+    setHasSubmittedSearch(false);
+    window.history.replaceState(
+      { dibaoPage: "recommended" },
+      "",
+      urlForAppPage({ type: "reader", view: "recommended" })
+    );
+  }, [appPage.type, appStage.type, isUsingOfflineData]);
 
   useEffect(() => {
     if (appStage.type !== "reader" || appPage.type !== "search" || !hasSubmittedSearch) {
@@ -1465,6 +1873,7 @@ export function App() {
   useEffect(() => {
     if (
       appStage.type !== "reader" ||
+      isUsingOfflineData ||
       appPage.type !== "reader" ||
       !supportsQuickFilters(currentArticleView)
     ) {
@@ -1476,10 +1885,10 @@ export function App() {
       unreadOnly,
       timeWindow
     });
-  }, [appPage.type, appStage.type, currentArticleView, sourceSelection, timeWindow, unreadOnly]);
+  }, [appPage.type, appStage.type, currentArticleView, isUsingOfflineData, sourceSelection, timeWindow, unreadOnly]);
 
   useEffect(() => {
-    if (appStage.type !== "reader") {
+    if (appStage.type !== "reader" || isUsingOfflineData) {
       setRecommendationStatus(null);
       setRecommendationStatusError(null);
       setIsRecommendationStatusLoading(false);
@@ -1503,6 +1912,7 @@ export function App() {
     appPage.type,
     appStage.type,
     currentArticleView,
+    isUsingOfflineData,
     loadRecommendationStatus,
     loadRecommendationSummaryStatus
   ]);
@@ -1510,6 +1920,7 @@ export function App() {
   useEffect(() => {
     if (
       appStage.type !== "reader" ||
+      isUsingOfflineData ||
       appPage.type !== "reader" ||
       currentArticleView !== "recommended"
     ) {
@@ -1590,6 +2001,7 @@ export function App() {
     appStage.type,
     articles.length,
     currentArticleView,
+    isUsingOfflineData,
     selectedFeed?.id,
     selectedFolder?.id,
     t.errors.api,
@@ -1719,30 +2131,60 @@ export function App() {
         null;
       if (!openedArticleIds.current.has(articleId)) {
         openedArticleIds.current.add(articleId);
-        if (knownState) {
-          applyArticleState(articleId, optimisticOpenedState(knownState));
-        }
-        void dibaoApi.postArticleAction(articleId, {
+        const openedState = knownState ? optimisticOpenedState(knownState) : null;
+        if (openedState) applyArticleState(articleId, openedState);
+        const request: ArticleActionRequest = {
           type: "open",
           value: true
-        })
-          .then((result) => {
-            if (!cancelled) {
-              applyArticleState(articleId, result.state);
-            }
-          })
-          .catch(() => {
-            openedArticleIds.current.delete(articleId);
-            if (!cancelled) {
-              setArticleActionError(t.actions.errors.open);
-            }
+        };
+        if (isUsingOfflineData && offlineScope && openedState) {
+          void queueOfflineArticleAction({
+            scopeKey: offlineScope,
+            articleId,
+            request,
+            state: openedState
           });
+        } else {
+          void dibaoApi.postArticleAction(articleId, request)
+            .then((result) => {
+              if (!cancelled) applyArticleState(articleId, result.state);
+            })
+            .catch(async (error) => {
+              if (openedState && isOfflineFallbackError(error)) {
+                const bootstrap = await readOfflineBootstrap().catch(() => null);
+                if (bootstrap) {
+                  await applyOfflineBootstrap(
+                    bootstrap,
+                    error instanceof ApiRequestError && error.status >= 500
+                      ? "server-unavailable"
+                      : "offline"
+                  );
+                  await queueOfflineArticleAction({
+                    scopeKey: bootstrap.profile.scopeKey,
+                    articleId,
+                    request,
+                    state: openedState
+                  });
+                  return;
+                }
+              }
+              openedArticleIds.current.delete(articleId);
+              if (!cancelled) setArticleActionError(t.actions.errors.open);
+            });
+        }
       }
 
       try {
-        const detail = await withRequestTimeout(ARTICLE_DETAIL_REQUEST_TIMEOUT_MS, (signal) =>
-          dibaoApi.getArticle(articleId, { signal })
-        );
+        let detail: ArticleDetail | null;
+        if (isUsingOfflineData && offlineScope) {
+          detail = await getOfflineArticleDetail(offlineScope, articleId);
+          if (!detail) throw new Error(t.offlineReading.articleUnavailable);
+        } else {
+          detail = await withRequestTimeout(ARTICLE_DETAIL_REQUEST_TIMEOUT_MS, (signal) =>
+            dibaoApi.getArticle(articleId, { signal })
+          );
+          if (offlineScope) void cacheOnlineArticleDetail(offlineScope, detail);
+        }
         const overlayState = locallyUpdatedArticleIds.current.has(articleId)
           ? articleStateById.current.get(articleId)
           : null;
@@ -1754,8 +2196,34 @@ export function App() {
           setIsDetailLoading(false);
         }
       } catch (error) {
+        if (!isUsingOfflineData && isOfflineFallbackError(error)) {
+          const bootstrap = await readOfflineBootstrap().catch(() => null);
+          if (bootstrap) {
+            await applyOfflineBootstrap(
+              bootstrap,
+              error instanceof ApiRequestError && error.status >= 500
+                ? "server-unavailable"
+                : "offline"
+            );
+            const cached = await getOfflineArticleDetail(bootstrap.profile.scopeKey, articleId);
+            if (cached && !cancelled) {
+              const overlayState = locallyUpdatedArticleIds.current.has(articleId)
+                ? articleStateById.current.get(articleId)
+                : null;
+              const detailWithKnownState = overlayState ? { ...cached, state: overlayState } : cached;
+              articleStateById.current.set(articleId, detailWithKnownState.state);
+              setArticleDetail(detailWithKnownState);
+              setDetailError(null);
+              return;
+            }
+          }
+        }
         if (!cancelled) {
-          setDetailError(userMessageForError(error, t.errors.api));
+          setDetailError(
+            isUsingOfflineData
+              ? t.offlineReading.articleUnavailable
+              : userMessageForError(error, t.errors.api)
+          );
         }
       } finally {
         if (!cancelled) {
@@ -1784,10 +2252,14 @@ export function App() {
   }, [
     currentArticleView,
     detailReloadRevision,
+    applyOfflineBootstrap,
+    isUsingOfflineData,
+    offlineScope,
     selectedArticleId,
     submittedSearchForm.sort,
     t.actions.errors.open,
-    t.errors.api
+    t.errors.api,
+    t.offlineReading.articleUnavailable
   ]);
 
   function handleTelemetryEnabledChange(enabled: boolean) {
@@ -1813,11 +2285,31 @@ export function App() {
     try {
       if (mode === "setup") {
         await dibaoApi.setupAuth(username, password, telemetryEnabled);
+        try {
+          const profile = await rememberOfflineSession(username.trim());
+          const connectedAt = Date.now();
+          await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
+          setOfflineScope(profile.scopeKey);
+          setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
+          setLastConnectedAt(connectedAt);
+        } catch {
+          // Local offline storage must not turn a successful online setup into a failure.
+        }
         setAuthUsername(username.trim());
         resetReaderState();
         setAppStage({ type: "setup-sources" });
       } else {
         await dibaoApi.login(username, password);
+        try {
+          const profile = await rememberOfflineSession(username.trim());
+          const connectedAt = Date.now();
+          await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
+          setOfflineScope(profile.scopeKey);
+          setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
+          setLastConnectedAt(connectedAt);
+        } catch {
+          // Local offline storage must not turn a successful online login into a failure.
+        }
         setAuthUsername(username.trim());
         setAppStage({ type: "setup-status-loading" });
       }
@@ -1831,8 +2323,24 @@ export function App() {
   async function handleLogout() {
     setLogoutError(null);
 
+    const pendingOfflineActions =
+      offlineSummary.pendingActionCount + offlineSummary.failedActionCount;
+    if (
+      pendingOfflineActions > 0 &&
+      !window.confirm(t.offlineReading.settings.clearPendingConfirm(pendingOfflineActions))
+    ) {
+      return;
+    }
+
     try {
-      await dibaoApi.logout();
+      if (!isUsingOfflineData) await dibaoApi.logout();
+      if (offlineScope) {
+        try {
+          await clearOfflineScope(offlineScope);
+        } catch {
+          // The authenticated session is already closed; finish logout even if local cleanup fails.
+        }
+      }
       setAuthUsername(null);
       setAppStage({ type: "login" });
       resetReaderState();
@@ -2192,11 +2700,44 @@ export function App() {
     try {
       const result = await dibaoApi.updateSettings(input);
       applySettings(result.settings);
+      if (offlineScope) await updateOfflineProfile(offlineScope, { settings: result.settings });
       setNotice({ type: "settingsSaved" });
     } catch (error) {
       setSettingsError(userMessageForError(error, t.errors.api));
     } finally {
       setIsSavingSettings(false);
+    }
+  }
+
+  async function handleOfflineTargetChange(target: number) {
+    if (!offlineScope) throw new Error("Offline profile is not available");
+    const recommendedTarget = await setOfflineRecommendedTarget(offlineScope, target);
+    setOfflineProfile((current) => current ? {
+      ...current,
+      deviceSettings: { recommendedTarget }
+    } : current);
+    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    if (!isUsingOfflineData && navigator.onLine !== false) {
+      if (offlineTargetRefreshTimer.current !== null) {
+        window.clearTimeout(offlineTargetRefreshTimer.current);
+      }
+      offlineTargetRefreshTimer.current = window.setTimeout(() => {
+        offlineTargetRefreshTimer.current = null;
+        void refreshOfflineCacheNow().catch(() => undefined);
+      }, 600);
+    }
+  }
+
+  async function handleClearOfflineCache() {
+    if (!offlineScope) return;
+    await clearOfflineCache(offlineScope);
+    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    if (isUsingOfflineData) {
+      setOfflineConnectionMode("empty");
+      setArticles([]);
+      setNextArticleCursor(null);
+      setArticleDetail(null);
+      setSelectedArticleId(null);
     }
   }
 
@@ -2545,6 +3086,23 @@ export function App() {
     setLoadMoreError(null);
 
     try {
+      if (isUsingOfflineData && offlineScope && appPage.type !== "search") {
+        const response = await listOfflineArticles(offlineScope, {
+          ...articleQueryFor(sourceSelection),
+          view: currentArticleView,
+          unreadOnly: supportsUnreadOnly(currentArticleView) ? unreadOnly : false,
+          timeWindow: supportsQuickFilters(currentArticleView) ? timeWindow : "all",
+          favoriteSort,
+          readLaterSort,
+          limit: 50,
+          cursor: nextArticleCursor
+        });
+        rememberArticleStates(response.data, articleStateById.current);
+        setArticles((current) => appendUniqueArticles(current, response.data));
+        setUnreadCount(response.unreadCount);
+        setNextArticleCursor(response.nextCursor);
+        return;
+      }
       const relatedSearchArticleId =
         appPage.type === "search" && isRelatedSearchForm(submittedSearchForm)
           ? submittedSearchForm.relatedArticle?.id ?? null
@@ -2643,7 +3201,10 @@ export function App() {
   }
 
   async function handleMarkCurrentArticleListScopeRead() {
-    if (currentArticleView !== "latest" && currentArticleView !== "recommended") {
+    if (
+      isUsingOfflineData ||
+      (currentArticleView !== "latest" && currentArticleView !== "recommended")
+    ) {
       return;
     }
 
@@ -2662,7 +3223,10 @@ export function App() {
   }
 
   async function previewCurrentArticleListScopeRead(): Promise<number> {
-    if (currentArticleView !== "latest" && currentArticleView !== "recommended") {
+    if (
+      isUsingOfflineData ||
+      (currentArticleView !== "latest" && currentArticleView !== "recommended")
+    ) {
       return 0;
     }
 
@@ -2698,6 +3262,7 @@ export function App() {
   }
 
   async function markScopeRead(scope: ReaderCommandScope, reload: () => Promise<void>) {
+    if (isUsingOfflineData) return;
     setIsMarkingScopeRead(true);
     setReaderCommandError(null);
     setNotice(null);
@@ -2715,7 +3280,12 @@ export function App() {
   }
 
   async function handleLoadRelatedArticles() {
-    if (!articleDetail || relatedDiscovery.status === "loading" || relatedDiscovery.status === "ready") {
+    if (
+      isUsingOfflineData ||
+      !articleDetail ||
+      relatedDiscovery.status === "loading" ||
+      relatedDiscovery.status === "ready"
+    ) {
       return;
     }
 
@@ -2762,6 +3332,7 @@ export function App() {
     articleId: string,
     input: { likeSucceeded?: boolean } = {}
   ) {
+    if (isUsingOfflineData) return;
     personalizedDiscoveryRequestId.current += 1;
     personalizedDiscoveryRequest.current?.controller.abort();
     const controller = new AbortController();
@@ -2858,19 +3429,31 @@ export function App() {
     const previousState =
       articleStateById.current.get(article.id) ??
       (articleDetail?.id === article.id ? articleDetail.state : article.state);
-    const shouldLoadPersonalizedRelated = intent === "like" && !previousState.liked;
+    const shouldLoadPersonalizedRelated =
+      !isUsingOfflineData && intent === "like" && !previousState.liked;
     const shouldDiscardPersonalizedRelated = intent === "like" && previousState.liked;
     if (shouldLoadPersonalizedRelated) {
       startPersonalizedRelatedRequest(article.id);
     } else if (shouldDiscardPersonalizedRelated) {
       discardPersonalizedRelated(article.id);
     }
-    applyArticleState(article.id, optimisticStateForArticleAction(intent, previousState));
+    const nextState = optimisticStateForArticleAction(intent, previousState);
+    applyArticleState(article.id, nextState);
+    const request = requestForArticleAction(intent, previousState);
 
     try {
+      if (isUsingOfflineData && offlineScope) {
+        await queueOfflineArticleAction({
+          scopeKey: offlineScope,
+          articleId: article.id,
+          request,
+          state: nextState
+        });
+        return;
+      }
       const result = await dibaoApi.postArticleAction(
         article.id,
-        requestForArticleAction(intent, previousState)
+        request
       );
       applyArticleState(article.id, result.state);
       if (shouldLoadPersonalizedRelated) {
@@ -2879,7 +3462,25 @@ export function App() {
       if (isExplanationOpen && selectedArticleIdRef.current === article.id) {
         void refreshArticleExplanation(article.id);
       }
-    } catch {
+    } catch (error) {
+      if (!isUsingOfflineData && isOfflineFallbackError(error)) {
+        const bootstrap = await readOfflineBootstrap().catch(() => null);
+        if (bootstrap) {
+          await applyOfflineBootstrap(
+            bootstrap,
+            error instanceof ApiRequestError && error.status >= 500
+              ? "server-unavailable"
+              : "offline"
+          );
+          await queueOfflineArticleAction({
+            scopeKey: bootstrap.profile.scopeKey,
+            articleId: article.id,
+            request,
+            state: nextState
+          });
+          return;
+        }
+      }
       applyArticleState(article.id, previousState);
       if (shouldLoadPersonalizedRelated) {
         discardPersonalizedRelated(article.id);
@@ -2893,6 +3494,7 @@ export function App() {
   }
 
   function handleIgnoreArticle(articleId: string) {
+    if (isUsingOfflineData) return;
     const article = articlesRef.current.find((candidate) => candidate.id === articleId);
     const state = article?.state ?? articleStateById.current.get(articleId);
     if (!state || articleInteractionStatusForState(state) !== "unseen") {
@@ -3036,14 +3638,49 @@ export function App() {
     }
 
     if (options.keepalive) {
+      if (isUsingOfflineData && offlineScope && previousState) {
+        void queueOfflineArticleAction({
+          scopeKey: offlineScope,
+          articleId,
+          request,
+          state: optimisticReadProgressState(previousState, progress)
+        });
+        return;
+      }
       dibaoApi.postArticleActionKeepalive(articleId, request);
       return;
     }
 
     try {
+      if (isUsingOfflineData && offlineScope && previousState) {
+        await queueOfflineArticleAction({
+          scopeKey: offlineScope,
+          articleId,
+          request,
+          state: optimisticReadProgressState(previousState, progress)
+        });
+        return;
+      }
       const result = await dibaoApi.postArticleAction(articleId, request);
       applyArticleState(articleId, result.state);
-    } catch {
+    } catch (error) {
+      if (!isUsingOfflineData && previousState && isOfflineFallbackError(error)) {
+        const bootstrap = await readOfflineBootstrap().catch(() => null);
+        if (bootstrap) {
+          await applyOfflineBootstrap(
+            bootstrap,
+            error instanceof ApiRequestError && error.status >= 500
+              ? "server-unavailable"
+              : "offline"
+          );
+          await queueOfflineArticleAction({
+            scopeKey: bootstrap.profile.scopeKey,
+            articleId,
+            request,
+            state: optimisticReadProgressState(previousState, progress)
+          });
+        }
+      }
       // Automatic reading telemetry should never interrupt the reader surface.
     }
   }
@@ -3093,7 +3730,7 @@ export function App() {
   }
 
   function handleOpenRelatedSearch() {
-    if (!articleDetail) {
+    if (isUsingOfflineData || !articleDetail) {
       return;
     }
 
@@ -3121,7 +3758,10 @@ export function App() {
   }
 
   function handleOpenExplanation() {
-    if (!shouldLoadDetailRankExplanation(appPage, currentArticleView, submittedSearchForm.sort)) {
+    if (
+      isUsingOfflineData ||
+      !shouldLoadDetailRankExplanation(appPage, currentArticleView, submittedSearchForm.sort)
+    ) {
       return;
     }
 
@@ -3136,7 +3776,7 @@ export function App() {
   }
 
   async function handleOpenListExplanation(articleId: string) {
-    if (!canLoadRankExplanation(appPageRef.current, currentArticleView)) {
+    if (isUsingOfflineData || !canLoadRankExplanation(appPageRef.current, currentArticleView)) {
       return;
     }
 
@@ -3190,6 +3830,10 @@ export function App() {
   }
 
   function handleNavigationClick(event: MouseEvent<HTMLAnchorElement>, item: NavigationItemKey) {
+    if (isUsingOfflineData && (item === "search" || item === "feeds")) {
+      event.preventDefault();
+      return;
+    }
     if (shouldLetBrowserHandleLinkClick(event)) {
       return;
     }
@@ -3244,9 +3888,25 @@ export function App() {
   }
 
   const noticeText = notice ? noticeTextFor(notice, t) : null;
+  const shouldShowOfflineStatus = isUsingOfflineData ||
+    offlineSummary.failedActionCount > 0 ||
+    (offlineConnectionMode === "reconnecting" && offlineSummary.pendingActionCount > 0);
+  const offlineReaderStatus: OfflineReaderStatus | null = shouldShowOfflineStatus
+    ? {
+        mode: !isUsingOfflineData
+          ? offlineConnectionMode === "reconnecting" ? "reconnecting" : "sync-failed"
+          : offlineConnectionMode === "online"
+            ? offlineSummary.availableCount > 0 ? "offline" : "empty"
+            : offlineConnectionMode,
+        summary: offlineSummary,
+        lastConnectedAt,
+        error: offlineCacheError,
+        onRetry: () => void retryOfflineSync()
+      }
+    : null;
   const pwaStatusBanner = (
     <PwaStatusBanner
-      isOffline={isOffline}
+      isOffline={false}
       onApplyUpdate={pwaUpdateApply}
       onDismissUpdate={() => setPwaUpdateApply(null)}
     />
@@ -3261,14 +3921,15 @@ export function App() {
         activePlugin.contributions.routes[0] ??
         null
       : null;
-  const pluginDesktopNavItems = pluginContributions.flatMap((plugin) =>
+  const availablePluginContributions = isUsingOfflineData ? [] : pluginContributions;
+  const pluginDesktopNavItems = availablePluginContributions.flatMap((plugin) =>
     plugin.contributions.primaryNav.map((nav) => ({
       plugin,
       nav,
       page: { type: "plugin", pluginId: plugin.id, route: nav.route } satisfies AppPage
     }))
   );
-  const pluginMobilePrimaryNavItems = pluginContributions.flatMap((plugin) =>
+  const pluginMobilePrimaryNavItems = availablePluginContributions.flatMap((plugin) =>
     plugin.contributions.primaryMobile.map((nav) => ({
       plugin,
       nav,
@@ -3285,7 +3946,7 @@ export function App() {
     isUtilityNavigationActive(appPage) ||
     pluginMobileOverflowNavItems.some(({ page }) => sameAppPage(appPage, page));
   const pluginActionsBySlot = new Map<string, PluginActionButton[]>();
-  for (const plugin of pluginContributions) {
+  for (const plugin of availablePluginContributions) {
     for (const action of plugin.contributions.actions) {
       const actions = pluginActionsBySlot.get(action.slot) ?? [];
       actions.push({
@@ -3499,16 +4160,17 @@ export function App() {
           {navigationItems.map((item) => {
             const navigationPage = pageForNavigationItem(item);
             const isPlaceholder = !navigationPage;
+            const isOfflineDisabled = isUsingOfflineData && (item === "search" || item === "feeds");
 
             return (
               <a
-                aria-disabled={isPlaceholder ? "true" : undefined}
+                aria-disabled={isPlaceholder || isOfflineDisabled ? "true" : undefined}
                 aria-label={t.navigation.items[item]}
                 className={classNames(
                   isNavigationItemActive(item, appPage) ? styles.navItemActive : styles.navItem,
                   utilityNavigationItems.includes(item) ? styles.navUtilityItem : null
                 )}
-                data-disabled={isPlaceholder ? "true" : undefined}
+                data-disabled={isPlaceholder || isOfflineDisabled ? "true" : undefined}
                 href={
                   navigationPage
                     ? urlForAppPage(navigationPage, {
@@ -3521,7 +4183,7 @@ export function App() {
                 }
                 key={item}
                 onClick={(event) => handleNavigationClick(event, item)}
-                title={t.navigation.items[item]}
+                title={isOfflineDisabled ? t.offlineReading.unavailable : t.navigation.items[item]}
               >
                 <NavigationIcon item={item} />
                 <span className={styles.navLabel}>{t.navigation.items[item]}</span>
@@ -3585,16 +4247,18 @@ export function App() {
               {utilityNavigationItems.map((item) => {
                 const navigationPage = pageForNavigationItem(item);
                 const isPlaceholder = !navigationPage;
+                const isOfflineDisabled = isUsingOfflineData && (item === "search" || item === "feeds");
 
                 return (
                   <a
-                    aria-disabled={isPlaceholder ? "true" : undefined}
+                    aria-disabled={isPlaceholder || isOfflineDisabled ? "true" : undefined}
                     className={styles.utilityMenuItem}
-                    data-disabled={isPlaceholder ? "true" : undefined}
+                    data-disabled={isPlaceholder || isOfflineDisabled ? "true" : undefined}
                     href={navigationPage ? urlForAppPage(navigationPage) : "#"}
                     key={item}
                     onClick={(event) => handleNavigationClick(event, item)}
                     role="menuitem"
+                    title={isOfflineDisabled ? t.offlineReading.unavailable : undefined}
                   >
                     <NavigationIcon item={item} />
                     <span>{t.navigation.items[item]}</span>
@@ -3699,6 +4363,8 @@ export function App() {
             error={settingsError}
             isEmbeddingLoading={isEmbeddingLoading}
             isLoading={isSettingsLoading}
+            isOffline={isUsingOfflineData}
+            isOfflineCacheRefreshing={isOfflineCacheRefreshing}
             activatingProviderId={activatingProviderId}
             isSavingEmbeddingProvider={isSavingEmbeddingProvider}
             isSaving={isSavingSettings}
@@ -3715,6 +4381,15 @@ export function App() {
             onPreviewSettings={handlePreviewSettings}
             onRebuildEmbeddingIndex={handleRebuildEmbeddingIndex}
             onOpenAlgorithmTransparency={() => navigateToAppPage({ type: "algorithm-transparency" })}
+            offlineSummary={offlineSummary}
+            offlineTarget={offlineProfile?.deviceSettings.recommendedTarget ?? offlineSummary.targetCount}
+            onOfflineTargetChange={handleOfflineTargetChange}
+            onRefreshOfflineCache={
+              isUsingOfflineData
+                ? undefined
+                : async () => { await refreshOfflineCacheNow(); }
+            }
+            onClearOfflineCache={handleClearOfflineCache}
             onSaveSettings={handleSaveSettings}
             onSaveEmbeddingProvider={handleSaveEmbeddingProvider}
             onTestEmbeddingProvider={handleTestEmbeddingProvider}
@@ -3826,6 +4501,7 @@ export function App() {
               isDetailLoading={isDetailLoading}
               isExplanationOpen={isExplanationOpen}
               isExplanationLoading={isExplanationLoading}
+              isOffline={isUsingOfflineData}
               onArticleAction={handleArticleAction}
               onPluginAction={(action, context) => {
                 void handlePluginAction(action, context);
@@ -3880,6 +4556,7 @@ export function App() {
               feeds={feeds}
               isOpen={isSourceDrawerOpen}
               isFeedsLoading={isFeedsLoading}
+              refreshDisabled={isUsingOfflineData}
               onRefreshFeed={handleRefreshFeed}
               onCloseSources={() => setIsSourceDrawerOpen(false)}
               onSelectSource={handleSelectSource}
@@ -3894,7 +4571,7 @@ export function App() {
               articles={articles}
               feedCount={feeds.length}
               infiniteArticleLoading={appSettings.behavior.infiniteArticleLoading}
-              isIgnoreTelemetryEnabled={isArticleListIgnoreTelemetryEnabled({
+              isIgnoreTelemetryEnabled={!isUsingOfflineData && isArticleListIgnoreTelemetryEnabled({
                 articleView: currentArticleView,
                 markScrolledArticlesIgnored: appSettings.behavior.markScrolledArticlesIgnored
               })}
@@ -3906,6 +4583,7 @@ export function App() {
               nextCursor={nextArticleCursor}
               onIgnoreArticle={handleIgnoreArticle}
               onRecordRecommendationExposures={(input) => {
+                if (isUsingOfflineData) return;
                 void dibaoApi.recordRecommendationExposures(input).catch(() => undefined);
               }}
               onLoadMore={handleLoadMoreArticles}
@@ -3942,6 +4620,8 @@ export function App() {
               recommendationInventoryError={
                 currentArticleView === "recommended" ? recommendationInventoryError : null
               }
+              offlineStatus={offlineReaderStatus}
+              readerCommandsDisabled={isUsingOfflineData}
               readerCommandError={readerCommandError}
               selectedArticleId={selectedArticleId}
               selectedFeed={selectedFeed}
@@ -3969,6 +4649,7 @@ export function App() {
               isDetailLoading={isDetailLoading}
               isExplanationOpen={isExplanationOpen}
               isExplanationLoading={isExplanationLoading}
+              isOffline={isUsingOfflineData}
               onArticleAction={handleArticleAction}
               onPluginAction={(action, context) => {
                 void handlePluginAction(action, context);

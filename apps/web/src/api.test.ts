@@ -1658,7 +1658,8 @@ describe("web API client", () => {
 
     await api.postArticleAction("article/one", {
       type: "favorite",
-      value: false
+      value: false,
+      clientActionId: "offline-action-1"
     });
     await api.postArticleAction("article/one", {
       type: "like",
@@ -1689,7 +1690,8 @@ describe("web API client", () => {
         method: "POST",
         body: {
           type: "favorite",
-          value: false
+          value: false,
+          clientActionId: "offline-action-1"
         }
       },
       {
@@ -1725,6 +1727,52 @@ describe("web API client", () => {
             scrollSource: "reader"
           }
         }
+      }
+    ]);
+  });
+
+  it("loads an offline manifest and batches article details", async () => {
+    const calls: Array<{ path: string; method: string | undefined; body: unknown }> = [];
+    const api = createDibaoApi(async (input, init) => {
+      calls.push({
+        path: String(input),
+        method: init?.method,
+        body: init?.body ? JSON.parse(String(init.body)) : null
+      });
+      const data = String(input).includes("/manifest")
+        ? {
+            snapshotId: "snapshot-1",
+            generatedAt: "2026-08-15T00:00:00.000Z",
+            rankContext: "base",
+            recommendedTarget: 200,
+            recommended: [],
+            readLater: [],
+            recent: []
+          }
+        : [{ id: "article/one", title: "Offline article" }];
+      return new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+
+    await expect(api.getOfflineManifest(200)).resolves.toMatchObject({
+      snapshotId: "snapshot-1",
+      recommendedTarget: 200
+    });
+    await expect(api.getOfflineArticles(["article/one"])).resolves.toEqual([
+      { id: "article/one", title: "Offline article" }
+    ]);
+    expect(calls).toEqual([
+      {
+        path: "/api/offline/manifest?recommendedLimit=200",
+        method: undefined,
+        body: null
+      },
+      {
+        path: "/api/offline/articles/batch",
+        method: "POST",
+        body: { articleIds: ["article/one"] }
       }
     ]);
   });

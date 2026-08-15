@@ -62,6 +62,21 @@ export class SqliteArticleActionRepository implements ArticleActionRepository {
         return null;
       }
 
+      const existingEvent = this.findExistingEvent(input.eventId);
+      if (existingEvent) {
+        if (
+          existingEvent.articleId !== input.articleId ||
+          existingEvent.eventType !== input.type
+        ) {
+          throw new Error(`Article action event id ${input.eventId} is already in use`);
+        }
+        return {
+          state: this.getState(input.articleId),
+          eventId: input.eventId,
+          deduplicated: true
+        };
+      }
+
       this.ensureStateRow(input.articleId, input.now);
       const eventWeight = this.eventWeightFor(input);
       this.insertBehaviorEvent(input, eventWeight);
@@ -129,6 +144,21 @@ export class SqliteArticleActionRepository implements ArticleActionRepository {
         )
         .get(articleId)
     );
+  }
+
+  private findExistingEvent(
+    eventId: string
+  ): { articleId: string; eventType: ArticleActionType } | null {
+    const row = this.db
+      .prepare(
+        `
+          select article_id as articleId, event_type as eventType
+          from behavior_events
+          where id = ?
+        `
+      )
+      .get(eventId) as { articleId: string; eventType: ArticleActionType } | undefined;
+    return row ?? null;
   }
 
   private ensureStateRow(articleId: string, now: number): void {

@@ -13,6 +13,7 @@ specific test notes, and generated validation evidence are kept outside Git in
 - [Design tokens](./design-tokens.md)
 - [Visual interaction spec](./visual-interaction-spec-v0.md)
 - [Article action interaction spec](./article-actions-interaction-v0.md)
+- [Offline reading development spec v0.4](./offline-reading-v0.4.md)
 
 ## Engineering Reference
 

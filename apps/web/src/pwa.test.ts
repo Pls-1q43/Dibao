@@ -219,5 +219,12 @@ describe("service worker source", () => {
     expect(source).toContain("/api/");
     expect(source).toContain("/logo-64.png");
     expect(source).toContain("SKIP_WAITING");
+    expect(source).toContain("ARTICLE_IMAGE_CACHE_PREFIX");
+    expect(source).toContain("CACHE_ARTICLE_IMAGES");
+    expect(source).toContain("PRUNE_ARTICLE_IMAGES");
+    expect(source).toContain("CLEAR_ARTICLE_IMAGES");
+    expect(source).toContain("articleImageCacheFirst");
+    expect(source).toContain("imageScopesByClientId");
+    expect(source).toContain("event.clientId");
   });
 });
