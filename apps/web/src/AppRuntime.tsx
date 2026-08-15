@@ -95,9 +95,11 @@ import {
   offlineScopeKey,
   queueOfflineArticleAction,
   readOfflineBootstrap,
+  readOfflineProfile,
   refreshOfflineSnapshot,
   rememberOfflineSession,
   retryFailedOfflineActions,
+  setOfflineReadingEnabled,
   setOfflineRecommendedTarget,
   syncOfflineArticleActions,
   updateOfflineProfile,
@@ -503,6 +505,7 @@ export function App() {
   const hasAppliedDefaultHomeViewForSession = useRef(false);
   const appPageRef = useRef<AppPage>(appPage);
   const hasExplicitUrlPageIntent = useRef(initialRoute.hasExplicitPage);
+  const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled !== false;
 
   const selectedFeed = useMemo(
     () =>
@@ -1455,6 +1458,7 @@ export function App() {
       appStage.type !== "reader" ||
       isUsingOfflineData ||
       isOffline ||
+      !offlineReadingEnabled ||
       !offlineScope ||
       hasScheduledOfflineRefresh.current === offlineScope
     ) {
@@ -1467,12 +1471,42 @@ export function App() {
       });
     }, 750);
     return () => window.clearTimeout(timer);
-  }, [appStage.type, isOffline, isUsingOfflineData, offlineScope, refreshOfflineCacheNow]);
+  }, [
+    appStage.type,
+    isOffline,
+    isUsingOfflineData,
+    offlineReadingEnabled,
+    offlineScope,
+    refreshOfflineCacheNow
+  ]);
 
   useEffect(() => {
     if (!offlineScope) return;
     const updateSummary = () => {
-      void getOfflineCacheSummary(offlineScope).then(setOfflineSummary).catch(() => undefined);
+      void Promise.all([
+        getOfflineCacheSummary(offlineScope),
+        readOfflineProfile(offlineScope)
+      ]).then(([summary, profile]) => {
+        setOfflineSummary(summary);
+        if (!profile) return;
+        const nextEnabled = profile.deviceSettings.enabled;
+        if (nextEnabled !== offlineReadingEnabled) {
+          hasScheduledOfflineRefresh.current = null;
+          if (offlineTargetRefreshTimer.current !== null) {
+            window.clearTimeout(offlineTargetRefreshTimer.current);
+            offlineTargetRefreshTimer.current = null;
+          }
+        }
+        activateOfflineImageScope(nextEnabled ? offlineScope : null);
+        setOfflineProfile(profile);
+        if (!nextEnabled && isUsingOfflineData) {
+          setOfflineConnectionMode("empty");
+          setArticles([]);
+          setNextArticleCursor(null);
+          setArticleDetail(null);
+          setSelectedArticleId(null);
+        }
+      }).catch(() => undefined);
     };
     const handleLocalStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ scopeKey?: string }>).detail;
@@ -1492,7 +1526,7 @@ export function App() {
       window.removeEventListener("dibao:offline-status-changed", handleLocalStatus);
       channel?.close();
     };
-  }, [offlineScope]);
+  }, [isUsingOfflineData, offlineReadingEnabled, offlineScope]);
 
   const loadArticles = useCallback(async (
     selection: SourceSelection,
@@ -2183,7 +2217,9 @@ export function App() {
           detail = await withRequestTimeout(ARTICLE_DETAIL_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getArticle(articleId, { signal })
           );
-          if (offlineScope) void cacheOnlineArticleDetail(offlineScope, detail);
+          if (offlineScope) {
+            void cacheOnlineArticleDetail(offlineScope, detail).catch(() => undefined);
+          }
         }
         const overlayState = locallyUpdatedArticleIds.current.has(articleId)
           ? articleStateById.current.get(articleId)
@@ -2714,10 +2750,10 @@ export function App() {
     const recommendedTarget = await setOfflineRecommendedTarget(offlineScope, target);
     setOfflineProfile((current) => current ? {
       ...current,
-      deviceSettings: { recommendedTarget }
+      deviceSettings: { ...current.deviceSettings, recommendedTarget }
     } : current);
     setOfflineSummary(await getOfflineCacheSummary(offlineScope));
-    if (!isUsingOfflineData && navigator.onLine !== false) {
+    if (offlineReadingEnabled && !isUsingOfflineData && navigator.onLine !== false) {
       if (offlineTargetRefreshTimer.current !== null) {
         window.clearTimeout(offlineTargetRefreshTimer.current);
       }
@@ -2725,6 +2761,29 @@ export function App() {
         offlineTargetRefreshTimer.current = null;
         void refreshOfflineCacheNow().catch(() => undefined);
       }, 600);
+    }
+  }
+
+  async function handleOfflineEnabledChange(enabled: boolean) {
+    if (!offlineScope) throw new Error("Offline profile is not available");
+    await setOfflineReadingEnabled(offlineScope, enabled);
+    setOfflineProfile((current) => current ? {
+      ...current,
+      activeSnapshotId: enabled ? current.activeSnapshotId : null,
+      deviceSettings: { ...current.deviceSettings, enabled }
+    } : current);
+    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    hasScheduledOfflineRefresh.current = null;
+    if (offlineTargetRefreshTimer.current !== null) {
+      window.clearTimeout(offlineTargetRefreshTimer.current);
+      offlineTargetRefreshTimer.current = null;
+    }
+    if (!enabled && isUsingOfflineData) {
+      setOfflineConnectionMode("empty");
+      setArticles([]);
+      setNextArticleCursor(null);
+      setArticleDetail(null);
+      setSelectedArticleId(null);
     }
   }
 
@@ -4382,10 +4441,12 @@ export function App() {
             onRebuildEmbeddingIndex={handleRebuildEmbeddingIndex}
             onOpenAlgorithmTransparency={() => navigateToAppPage({ type: "algorithm-transparency" })}
             offlineSummary={offlineSummary}
+            offlineEnabled={offlineReadingEnabled}
             offlineTarget={offlineProfile?.deviceSettings.recommendedTarget ?? offlineSummary.targetCount}
+            onOfflineEnabledChange={handleOfflineEnabledChange}
             onOfflineTargetChange={handleOfflineTargetChange}
             onRefreshOfflineCache={
-              isUsingOfflineData
+              isUsingOfflineData || !offlineReadingEnabled
                 ? undefined
                 : async () => { await refreshOfflineCacheNow(); }
             }

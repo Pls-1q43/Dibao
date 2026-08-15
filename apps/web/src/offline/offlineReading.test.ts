@@ -5,6 +5,7 @@ import {
   MAX_OFFLINE_RECOMMENDED_TARGET,
   MIN_OFFLINE_RECOMMENDED_TARGET,
   isOfflineFallbackError,
+  normalizeOfflineDeviceSettings,
   normalizeRecommendedTarget,
   offlineScopeKey
 } from "./offlineReading.js";
@@ -25,6 +26,16 @@ describe("offline reading helpers", () => {
     expect(offlineScopeKey("reader", "https://dibao.example")).toBe(
       "https://dibao.example::reader"
     );
+  });
+
+  it("keeps offline reading enabled for existing device settings", () => {
+    expect(normalizeOfflineDeviceSettings({ recommendedTarget: 200 })).toEqual({
+      enabled: true,
+      recommendedTarget: 200
+    });
+    expect(
+      normalizeOfflineDeviceSettings({ enabled: false, recommendedTarget: 1_000 })
+    ).toEqual({ enabled: false, recommendedTarget: 1_000 });
   });
 
   it("falls back only for network and server availability failures", () => {

@@ -166,8 +166,10 @@ export function SettingsWorkspace(props: {
   ) => Promise<string | null>;
   onTestEmbeddingProvider: (providerId: string) => Promise<void>;
   offlineSummary?: OfflineCacheSummary | null;
+  offlineEnabled?: boolean;
   offlineTarget?: number;
   isOfflineCacheRefreshing?: boolean;
+  onOfflineEnabledChange?: (enabled: boolean) => Promise<void>;
   onOfflineTargetChange?: (target: number) => Promise<void>;
   onRefreshOfflineCache?: () => Promise<void>;
   onClearOfflineCache?: () => Promise<void>;
@@ -199,9 +201,11 @@ export function SettingsWorkspace(props: {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordNotice, setPasswordNotice] = useState<string | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [offlineEnabled, setOfflineEnabled] = useState(props.offlineEnabled !== false);
   const [offlineTarget, setOfflineTarget] = useState(props.offlineTarget ?? 200);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [offlineError, setOfflineError] = useState<string | null>(null);
+  const [isOfflineToggleSaving, setIsOfflineToggleSaving] = useState(false);
   const [latestRelease, setLatestRelease] = useState<LatestReleaseStatus | null>(null);
   const [latestReleaseError, setLatestReleaseError] = useState<string | null>(null);
   const [isLoadingLatestRelease, setIsLoadingLatestRelease] = useState(false);
@@ -224,8 +228,41 @@ export function SettingsWorkspace(props: {
   }, [props.settings]);
 
   useEffect(() => {
+    setOfflineEnabled(props.offlineEnabled !== false);
+  }, [props.offlineEnabled]);
+
+  useEffect(() => {
     setOfflineTarget(props.offlineTarget ?? props.offlineSummary?.targetCount ?? 200);
   }, [props.offlineSummary?.targetCount, props.offlineTarget]);
+
+  async function changeOfflineEnabled(enabled: boolean) {
+    const pending = (props.offlineSummary?.pendingActionCount ?? 0) +
+      (props.offlineSummary?.failedActionCount ?? 0);
+    const available = props.offlineSummary?.availableCount ?? 0;
+    if (!enabled && (pending > 0 || available > 0)) {
+      const message = pending > 0
+        ? t.offlineReading.settings.disablePendingConfirm(pending)
+        : t.offlineReading.settings.disableConfirm;
+      if (!window.confirm(message)) return;
+    }
+    setIsOfflineToggleSaving(true);
+    setOfflineEnabled(enabled);
+    setOfflineNotice(null);
+    setOfflineError(null);
+    try {
+      await props.onOfflineEnabledChange?.(enabled);
+      setOfflineNotice(
+        enabled
+          ? t.offlineReading.settings.enabled
+          : t.offlineReading.settings.disabled
+      );
+    } catch {
+      setOfflineEnabled(!enabled);
+      setOfflineError(t.offlineReading.settings.toggleFailed);
+    } finally {
+      setIsOfflineToggleSaving(false);
+    }
+  }
 
   async function saveOfflineTarget(target: number) {
     setOfflineTarget(target);
@@ -610,75 +647,99 @@ export function SettingsWorkspace(props: {
             <h3 id="settings-offline-reading-title">{t.offlineReading.settings.title}</h3>
             <p>{t.offlineReading.settings.body}</p>
           </div>
-          <label className={styles.settingsField} htmlFor="settings-offline-target">
-            <span>{t.offlineReading.settings.targetLabel}</span>
-            <div className={styles.settingsRangeRow}>
+          <label className={styles.readerSettingsToggle} htmlFor="settings-offline-enabled">
+            <span className={styles.readerSettingsToggleLabel}>
+              <strong>{t.offlineReading.settings.toggleLabel}</strong>
+              <small>{t.offlineReading.settings.toggleBody}</small>
+            </span>
+            <span className={styles.readerSettingsToggleControl}>
               <input
-                aria-valuetext={t.offlineReading.settings.targetValue(offlineTarget)}
-                id="settings-offline-target"
-                max={1000}
-                min={50}
-                onChange={(event) => void saveOfflineTarget(Number(event.target.value))}
-                step={50}
-                type="range"
-                value={offlineTarget}
+                checked={offlineEnabled}
+                disabled={!props.onOfflineEnabledChange || isOfflineToggleSaving}
+                id="settings-offline-enabled"
+                onChange={(event) => void changeOfflineEnabled(event.target.checked)}
+                role="switch"
+                type="checkbox"
               />
-              <output htmlFor="settings-offline-target">
-                {t.offlineReading.settings.targetValue(offlineTarget)}
-              </output>
-            </div>
+              <span aria-hidden="true" />
+            </span>
           </label>
-          <p className={styles.managementHint}>
-            {t.offlineReading.settings.actualValue(
-              props.offlineSummary?.recommendedCount ?? 0,
-              offlineTarget
-            )}
-          </p>
-          <p className={styles.managementHint}>
-            {t.offlineReading.settings.totalValue(props.offlineSummary?.availableCount ?? 0)}
-          </p>
-          {offlineTarget === 1000 ? (
-            <p className={styles.settingsNotice}>{t.offlineReading.settings.maxWarning}</p>
-          ) : null}
-          {props.offlineSummary?.usageBytes !== null && props.offlineSummary?.usageBytes !== undefined ? (
-            <p className={styles.managementHint}>
-              {t.offlineReading.settings.storageValue(formatOfflineBytes(props.offlineSummary.usageBytes))}
-            </p>
-          ) : null}
-          {props.offlineSummary?.bodyBytes !== null && props.offlineSummary?.bodyBytes !== undefined ? (
-            <p className={styles.managementHint}>
-              {t.offlineReading.settings.bodyStorageValue(formatOfflineBytes(props.offlineSummary.bodyBytes))}
-            </p>
-          ) : null}
-          {props.offlineSummary?.imageBytes !== null && props.offlineSummary?.imageBytes !== undefined ? (
-            <p className={styles.managementHint}>
-              {t.offlineReading.settings.imageStorageValue(formatOfflineBytes(props.offlineSummary.imageBytes))}
-            </p>
-          ) : null}
-          {props.offlineSummary?.persisted === false ? (
-            <p className={styles.settingsNotice}>{t.offlineReading.settings.persistentWarning}</p>
-          ) : null}
-          <div className={styles.managementActions}>
-            <button
-              className={styles.secondaryButton}
-              disabled={props.isOffline || !props.onRefreshOfflineCache || props.isOfflineCacheRefreshing}
-              onClick={() => void refreshOfflineCache()}
-              title={props.isOffline ? t.offlineReading.unavailable : undefined}
-              type="button"
-            >
-              {props.isOfflineCacheRefreshing
-                ? t.offlineReading.settings.refreshing
-                : t.offlineReading.settings.refresh}
-            </button>
-            <button
-              className={styles.dangerButton}
-              disabled={!props.onClearOfflineCache || (props.offlineSummary?.availableCount ?? 0) === 0}
-              onClick={() => void clearOfflineCache()}
-              type="button"
-            >
-              {t.offlineReading.settings.clear}
-            </button>
-          </div>
+          {offlineEnabled ? (
+            <>
+              <label className={styles.settingsField} htmlFor="settings-offline-target">
+                <span>{t.offlineReading.settings.targetLabel}</span>
+                <div className={styles.settingsRangeRow}>
+                  <input
+                    aria-valuetext={t.offlineReading.settings.targetValue(offlineTarget)}
+                    disabled={!props.onOfflineTargetChange}
+                    id="settings-offline-target"
+                    max={1000}
+                    min={50}
+                    onChange={(event) => void saveOfflineTarget(Number(event.target.value))}
+                    step={50}
+                    type="range"
+                    value={offlineTarget}
+                  />
+                  <output htmlFor="settings-offline-target">
+                    {t.offlineReading.settings.targetValue(offlineTarget)}
+                  </output>
+                </div>
+              </label>
+              <p className={styles.managementHint}>
+                {t.offlineReading.settings.actualValue(
+                  props.offlineSummary?.recommendedCount ?? 0,
+                  offlineTarget
+                )}
+              </p>
+              <p className={styles.managementHint}>
+                {t.offlineReading.settings.totalValue(props.offlineSummary?.availableCount ?? 0)}
+              </p>
+              {offlineTarget === 1000 ? (
+                <p className={styles.settingsNotice}>{t.offlineReading.settings.maxWarning}</p>
+              ) : null}
+              {props.offlineSummary?.usageBytes !== null && props.offlineSummary?.usageBytes !== undefined ? (
+                <p className={styles.managementHint}>
+                  {t.offlineReading.settings.storageValue(formatOfflineBytes(props.offlineSummary.usageBytes))}
+                </p>
+              ) : null}
+              {props.offlineSummary?.bodyBytes !== null && props.offlineSummary?.bodyBytes !== undefined ? (
+                <p className={styles.managementHint}>
+                  {t.offlineReading.settings.bodyStorageValue(formatOfflineBytes(props.offlineSummary.bodyBytes))}
+                </p>
+              ) : null}
+              {props.offlineSummary?.imageBytes !== null && props.offlineSummary?.imageBytes !== undefined ? (
+                <p className={styles.managementHint}>
+                  {t.offlineReading.settings.imageStorageValue(formatOfflineBytes(props.offlineSummary.imageBytes))}
+                </p>
+              ) : null}
+              {props.offlineSummary?.persisted === false ? (
+                <p className={styles.settingsNotice}>{t.offlineReading.settings.persistentWarning}</p>
+              ) : null}
+              <div className={styles.managementActions}>
+                <button
+                  className={styles.secondaryButton}
+                  disabled={props.isOffline || !props.onRefreshOfflineCache || props.isOfflineCacheRefreshing}
+                  onClick={() => void refreshOfflineCache()}
+                  title={props.isOffline ? t.offlineReading.unavailable : undefined}
+                  type="button"
+                >
+                  {props.isOfflineCacheRefreshing
+                    ? t.offlineReading.settings.refreshing
+                    : t.offlineReading.settings.refresh}
+                </button>
+                <button
+                  className={styles.dangerButton}
+                  disabled={!props.onClearOfflineCache || (props.offlineSummary?.availableCount ?? 0) === 0}
+                  onClick={() => void clearOfflineCache()}
+                  type="button"
+                >
+                  {t.offlineReading.settings.clear}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className={styles.settingsNotice}>{t.offlineReading.settings.disabledState}</p>
+          )}
           {offlineNotice ? <p className={styles.settingsNotice}>{offlineNotice}</p> : null}
           {offlineError ? <p className={styles.errorText}>{offlineError}</p> : null}
         </section>

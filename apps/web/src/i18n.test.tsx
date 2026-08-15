@@ -1318,6 +1318,7 @@ describe("web i18n", () => {
           onDeleteEmbeddingProvider={() => Promise.resolve()}
           onChangePassword={() => Promise.resolve()}
           onOpenAlgorithmTransparency={() => undefined}
+          onOfflineEnabledChange={() => Promise.resolve()}
           onPreviewSettings={() => undefined}
           onRebuildEmbeddingIndex={() => Promise.resolve()}
           onSaveEmbeddingProvider={() => Promise.resolve(null)}
@@ -1339,6 +1340,8 @@ describe("web i18n", () => {
     expect(html).toContain("查看算法透明说明");
     expect(html).toContain("稍后读中的文章读完后，自动移出稍后读");
     expect(html).toContain("无限加载：滚动到列表底部时自动加载下一批文章");
+    expect(html).toContain("启用离线阅读");
+    expect(html).toContain('role="switch"');
     expect(html).toContain("type=\"range\"");
     expect(html).toContain("兴趣簇上限");
     expect(html).toContain("低配 VPS：24 / 16");
