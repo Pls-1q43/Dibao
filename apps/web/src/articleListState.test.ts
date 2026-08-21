@@ -28,6 +28,22 @@ describe("passive article ignore telemetry", () => {
     ).toBe(false);
   });
 
+  it("disables passive ignore telemetry when the setting is turned off", () => {
+    expect(
+      isArticleListIgnoreTelemetryEnabled({
+        articleView: "recommended",
+        markScrolledArticlesIgnored: false
+      })
+    ).toBe(false);
+
+    expect(
+      isArticleListIgnoreTelemetryEnabled({
+        articleView: "latest",
+        markScrolledArticlesIgnored: false
+      })
+    ).toBe(false);
+  });
+
   it("keeps other unseen articles eligible while a detail article is open", () => {
     expect(
       shouldSkipPassiveIgnoreTelemetry({

@@ -63,6 +63,46 @@ describe("controlledFetchText", () => {
     } satisfies Partial<ControlledFetchError>);
   });
 
+  it("times out stalled hostname resolution", async () => {
+    await expect(
+      controlledFetchText("https://stalled.example/feed.xml", {
+        fetcher: async () => new Response("unreachable"),
+        timeoutMs: 10,
+        maxBytes: 100,
+        resolveHostname: () => new Promise<string[]>(() => undefined)
+      })
+    ).rejects.toMatchObject({
+      code: "FETCH_TIMEOUT"
+    } satisfies Partial<ControlledFetchError>);
+  });
+
+  it("does not hang while cleaning up a timed-out pinned transport", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.write("partial");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      await expect(
+        controlledFetchText(`http://stalled.example.invalid:${port}/feed.xml`, {
+          allowCidrs: ["127.0.0.1/32"],
+          timeoutMs: 20,
+          maxBytes: 100,
+          resolveHostname: async () => ["127.0.0.1"]
+        })
+      ).rejects.toMatchObject({
+        code: "FETCH_TIMEOUT"
+      } satisfies Partial<ControlledFetchError>);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => error ? reject(error) : resolve())
+      );
+    }
+  });
+
   it("blocks private targets by default", async () => {
     const warnings: FetchPrivacyWarning[] = [];
 

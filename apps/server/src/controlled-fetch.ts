@@ -88,7 +88,10 @@ export async function controlledFetchText(
     });
 
     for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
-      const target = await resolveAllowedFetchTarget(currentUrl, privacyPolicy, options.onWarning);
+      const target = await Promise.race([
+        resolveAllowedFetchTarget(currentUrl, privacyPolicy, options.onWarning),
+        timeoutPromise
+      ]);
       const attemptPromise = fetchControlledTarget(currentUrl, {
         method: currentMethod,
         headers: currentHeaders,
@@ -101,7 +104,10 @@ export async function controlledFetchText(
       response = attempt.response;
       closeResponseTransport = attempt.close;
       const responseUrl = response.url && response.url !== currentUrl ? response.url : currentUrl;
-      await resolveAllowedFetchTarget(responseUrl, privacyPolicy, options.onWarning);
+      await Promise.race([
+        resolveAllowedFetchTarget(responseUrl, privacyPolicy, options.onWarning),
+        timeoutPromise
+      ]);
 
       const location = response.headers.get("location");
       if (isRedirectStatus(response.status) && location) {
@@ -115,7 +121,10 @@ export async function controlledFetchText(
           );
         }
         const nextUrl = new URL(location, responseUrl).toString();
-        await resolveAllowedFetchTarget(nextUrl, privacyPolicy, options.onWarning);
+        await Promise.race([
+          resolveAllowedFetchTarget(nextUrl, privacyPolicy, options.onWarning),
+          timeoutPromise
+        ]);
         const redirectRequest = redirectedRequest({
           status: response.status,
           fromUrl: responseUrl,
@@ -352,10 +361,10 @@ async function fetchControlledTarget(
     } as RequestInit);
     return {
       response,
-      close: () => agent.close()
+      close: () => agent.destroy()
     };
   } catch (error) {
-    await agent.close().catch(() => undefined);
+    await agent.destroy().catch(() => undefined);
     throw error;
   }
 }
