@@ -398,9 +398,8 @@ export const zhCN = {
       },
       behavior: {
         title: "行为记录",
-        body: "控制列表浏览和稍后读队列中的自动行为记录。",
+        body: "控制稍后读队列中的自动行为和推荐个性化参数。",
         algorithmTransparencyLink: "查看算法透明说明",
-        markScrolledArticlesIgnored: "滚过未打开文章后，将其标记为已忽略并移出未读",
         removeReadLaterOnReadComplete: "稍后读中的文章读完后，自动移出稍后读",
         infiniteArticleLoading: "无限加载：滚动到列表底部时自动加载下一批文章",
         cocoonLevel: "信息茧房水平",
@@ -433,11 +432,14 @@ export const zhCN = {
       },
       reader: {
         title: "阅读",
-        body: "调整文章详情的阅读密度。修改会立即应用到当前阅读区域。",
+        body: "调整阅读排版和文章列表行为。排版修改会立即应用到当前阅读区域。",
         fontSize: "字号",
         lineHeight: "行高",
         paragraphGap: "段距",
-        readerWidth: "阅读宽度"
+        readerWidth: "阅读宽度",
+        markScrolledArticlesIgnored: "滚动后自动忽略",
+        markScrolledArticlesIgnoredHint:
+          "在“最新”和“推荐”列表中，将滚过且未打开的文章标记为已忽略并移出未读。"
       },
       retention: {
         title: "文章保留",
@@ -1865,9 +1867,8 @@ export const enUS = {
       },
       behavior: {
         title: "Behavior tracking",
-        body: "Control automatic behavior capture in article lists and the Read Later queue.",
+        body: "Control automatic Read Later behavior and recommendation personalization.",
         algorithmTransparencyLink: "View personalization details",
-        markScrolledArticlesIgnored: "Mark unopened articles you scroll past as ignored and remove them from unread",
         removeReadLaterOnReadComplete: "Remove Read Later articles after you finish them",
         infiniteArticleLoading: "Infinite loading: automatically load more articles when you reach the end of a list",
         cocoonLevel: "Cocoon level",
@@ -1900,11 +1901,14 @@ export const enUS = {
       },
       reader: {
         title: "Reading",
-        body: "Adjust article detail reading density. Changes apply immediately to the reader.",
+        body: "Adjust reading layout and article-list behavior. Layout changes apply immediately to the reader.",
         fontSize: "Font size",
         lineHeight: "Line height",
         paragraphGap: "Paragraph gap",
-        readerWidth: "Reader width"
+        readerWidth: "Reader width",
+        markScrolledArticlesIgnored: "Auto-ignore after scrolling",
+        markScrolledArticlesIgnoredHint:
+          "In Latest and For You, mark unopened articles you scroll past as ignored and remove them from unread."
       },
       retention: {
         title: "Article retention",
@@ -3321,9 +3325,8 @@ export const jaJP = {
       },
       behavior: {
         title: "行動の記録",
-        body: "記事一覧とあとで読むキューで、自動的に記録する閲覧行動を管理します。",
+        body: "あとで読むキューの自動操作とおすすめのパーソナライズを管理します。",
         algorithmTransparencyLink: "アルゴリズムの透明性を見る",
-        markScrolledArticlesIgnored: "開かずに通過した記事を無視済みにし、未読から外す",
         removeReadLaterOnReadComplete: "あとで読むの記事を読み終えたら、あとで読むから外す",
         infiniteArticleLoading: "無限読み込み：一覧の末尾までスクロールすると次の記事を自動で読み込む",
         cocoonLevel: "パーソナライズ度",
@@ -3356,11 +3359,14 @@ export const jaJP = {
       },
       reader: {
         title: "読書",
-        body: "記事本文の読みやすさと密度を調整します。変更はすぐにリーダーへ反映されます。",
+        body: "読書レイアウトと記事一覧の動作を調整します。レイアウトの変更はすぐにリーダーへ反映されます。",
         fontSize: "文字サイズ",
         lineHeight: "行間",
         paragraphGap: "段落間隔",
-        readerWidth: "本文幅"
+        readerWidth: "本文幅",
+        markScrolledArticlesIgnored: "スクロール後に自動で無視",
+        markScrolledArticlesIgnoredHint:
+          "「最新」と「おすすめ」で、開かずに通過した記事を無視済みにして未読から外します。"
       },
       retention: {
         title: "記事の保持",

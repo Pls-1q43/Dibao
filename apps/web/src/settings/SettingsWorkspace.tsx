@@ -828,20 +828,6 @@ export function SettingsWorkspace(props: {
               {t.settings.sections.behavior.algorithmTransparencyLink}
             </a>
           </div>
-          <label className={styles.managementCheckbox} htmlFor="settings-ignore-scrolled">
-            <input
-              checked={draft.markScrolledArticlesIgnored}
-              id="settings-ignore-scrolled"
-              onChange={(event) =>
-                applyDraft({
-                  ...draft,
-                  markScrolledArticlesIgnored: event.target.checked
-                })
-              }
-              type="checkbox"
-            />
-            <span>{t.settings.sections.behavior.markScrolledArticlesIgnored}</span>
-          </label>
           <label
             className={styles.managementCheckbox}
             htmlFor="settings-remove-read-later-on-complete"
@@ -1010,6 +996,26 @@ export function SettingsWorkspace(props: {
               value={draft.readerWidth}
             />
           </div>
+          <label className={styles.readerSettingsToggle} htmlFor="settings-ignore-scrolled">
+            <span className={styles.readerSettingsToggleLabel}>
+              <strong>{t.settings.sections.reader.markScrolledArticlesIgnored}</strong>
+              <small>{t.settings.sections.reader.markScrolledArticlesIgnoredHint}</small>
+            </span>
+            <span className={styles.readerSettingsToggleControl}>
+              <input
+                checked={draft.markScrolledArticlesIgnored}
+                id="settings-ignore-scrolled"
+                onChange={(event) =>
+                  applyDraft({
+                    ...draft,
+                    markScrolledArticlesIgnored: event.target.checked
+                  })
+                }
+                type="checkbox"
+              />
+              <span aria-hidden="true" />
+            </span>
+          </label>
           <label className={styles.readerSettingsToggle} htmlFor="settings-infinite-article-loading">
             <span>{t.settings.sections.behavior.infiniteArticleLoading}</span>
             <span className={styles.readerSettingsToggleControl}>
