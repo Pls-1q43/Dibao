@@ -4,23 +4,51 @@ import type { DerivedDataUpgradeStatus, FeedDiscoveryCandidate, FeedDiscoveryRes
 import { useI18n } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { classNames, type AuthMode } from "../app/shared.js";
+import type { OfflineModePromptReason } from "../offline/offlineReading.js";
 
 export function PwaStatusBanner(props: {
-  isOffline: boolean;
+  offlinePrompt: { reason: OfflineModePromptReason; availableCount: number } | null;
+  isEnteringOfflineMode: boolean;
   onApplyUpdate: (() => void) | null;
   onDismissUpdate: () => void;
+  onDismissOfflinePrompt: () => void;
+  onEnterOfflineMode: () => void;
 }) {
   const { t } = useI18n();
 
-  if (!props.isOffline && !props.onApplyUpdate) {
+  if (!props.offlinePrompt && !props.onApplyUpdate) {
     return null;
   }
 
   return (
     <div className={styles.pwaStatusStack} aria-live="polite">
-      {props.isOffline ? (
+      {props.offlinePrompt ? (
         <div className={styles.pwaStatusBanner} role="status">
-          <span>{t.pwa.offline}</span>
+          <span>
+            {props.offlinePrompt.reason === "server-unavailable"
+              ? t.pwa.offlinePrompt.serverUnavailable(props.offlinePrompt.availableCount)
+              : t.pwa.offlinePrompt.networkOffline(props.offlinePrompt.availableCount)}
+          </span>
+          <div className={styles.pwaStatusActions}>
+            <button
+              className={styles.pwaStatusButton}
+              disabled={props.isEnteringOfflineMode}
+              onClick={props.onEnterOfflineMode}
+              type="button"
+            >
+              {props.isEnteringOfflineMode
+                ? t.pwa.offlinePrompt.entering
+                : t.pwa.offlinePrompt.enter}
+            </button>
+            <button
+              className={styles.pwaStatusButtonSecondary}
+              disabled={props.isEnteringOfflineMode}
+              onClick={props.onDismissOfflinePrompt}
+              type="button"
+            >
+              {t.pwa.offlinePrompt.dismiss}
+            </button>
+          </div>
         </div>
       ) : null}
       {props.onApplyUpdate ? (

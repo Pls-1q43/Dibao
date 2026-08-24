@@ -90,8 +90,9 @@ import {
   clearOfflineScope,
   getOfflineArticleDetail,
   getOfflineCacheSummary,
-  isOfflineFallbackError,
+  isOfflineModeActive,
   listOfflineArticles,
+  offlineModePromptReasonForError,
   offlineScopeKey,
   queueOfflineArticleAction,
   readOfflineBootstrap,
@@ -100,10 +101,12 @@ import {
   rememberOfflineSession,
   retryFailedOfflineActions,
   setOfflineReadingEnabled,
+  setOfflineModeActive,
   setOfflineRecommendedTarget,
   syncOfflineArticleActions,
   updateOfflineProfile,
   type OfflineCacheSummary,
+  type OfflineModePromptReason,
   type OfflineProfileRecord
 } from "./offline/offlineReading.js";
 import {
@@ -474,10 +477,15 @@ export function App() {
   const [isUsingOfflineData, setIsUsingOfflineData] = useState(false);
   const [offlineConnectionMode, setOfflineConnectionMode] =
     useState<OfflineConnectionMode>("online");
+  const [offlineModePrompt, setOfflineModePrompt] = useState<{
+    reason: OfflineModePromptReason;
+    availableCount: number;
+  } | null>(null);
+  const [isEnteringOfflineMode, setIsEnteringOfflineMode] = useState(false);
+  const [isExitingOfflineMode, setIsExitingOfflineMode] = useState(false);
   const [isOfflineCacheRefreshing, setIsOfflineCacheRefreshing] = useState(false);
   const [offlineCacheError, setOfflineCacheError] = useState<string | null>(null);
   const [lastConnectedAt, setLastConnectedAt] = useState<number | null>(null);
-  const [reconnectRetryToken, setReconnectRetryToken] = useState(0);
   const [pwaUpdateApply, setPwaUpdateApply] = useState<(() => void) | null>(null);
   const openedArticleIds = useRef(new Set<string>());
   const ignoredArticleIds = useRef(new Set<string>());
@@ -497,13 +505,15 @@ export function App() {
   const personalizedDiscoveryRequestId = useRef(0);
   const personalizedDiscoveryRequest = useRef<PersonalizedRelatedRequestContext | null>(null);
   const reconnectInFlight = useRef(false);
-  const reconnectAttempt = useRef(0);
-  const deferredOnlineActivation = useRef(false);
+  const manualOfflineMode = useRef(false);
+  const dismissedOfflinePromptReason = useRef<OfflineModePromptReason | null>(null);
+  const offlinePromptRequestId = useRef(0);
   const hasScheduledOfflineRefresh = useRef<string | null>(null);
   const offlineTargetRefreshTimer = useRef<number | null>(null);
   const hasLoadedSettingsForSession = useRef(false);
   const hasAppliedDefaultHomeViewForSession = useRef(false);
   const appPageRef = useRef<AppPage>(appPage);
+  const appStageRef = useRef<AppStage>(appStage);
   const hasExplicitUrlPageIntent = useRef(initialRoute.hasExplicitPage);
   const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled !== false;
 
@@ -800,12 +810,17 @@ export function App() {
     setOfflineSummary(emptyOfflineCacheSummary());
     setIsUsingOfflineData(false);
     setOfflineConnectionMode("online");
+    setOfflineModePrompt(null);
+    setIsEnteringOfflineMode(false);
+    setIsExitingOfflineMode(false);
     setIsOfflineCacheRefreshing(false);
     setOfflineCacheError(null);
     setLastConnectedAt(null);
-    setReconnectRetryToken(0);
-    reconnectAttempt.current = 0;
-    deferredOnlineActivation.current = false;
+    reconnectInFlight.current = false;
+    manualOfflineMode.current = false;
+    setOfflineModeActive(null);
+    dismissedOfflinePromptReason.current = null;
+    offlinePromptRequestId.current += 1;
     activateOfflineImageScope(null);
     hasLoadedSettingsForSession.current = false;
     hasAppliedDefaultHomeViewForSession.current = hasExplicitUrlPageIntent.current;
@@ -851,7 +866,6 @@ export function App() {
     applySettings(profile.settings ?? defaultAppSettings);
     setIsSettingsLoading(false);
     setLastConnectedAt(profile.lastConnectedAt ?? null);
-    reconnectAttempt.current = 0;
     setIsUsingOfflineData(true);
     setOfflineConnectionMode(snapshot ? mode : "empty");
     setOfflineSummary(await getOfflineCacheSummary(profile.scopeKey));
@@ -873,6 +887,81 @@ export function App() {
     return true;
   }, [applySettings]);
 
+  const markServerAvailable = useCallback(() => {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    dismissedOfflinePromptReason.current = null;
+    setOfflineModePrompt(null);
+  }, []);
+
+  const offerOfflineMode = useCallback(async (
+    reason: OfflineModePromptReason
+  ): Promise<boolean> => {
+    if (
+      manualOfflineMode.current ||
+      isUsingOfflineData ||
+      dismissedOfflinePromptReason.current === reason
+    ) {
+      return false;
+    }
+    const requestId = offlinePromptRequestId.current + 1;
+    offlinePromptRequestId.current = requestId;
+    try {
+      const bootstrap = await readOfflineBootstrap();
+      if (!bootstrap?.snapshot || requestId !== offlinePromptRequestId.current) return false;
+      const summary = await getOfflineCacheSummary(bootstrap.profile.scopeKey);
+      if (summary.availableCount <= 0 || requestId !== offlinePromptRequestId.current) return false;
+      setOfflineSummary(summary);
+      setOfflineModePrompt({ reason, availableCount: summary.availableCount });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [isUsingOfflineData]);
+
+  const offerOfflineModeForError = useCallback(async (error: unknown): Promise<boolean> => {
+    const reason = offlineModePromptReasonForError(error);
+    return reason ? offerOfflineMode(reason) : false;
+  }, [offerOfflineMode]);
+
+  const handleEnterOfflineMode = useCallback(async () => {
+    if (!offlineModePrompt || isEnteringOfflineMode) return;
+    const reason = offlineModePrompt.reason;
+    setIsEnteringOfflineMode(true);
+    offlinePromptRequestId.current += 1;
+    try {
+      const bootstrap = await readOfflineBootstrap();
+      if (!bootstrap?.snapshot) return;
+      manualOfflineMode.current = true;
+      const activated = await applyOfflineBootstrap(bootstrap, reason === "server-unavailable"
+        ? "server-unavailable"
+        : "offline", {
+        coldStart: appStage.type === "auth-loading" || appStage.type === "setup-status-loading"
+      });
+      if (!activated) {
+        manualOfflineMode.current = false;
+        return;
+      }
+      setOfflineModeActive(bootstrap.profile.scopeKey);
+      dismissedOfflinePromptReason.current = null;
+      setOfflineModePrompt(null);
+      setAuthError(null);
+    } finally {
+      setIsEnteringOfflineMode(false);
+    }
+  }, [appStage.type, applyOfflineBootstrap, isEnteringOfflineMode, offlineModePrompt]);
+
+  const handleDismissOfflinePrompt = useCallback(() => {
+    if (offlineModePrompt) dismissedOfflinePromptReason.current = offlineModePrompt.reason;
+    offlinePromptRequestId.current += 1;
+    setOfflineModePrompt(null);
+    if (
+      appStageRef.current.type === "auth-loading" ||
+      appStageRef.current.type === "setup-status-loading"
+    ) {
+      setAuthGateRetryToken((value) => value + 1);
+    }
+  }, [offlineModePrompt]);
+
   const handleRetryAuthGate = useCallback(() => {
     setAuthError(null);
     setAppStage({ type: "auth-loading" });
@@ -883,6 +972,20 @@ export function App() {
     let cancelled = false;
 
     async function loadAuthSession() {
+      if (manualOfflineMode.current) return;
+      try {
+        const bootstrap = await readOfflineBootstrap();
+        if (bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
+          manualOfflineMode.current = true;
+          if (await applyOfflineBootstrap(bootstrap, "offline", { coldStart: true })) return;
+          manualOfflineMode.current = false;
+          setOfflineModeActive(null);
+        }
+      } catch {
+        manualOfflineMode.current = false;
+        setOfflineModeActive(null);
+      }
+      if (cancelled) return;
       setAppStage({ type: "auth-loading" });
       setAuthError(null);
 
@@ -890,6 +993,8 @@ export function App() {
         try {
           const session = await dibaoApi.getAuthSession();
           if (!cancelled) {
+            manualOfflineMode.current = false;
+            markServerAvailable();
             const nextStage = stageForAuthSession(session);
             setAuthUsername(session.authenticated ? session.username : null);
             if (session.authenticated && session.username) {
@@ -915,20 +1020,7 @@ export function App() {
           }
           return;
         } catch (error) {
-          if (isOfflineFallbackError(error)) {
-            try {
-              const activated = await applyOfflineBootstrap(
-                await readOfflineBootstrap(),
-                error instanceof ApiRequestError && error.status >= 500
-                  ? "server-unavailable"
-                  : "offline",
-                { coldStart: true }
-              );
-              if (activated || cancelled) return;
-            } catch {
-              // Continue the auth retry path when local storage is unavailable or empty.
-            }
-          }
+          if (await offerOfflineModeForError(error) || cancelled) return;
           if (!cancelled) {
             setAuthError(
               attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
@@ -950,23 +1042,34 @@ export function App() {
   }, [
     applyOfflineBootstrap,
     authGateRetryToken,
+    markServerAvailable,
+    offerOfflineModeForError,
     resetReaderState,
     t.auth.errors.session,
     t.errors.api
   ]);
 
   useEffect(() => {
-    function updateOnlineStatus() {
-      setIsOffline(navigator.onLine === false);
+    function handleOnline() {
+      setIsOffline(false);
+      dismissedOfflinePromptReason.current = null;
+      setOfflineModePrompt(null);
+      if (!manualOfflineMode.current && appStageRef.current.type === "auth-loading") {
+        setAuthGateRetryToken((value) => value + 1);
+      }
     }
 
-    window.addEventListener("online", updateOnlineStatus);
-    window.addEventListener("offline", updateOnlineStatus);
-    updateOnlineStatus();
+    function handleOffline() {
+      setIsOffline(true);
+    }
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    setIsOffline(navigator.onLine === false);
 
     return () => {
-      window.removeEventListener("online", updateOnlineStatus);
-      window.removeEventListener("offline", updateOnlineStatus);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
     };
   }, []);
 
@@ -996,6 +1099,7 @@ export function App() {
         try {
           const status = await dibaoApi.getSetupStatus();
           if (!cancelled) {
+            markServerAvailable();
             setDerivedDataUpgrade(status.coreDatabaseMigration ?? status.derivedDataUpgrade ?? null);
             const nextStage = stageForSetupStatus(status);
             if (nextStage.type === "welcome") {
@@ -1005,6 +1109,7 @@ export function App() {
           }
           return;
         } catch (error) {
+          if (await offerOfflineModeForError(error) || cancelled) return;
           if (!cancelled) {
             setAuthError(
               attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
@@ -1026,6 +1131,8 @@ export function App() {
   }, [
     appStage.type,
     authGateRetryToken,
+    markServerAvailable,
+    offerOfflineModeForError,
     resetReaderState,
     t.auth.errors.setupStatus,
     t.errors.api
@@ -1103,6 +1210,10 @@ export function App() {
   useEffect(() => {
     appPageRef.current = appPage;
   }, [appPage]);
+
+  useEffect(() => {
+    appStageRef.current = appStage;
+  }, [appStage]);
 
   useEffect(() => {
     selectedArticleIdRef.current = selectedArticleId;
@@ -1381,8 +1492,10 @@ export function App() {
       const summary = await refreshOfflineSnapshot(offlineScope, dibaoApi);
       setOfflineSummary(summary);
       setOfflineConnectionMode(summary.failedActionCount > 0 ? "sync-failed" : "online");
-      deferredOnlineActivation.current = selectedArticleIdRef.current !== null;
-      if (!deferredOnlineActivation.current) setIsUsingOfflineData(false);
+      manualOfflineMode.current = false;
+      setOfflineModeActive(null);
+      setIsUsingOfflineData(false);
+      markServerAvailable();
       const connectedAt = Date.now();
       setLastConnectedAt(connectedAt);
       await updateOfflineProfile(offlineScope, { lastConnectedAt: connectedAt });
@@ -1402,56 +1515,26 @@ export function App() {
       setOfflineCacheError(userMessageForError(error, t.errors.api));
       return false;
     }
-  }, [offlineScope, t.errors.api]);
+  }, [markServerAvailable, offlineScope, t.errors.api]);
 
   const retryOfflineSync = useCallback(async () => {
     if (!offlineScope || navigator.onLine === false || reconnectInFlight.current) return;
     reconnectInFlight.current = true;
+    setIsExitingOfflineMode(true);
     try {
       await retryFailedOfflineActions(offlineScope);
       setOfflineSummary(await getOfflineCacheSummary(offlineScope));
-      const connected = await reconnectToServer();
-      reconnectAttempt.current = connected ? 0 : reconnectAttempt.current + 1;
-      if (!connected) setReconnectRetryToken((value) => value + 1);
+      await reconnectToServer();
     } finally {
       reconnectInFlight.current = false;
+      setIsExitingOfflineMode(false);
     }
   }, [offlineScope, reconnectToServer]);
 
   useEffect(() => {
-    if (!isOffline || appStage.type !== "reader") return;
-    void readOfflineBootstrap()
-      .then((bootstrap) => applyOfflineBootstrap(bootstrap, "offline"))
-      .catch(() => undefined);
-  }, [appStage.type, applyOfflineBootstrap, isOffline]);
-
-  useEffect(() => {
-    if (isOffline || !isUsingOfflineData || !offlineScope) return;
-    const delayMs = reconnectAttempt.current === 0
-      ? 0
-      : Math.min(1_000 * 2 ** (reconnectAttempt.current - 1), 30_000);
-    const timer = window.setTimeout(() => {
-      if (reconnectInFlight.current) return;
-      reconnectInFlight.current = true;
-      void reconnectToServer()
-        .then((connected) => {
-          reconnectAttempt.current = connected ? 0 : reconnectAttempt.current + 1;
-          if (!connected && navigator.onLine !== false) {
-            setReconnectRetryToken((value) => value + 1);
-          }
-        })
-        .finally(() => {
-          reconnectInFlight.current = false;
-        });
-    }, delayMs);
-    return () => window.clearTimeout(timer);
-  }, [isOffline, isUsingOfflineData, offlineScope, reconnectRetryToken, reconnectToServer]);
-
-  useEffect(() => {
-    if (selectedArticleId !== null || !deferredOnlineActivation.current) return;
-    deferredOnlineActivation.current = false;
-    setIsUsingOfflineData(false);
-  }, [selectedArticleId]);
+    if (!isOffline || isUsingOfflineData || appStage.type !== "reader") return;
+    void offerOfflineMode("network-offline");
+  }, [appStage.type, isOffline, isUsingOfflineData, offerOfflineMode]);
 
   useEffect(() => {
     if (
@@ -1609,6 +1692,7 @@ export function App() {
       if (requestVersion !== articleRequestVersion.current) {
         return;
       }
+      markServerAvailable();
       setArticleLoadingNotice(null);
       const responseArticles = articleListWithKnownLocalStates(
         response.data,
@@ -1669,43 +1753,7 @@ export function App() {
       if (requestVersion !== articleRequestVersion.current) {
         return;
       }
-      if (!isUsingOfflineData && isOfflineFallbackError(error)) {
-        try {
-          const bootstrap = await readOfflineBootstrap();
-          const activated = await applyOfflineBootstrap(
-            bootstrap,
-            error instanceof ApiRequestError && error.status >= 500
-              ? "server-unavailable"
-              : "offline"
-          );
-          if (activated && bootstrap?.snapshot) {
-            const response = await listOfflineArticles(bootstrap.profile.scopeKey, {
-              ...articleQueryFor(selection),
-              view,
-              unreadOnly: supportsUnreadOnly(view) ? onlyUnread : false,
-              timeWindow: supportsQuickFilters(view) ? selectedTimeWindow : "all",
-              favoriteSort: sort,
-              readLaterSort: laterSort,
-              limit: 50
-            });
-            rememberArticleStates(response.data, articleStateById.current);
-            setArticles(response.data);
-            setUnreadCount(response.unreadCount);
-            setNextArticleCursor(response.nextCursor);
-            setArticleError(null);
-            return;
-          }
-          if (activated) {
-            setArticles([]);
-            setUnreadCount(0);
-            setNextArticleCursor(null);
-            setArticleError(null);
-            return;
-          }
-        } catch {
-          // Fall through to the online request error when no local snapshot can be read.
-        }
-      }
+      if (!isUsingOfflineData) await offerOfflineModeForError(error);
       setArticleLoadingNotice(null);
       setArticleError(userMessageForError(error, t.errors.api));
       setNextArticleCursor(null);
@@ -1716,10 +1764,11 @@ export function App() {
     }
   }, [
     appPage.type,
-    applyOfflineBootstrap,
     isUsingOfflineData,
+    markServerAvailable,
     offlineConnectionMode,
     offlineScope,
+    offerOfflineModeForError,
     t.articles.loadingSlow,
     t.errors.api
   ]);
@@ -1775,6 +1824,7 @@ export function App() {
       if (requestVersion !== articleRequestVersion.current) {
         return;
       }
+      markServerAvailable();
       setArticleLoadingNotice(null);
       const responseArticles = articleListWithKnownLocalStates(
         response.data,
@@ -1842,6 +1892,7 @@ export function App() {
       if (requestVersion !== articleRequestVersion.current) {
         return;
       }
+      await offerOfflineModeForError(error);
       setArticleLoadingNotice(null);
       setArticleError(userMessageForError(error, t.errors.api));
       setNextArticleCursor(null);
@@ -1850,7 +1901,7 @@ export function App() {
         setIsArticlesLoading(false);
       }
     }
-  }, [t.articles.loadingSlow, t.errors.api]);
+  }, [markServerAvailable, offerOfflineModeForError, t.articles.loadingSlow, t.errors.api]);
 
   useEffect(() => {
     if (appStage.type !== "reader" || isUsingOfflineData) {
@@ -2181,27 +2232,14 @@ export function App() {
         } else {
           void dibaoApi.postArticleAction(articleId, request)
             .then((result) => {
-              if (!cancelled) applyArticleState(articleId, result.state);
+              if (!cancelled) {
+                markServerAvailable();
+                applyArticleState(articleId, result.state);
+              }
             })
             .catch(async (error) => {
-              if (openedState && isOfflineFallbackError(error)) {
-                const bootstrap = await readOfflineBootstrap().catch(() => null);
-                if (bootstrap) {
-                  await applyOfflineBootstrap(
-                    bootstrap,
-                    error instanceof ApiRequestError && error.status >= 500
-                      ? "server-unavailable"
-                      : "offline"
-                  );
-                  await queueOfflineArticleAction({
-                    scopeKey: bootstrap.profile.scopeKey,
-                    articleId,
-                    request,
-                    state: openedState
-                  });
-                  return;
-                }
-              }
+              await offerOfflineModeForError(error);
+              if (knownState) applyArticleState(articleId, knownState);
               openedArticleIds.current.delete(articleId);
               if (!cancelled) setArticleActionError(t.actions.errors.open);
             });
@@ -2217,6 +2255,7 @@ export function App() {
           detail = await withRequestTimeout(ARTICLE_DETAIL_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getArticle(articleId, { signal })
           );
+          markServerAvailable();
           if (offlineScope) {
             void cacheOnlineArticleDetail(offlineScope, detail).catch(() => undefined);
           }
@@ -2232,28 +2271,7 @@ export function App() {
           setIsDetailLoading(false);
         }
       } catch (error) {
-        if (!isUsingOfflineData && isOfflineFallbackError(error)) {
-          const bootstrap = await readOfflineBootstrap().catch(() => null);
-          if (bootstrap) {
-            await applyOfflineBootstrap(
-              bootstrap,
-              error instanceof ApiRequestError && error.status >= 500
-                ? "server-unavailable"
-                : "offline"
-            );
-            const cached = await getOfflineArticleDetail(bootstrap.profile.scopeKey, articleId);
-            if (cached && !cancelled) {
-              const overlayState = locallyUpdatedArticleIds.current.has(articleId)
-                ? articleStateById.current.get(articleId)
-                : null;
-              const detailWithKnownState = overlayState ? { ...cached, state: overlayState } : cached;
-              articleStateById.current.set(articleId, detailWithKnownState.state);
-              setArticleDetail(detailWithKnownState);
-              setDetailError(null);
-              return;
-            }
-          }
-        }
+        if (!isUsingOfflineData) await offerOfflineModeForError(error);
         if (!cancelled) {
           setDetailError(
             isUsingOfflineData
@@ -2288,9 +2306,10 @@ export function App() {
   }, [
     currentArticleView,
     detailReloadRevision,
-    applyOfflineBootstrap,
     isUsingOfflineData,
+    markServerAvailable,
     offlineScope,
+    offerOfflineModeForError,
     selectedArticleId,
     submittedSearchForm.sort,
     t.actions.errors.open,
@@ -2779,6 +2798,8 @@ export function App() {
       offlineTargetRefreshTimer.current = null;
     }
     if (!enabled && isUsingOfflineData) {
+      manualOfflineMode.current = false;
+      setOfflineModeActive(null);
       setOfflineConnectionMode("empty");
       setArticles([]);
       setNextArticleCursor(null);
@@ -3514,6 +3535,7 @@ export function App() {
         article.id,
         request
       );
+      markServerAvailable();
       applyArticleState(article.id, result.state);
       if (shouldLoadPersonalizedRelated) {
         confirmPersonalizedRelatedLike(article.id);
@@ -3522,24 +3544,7 @@ export function App() {
         void refreshArticleExplanation(article.id);
       }
     } catch (error) {
-      if (!isUsingOfflineData && isOfflineFallbackError(error)) {
-        const bootstrap = await readOfflineBootstrap().catch(() => null);
-        if (bootstrap) {
-          await applyOfflineBootstrap(
-            bootstrap,
-            error instanceof ApiRequestError && error.status >= 500
-              ? "server-unavailable"
-              : "offline"
-          );
-          await queueOfflineArticleAction({
-            scopeKey: bootstrap.profile.scopeKey,
-            articleId: article.id,
-            request,
-            state: nextState
-          });
-          return;
-        }
-      }
+      if (!isUsingOfflineData) await offerOfflineModeForError(error);
       applyArticleState(article.id, previousState);
       if (shouldLoadPersonalizedRelated) {
         discardPersonalizedRelated(article.id);
@@ -3721,25 +3726,10 @@ export function App() {
         return;
       }
       const result = await dibaoApi.postArticleAction(articleId, request);
+      markServerAvailable();
       applyArticleState(articleId, result.state);
     } catch (error) {
-      if (!isUsingOfflineData && previousState && isOfflineFallbackError(error)) {
-        const bootstrap = await readOfflineBootstrap().catch(() => null);
-        if (bootstrap) {
-          await applyOfflineBootstrap(
-            bootstrap,
-            error instanceof ApiRequestError && error.status >= 500
-              ? "server-unavailable"
-              : "offline"
-          );
-          await queueOfflineArticleAction({
-            scopeKey: bootstrap.profile.scopeKey,
-            articleId,
-            request,
-            state: optimisticReadProgressState(previousState, progress)
-          });
-        }
-      }
+      if (!isUsingOfflineData) await offerOfflineModeForError(error);
       // Automatic reading telemetry should never interrupt the reader surface.
     }
   }
@@ -3960,14 +3950,20 @@ export function App() {
         summary: offlineSummary,
         lastConnectedAt,
         error: offlineCacheError,
-        onRetry: () => void retryOfflineSync()
+        isBrowserOffline: isOffline,
+        isExiting: isExitingOfflineMode,
+        onExit: isUsingOfflineData ? () => void retryOfflineSync() : undefined,
+        onRetry: isUsingOfflineData ? undefined : () => void retryOfflineSync()
       }
     : null;
   const pwaStatusBanner = (
     <PwaStatusBanner
-      isOffline={false}
+      offlinePrompt={offlineModePrompt}
+      isEnteringOfflineMode={isEnteringOfflineMode}
       onApplyUpdate={pwaUpdateApply}
+      onDismissOfflinePrompt={handleDismissOfflinePrompt}
       onDismissUpdate={() => setPwaUpdateApply(null)}
+      onEnterOfflineMode={() => void handleEnterOfflineMode()}
     />
   );
   const activePlugin =

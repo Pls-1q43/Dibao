@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ApiRequestError } from "../api.js";
 import {
@@ -5,9 +6,12 @@ import {
   MAX_OFFLINE_RECOMMENDED_TARGET,
   MIN_OFFLINE_RECOMMENDED_TARGET,
   isOfflineFallbackError,
+  isOfflineModeActive,
+  offlineModePromptReasonForError,
   normalizeOfflineDeviceSettings,
   normalizeRecommendedTarget,
-  offlineScopeKey
+  offlineScopeKey,
+  setOfflineModeActive
 } from "./offlineReading.js";
 
 describe("offline reading helpers", () => {
@@ -38,9 +42,60 @@ describe("offline reading helpers", () => {
     ).toEqual({ enabled: false, recommendedTarget: 1_000 });
   });
 
+  it("persists an explicitly selected offline mode until it is cleared", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => values.delete(key),
+      setItem: (key: string, value: string) => values.set(key, value)
+    };
+
+    setOfflineModeActive("reader-scope", storage);
+    expect(isOfflineModeActive("reader-scope", storage)).toBe(true);
+    expect(isOfflineModeActive("another-scope", storage)).toBe(false);
+    setOfflineModeActive(null, storage);
+    expect(isOfflineModeActive("reader-scope", storage)).toBe(false);
+  });
+
   it("falls back only for network and server availability failures", () => {
     expect(isOfflineFallbackError(new TypeError("network failed"))).toBe(true);
     expect(isOfflineFallbackError(new ApiRequestError(503, "UNAVAILABLE", "down"))).toBe(true);
     expect(isOfflineFallbackError(new ApiRequestError(401, "AUTH_REQUIRED", "login"))).toBe(false);
+  });
+
+  it("distinguishes a disconnected browser from an unavailable server", () => {
+    expect(offlineModePromptReasonForError(new TypeError("network failed"), false)).toBe(
+      "server-unavailable"
+    );
+    expect(
+      offlineModePromptReasonForError(
+        new ApiRequestError(503, "UNAVAILABLE", "down"),
+        false
+      )
+    ).toBe("server-unavailable");
+    expect(
+      offlineModePromptReasonForError(
+        new ApiRequestError(503, "UNAVAILABLE", "down"),
+        true
+      )
+    ).toBe("network-offline");
+    expect(
+      offlineModePromptReasonForError(
+        new ApiRequestError(401, "AUTH_REQUIRED", "login"),
+        false
+      )
+    ).toBeNull();
+  });
+
+  it("keeps offline mode entry and exit user-controlled", () => {
+    const runtime = readFileSync(new URL("../AppRuntime.tsx", import.meta.url), "utf8");
+
+    expect(runtime.match(/applyOfflineBootstrap\(/g)).toHaveLength(2);
+    expect(runtime).toContain("isOfflineModeActive(bootstrap.profile.scopeKey)");
+    expect(runtime).toContain('void offerOfflineMode("network-offline")');
+    expect(runtime).toContain("setAuthGateRetryToken((value) => value + 1)");
+    expect(runtime).toContain("onExit: isUsingOfflineData");
+    expect(runtime).not.toContain("reconnectAttempt");
+    expect(runtime).not.toContain("deferredOnlineActivation");
   });
 });

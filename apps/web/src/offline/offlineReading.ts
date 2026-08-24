@@ -31,6 +31,7 @@ export const MAX_OFFLINE_RECOMMENDED_TARGET = 1_000;
 const OFFLINE_PAGE_SIZE = 50;
 const ARTICLE_BATCH_SIZE = 25;
 const SYNC_CHANNEL_NAME = "dibao-offline-sync";
+const ACTIVE_MODE_STORAGE_KEY = "dibao:offline-reading:active-mode:v1";
 const SYNC_LEASE_DURATION_MS = 30_000;
 
 export type OfflineDeviceSettings = {
@@ -141,6 +142,32 @@ let profileUpdateQueue: Promise<void> = Promise.resolve();
 
 export function offlineScopeKey(username: string, origin = window.location.origin): string {
   return `${origin}::${username}`;
+}
+
+export function isOfflineModeActive(
+  scopeKey: string,
+  storage: Pick<Storage, "getItem"> = window.localStorage
+): boolean {
+  try {
+    return storage.getItem(ACTIVE_MODE_STORAGE_KEY) === scopeKey;
+  } catch {
+    return false;
+  }
+}
+
+export function setOfflineModeActive(
+  scopeKey: string | null,
+  storage: Pick<Storage, "removeItem" | "setItem"> = window.localStorage
+): void {
+  try {
+    if (scopeKey) {
+      storage.setItem(ACTIVE_MODE_STORAGE_KEY, scopeKey);
+    } else {
+      storage.removeItem(ACTIVE_MODE_STORAGE_KEY);
+    }
+  } catch {
+    // Storage restrictions must not block entering or leaving offline mode.
+  }
 }
 
 export async function rememberOfflineSession(username: string): Promise<OfflineProfileRecord> {
@@ -661,15 +688,27 @@ async function clearOfflineCacheRecords(
   await clearArticleImages(scopeKey);
 }
 
-export function isOfflineFallbackError(error: unknown): boolean {
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    return true;
-  }
+export type OfflineModePromptReason = "network-offline" | "server-unavailable";
+
+export function offlineModePromptReasonForError(
+  error: unknown,
+  browserOffline = typeof navigator !== "undefined" && navigator.onLine === false
+): OfflineModePromptReason | null {
+  if (browserOffline) return "network-offline";
   if (error instanceof ApiRequestError) {
-    return error.status >= 500;
+    return error.status >= 500 ? "server-unavailable" : null;
   }
-  return error instanceof TypeError ||
-    (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+  if (
+    error instanceof TypeError ||
+    (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError")
+  ) {
+    return "server-unavailable";
+  }
+  return null;
+}
+
+export function isOfflineFallbackError(error: unknown): boolean {
+  return offlineModePromptReasonForError(error) !== null;
 }
 
 export async function requestPersistentOfflineStorage(): Promise<boolean | null> {

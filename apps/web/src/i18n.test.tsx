@@ -30,6 +30,7 @@ import {
 } from "./articleListState.js";
 import { defaultAppSettings, type ArticleDetail, type ArticleListItem, type EmbeddingProvider } from "./api.js";
 import { FeedManagementWorkspace } from "./FeedManagementPanel.js";
+import { PwaStatusBanner } from "./setup/SetupPanels.js";
 import {
   DibaoI18nProvider,
   browserPreferredLocale,
@@ -116,6 +117,26 @@ describe("web i18n", () => {
         firstRefreshStatus: "idle"
       })
     ).toEqual({ type: "reader" });
+  });
+
+  it("asks before entering offline mode", () => {
+    const html = renderToStaticMarkup(
+      <DibaoI18nProvider>
+        <PwaStatusBanner
+          offlinePrompt={{ reason: "network-offline", availableCount: 200 }}
+          isEnteringOfflineMode={false}
+          onApplyUpdate={null}
+          onDismissOfflinePrompt={() => undefined}
+          onDismissUpdate={() => undefined}
+          onEnterOfflineMode={() => undefined}
+        />
+      </DibaoI18nProvider>
+    );
+
+    expect(html).toContain("网络连接已中断");
+    expect(html).toContain("200 篇离线文章");
+    expect(html).toContain("切换到离线模式");
+    expect(html).toContain("继续等待");
   });
 
   it("corrects source selection when feeds or folders disappear", () => {

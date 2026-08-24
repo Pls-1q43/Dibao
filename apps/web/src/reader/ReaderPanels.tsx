@@ -29,6 +29,9 @@ export type OfflineReaderStatus = {
   summary: OfflineCacheSummary;
   lastConnectedAt: number | null;
   error?: string | null;
+  isBrowserOffline: boolean;
+  isExiting?: boolean;
+  onExit?: () => void;
   onRetry?: () => void;
 };
 
@@ -1648,13 +1651,30 @@ function OfflineReadingStatusControl(props: { status: OfflineReaderStatus }) {
             {props.status.error ? (
               <p className={styles.recommendationInventoryWarning}>{props.status.error}</p>
             ) : null}
+            {props.status.onExit ? (
+              <div className={styles.offlineModeActions}>
+                <button
+                  className={styles.secondaryButton}
+                  disabled={props.status.isBrowserOffline || props.status.isExiting}
+                  onClick={props.status.onExit}
+                  type="button"
+                >
+                  {props.status.isExiting
+                    ? t.offlineReading.exitingMode
+                    : t.offlineReading.exitMode}
+                </button>
+                {props.status.isBrowserOffline ? (
+                  <small>{t.offlineReading.exitUnavailable}</small>
+                ) : null}
+              </div>
+            ) : null}
             {props.status.onRetry && (
               props.status.mode === "sync-failed" ||
               props.status.mode === "server-unavailable"
             ) ? (
               <button
                 className={styles.secondaryButton}
-                disabled={typeof navigator !== "undefined" && navigator.onLine === false}
+                disabled={props.status.isBrowserOffline}
                 onClick={props.status.onRetry}
                 type="button"
               >

@@ -3237,6 +3237,18 @@
   color: var(--color-danger);
 }
 
+.offlineModeActions {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+.offlineModeActions small {
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
 .recommendationInventoryMetrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3966,6 +3978,20 @@
 }
 
 @media (max-width: 767px) {
+  .pwaStatusStack {
+    top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
+  }
+
+  .pwaStatusBanner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pwaStatusActions {
+    justify-content: flex-end;
+    white-space: normal;
+  }
+
   .shell {
     --layout-bottom-nav-height: 56px;
     --article-item-gap: 4px;

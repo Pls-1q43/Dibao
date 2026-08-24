@@ -1376,7 +1376,15 @@ export const zhCN = {
     opmlExported: "OPML 已导出。"
   },
   pwa: {
-    offline: "当前离线，已缓存文章仍可继续阅读。",
+    offlinePrompt: {
+      networkOffline: (count: number) =>
+        `网络连接已中断。本机有 ${count} 篇离线文章，是否切换到离线模式？`,
+      serverUnavailable: (count: number) =>
+        `服务器暂时无法连接。本机有 ${count} 篇离线文章，是否切换到离线模式？`,
+      enter: "切换到离线模式",
+      entering: "正在切换",
+      dismiss: "继续等待"
+    },
     updateAvailable: "邸报有新版本可用。",
     updateNow: "刷新更新",
     dismiss: "稍后"
@@ -1421,6 +1429,9 @@ export const zhCN = {
     cachedOnly: "离线时仅显示本设备已缓存的文章。",
     unavailable: "联网后可用",
     retry: "重试同步",
+    exitMode: "退出离线模式",
+    exitingMode: "正在恢复在线模式",
+    exitUnavailable: "恢复网络连接后即可退出离线模式。",
     articleUnavailable: "这篇文章尚未缓存，需要联网后才能打开。",
     backToCached: "返回缓存列表",
     settings: {
@@ -2845,7 +2856,15 @@ export const enUS = {
     opmlExported: "OPML exported."
   },
   pwa: {
-    offline: "You are offline. Cached articles remain available to read.",
+    offlinePrompt: {
+      networkOffline: (count: number) =>
+        `The network connection was lost. ${count} offline articles are available on this device. Switch to offline mode?`,
+      serverUnavailable: (count: number) =>
+        `The server is temporarily unavailable. ${count} offline articles are available on this device. Switch to offline mode?`,
+      enter: "Switch to offline mode",
+      entering: "Switching",
+      dismiss: "Keep waiting"
+    },
     updateAvailable: "A new Dibao version is available.",
     updateNow: "Refresh to update",
     dismiss: "Later"
@@ -2890,6 +2909,9 @@ export const enUS = {
     cachedOnly: "Offline mode shows only articles cached on this device.",
     unavailable: "Available when online",
     retry: "Retry sync",
+    exitMode: "Exit offline mode",
+    exitingMode: "Restoring online mode",
+    exitUnavailable: "Reconnect to the network to exit offline mode.",
     articleUnavailable: "This article is not cached and needs a connection to open.",
     backToCached: "Back to cached articles",
     settings: {
@@ -4303,7 +4325,15 @@ export const jaJP = {
     opmlExported: "OPML をエクスポートしました。"
   },
   pwa: {
-    offline: "現在オフラインです。キャッシュ済みの記事は引き続き読めます。",
+    offlinePrompt: {
+      networkOffline: (count: number) =>
+        `ネットワーク接続が切れました。この端末では ${count} 件のオフライン記事を利用できます。オフラインモードに切り替えますか？`,
+      serverUnavailable: (count: number) =>
+        `サーバーに一時的に接続できません。この端末では ${count} 件のオフライン記事を利用できます。オフラインモードに切り替えますか？`,
+      enter: "オフラインモードに切り替える",
+      entering: "切り替え中",
+      dismiss: "接続を待つ"
+    },
     updateAvailable: "邸報の新しいバージョンがあります。",
     updateNow: "更新する",
     dismiss: "あとで"
@@ -4348,6 +4378,9 @@ export const jaJP = {
     cachedOnly: "オフライン中は、この端末にキャッシュ済みの記事のみ表示します。",
     unavailable: "オンライン時に利用可能",
     retry: "同期を再試行",
+    exitMode: "オフラインモードを終了",
+    exitingMode: "オンラインモードに復帰中",
+    exitUnavailable: "ネットワークに再接続するとオフラインモードを終了できます。",
     articleUnavailable: "この記事はキャッシュされていないため、開くには接続が必要です。",
     backToCached: "キャッシュ済み一覧に戻る",
     settings: {
