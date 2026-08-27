@@ -416,6 +416,7 @@ export type ArticleListInput = {
   limit?: number;
   offset?: number;
   cursor?: ArticleListCursor;
+  recommendationSessionId?: string;
   rankContext?: string;
   sort?: ArticleListSort;
   includeUnreadCount?: boolean;
@@ -458,6 +459,11 @@ export type ArticleListCursor =
       score?: number | null;
       publishedAt: number;
       id: string;
+    }
+  | {
+      type: "recommended_session";
+      sessionId: string;
+      position: number;
     }
   | {
       type: "latest";
@@ -1004,6 +1010,36 @@ export type ArticleListResult = {
   nextCursor?: ArticleListCursor | null;
   unreadCount: number | null;
   timing?: ArticleListTiming;
+  recommendationSession?: RecommendedArticleSessionPage | null;
+};
+
+export type RecommendedArticleSessionRow = {
+  id: string;
+  rankContext: string;
+  rerankWindowId: string | null;
+  scopeKey: string;
+  itemCount: number;
+  createdAt: number;
+  expiresAt: number;
+};
+
+export type RecommendedArticleSessionPage = RecommendedArticleSessionRow & {
+  consumedThrough: number | null;
+};
+
+export type RecommendedArticleSessionInventory = {
+  session: RecommendedArticleSessionRow;
+  eligibleCount: number;
+  remainingCount: number;
+};
+
+export type CreateRecommendedArticleSessionInput = ArticleListInput & {
+  id: string;
+  rankContext: string;
+  scopeKey: string;
+  maxItems: number;
+  now: number;
+  expiresAt: number;
 };
 
 export type RecommendedArticleInventory = {

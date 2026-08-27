@@ -330,6 +330,15 @@ export type ArticleListResponse = {
   page: ApiPage;
   meta: {
     unreadCount: number | null;
+    recommendationSession: {
+      id: string;
+      rankContext: string;
+      rerankWindowId: string | null;
+      itemCount: number;
+      consumedThrough: number | null;
+      createdAt: string;
+      expiresAt: string;
+    } | null;
   };
 };
 
@@ -1017,6 +1026,9 @@ export type RecommendationInventory = {
   baseFallbackCount: number;
   unrankedFallbackCount: number;
   loadedCount: number;
+  recommendationSessionId: string | null;
+  recommendationSessionPosition: number | null;
+  recommendationSessionExpiresAt: string | null;
   rankingJob: {
     queued: number;
     running: number;
@@ -1031,6 +1043,8 @@ export type RecommendationInventoryInput = {
   unreadOnly?: boolean;
   timeWindow?: ArticleTimeWindow;
   loadedCount?: number;
+  recommendationSessionId?: string | null;
+  recommendationSessionPosition?: number | null;
 };
 
 export type RecommendationTransparency = RecommendationStatus & {
@@ -1290,6 +1304,7 @@ type ApiSuccess<T> = {
   meta?: {
     unreadCount?: number | null;
     skipped?: unknown;
+    recommendationSession?: ArticleListResponse["meta"]["recommendationSession"];
   };
 };
 
@@ -1317,6 +1332,12 @@ function recommendationInventoryQuery(input: RecommendationInventoryInput): stri
   }
   if (input.loadedCount !== undefined) {
     params.set("loadedCount", String(Math.max(0, Math.trunc(input.loadedCount))));
+  }
+  if (input.recommendationSessionId) {
+    params.set("recommendationSessionId", input.recommendationSessionId);
+  }
+  if (input.recommendationSessionPosition !== undefined && input.recommendationSessionPosition !== null) {
+    params.set("recommendationSessionPosition", String(input.recommendationSessionPosition));
   }
 
   const query = params.toString();
@@ -2142,6 +2163,7 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         timeWindow?: ArticleTimeWindow;
         sort?: ArticleListSort;
         includeUnreadCount?: boolean;
+        recommendationSessionId?: string | null;
         signal?: AbortSignal;
       } = {}
     ): Promise<ArticleListResponse> {
@@ -2158,6 +2180,9 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       }
       if (input.cursor) {
         params.set("cursor", input.cursor);
+      }
+      if (input.recommendationSessionId) {
+        params.set("recommendationSessionId", input.recommendationSessionId);
       }
       const view = input.view ?? "latest";
       if (input.unreadOnly && (view === "latest" || view === "recommended")) {
@@ -2185,7 +2210,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         data: response.data,
         page: response.page ?? { nextCursor: null },
         meta: {
-          unreadCount: response.meta?.unreadCount ?? null
+          unreadCount: response.meta?.unreadCount ?? null,
+          recommendationSession: response.meta?.recommendationSession ?? null
         }
       };
     },
@@ -2245,7 +2271,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         data: response.data,
         page: response.page ?? { nextCursor: null },
         meta: {
-          unreadCount: response.meta?.unreadCount ?? null
+          unreadCount: response.meta?.unreadCount ?? null,
+          recommendationSession: null
         }
       };
     },
@@ -2372,7 +2399,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
         data: response.data.items,
         page: response.page ?? { nextCursor: null },
         meta: {
-          unreadCount: response.meta?.unreadCount ?? null
+          unreadCount: response.meta?.unreadCount ?? null,
+          recommendationSession: null
         },
         status: response.data.status,
         sourceArticle: response.data.sourceArticle,

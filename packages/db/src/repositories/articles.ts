@@ -10,10 +10,13 @@ import type {
   ArticleListItemRow,
   ArticleListResult,
   ArticleListTiming,
+  CreateRecommendedArticleSessionInput,
   OfflineArticleMetadataRow,
   ArticleRetentionCandidateRow,
   ArticleRetentionCleanupResult,
   RecommendedArticleInventory,
+  RecommendedArticleSessionInventory,
+  RecommendedArticleSessionRow,
   ArticleRow,
   ArticleScope,
   ArticleSearchInput,
@@ -77,6 +80,7 @@ type ArticleReadDbRow = ArticleDbRow & {
   sortRankMissing: 0 | 1 | 2 | null;
   rankScore: number | null;
   rankCalculatedAt: number | null;
+  sortSessionPosition: number | null;
 };
 
 type ArticleDetailDbRow = ArticleReadDbRow & {
@@ -95,9 +99,24 @@ type RecommendedCandidateRow = {
   sortPublishedAt: number;
 };
 
+type RecommendedSessionCandidateRow = RecommendedCandidateRow & {
+  rankCalculatedAt: number | null;
+};
+
+type RecommendedSessionDbRow = {
+  id: string;
+  rankContext: string;
+  rerankWindowId: string | null;
+  scopeKey: string;
+  itemCount: number;
+  createdAt: number;
+  expiresAt: number;
+};
+
 type RecommendedListPage = {
   rows: ArticleReadDbRow[];
   pageLimit: number;
+  session: RecommendedArticleSessionRow | null;
 };
 
 export interface ArticleRepository {
@@ -123,6 +142,14 @@ export interface ArticleRepository {
     limit?: number;
   }): ArticleRetentionCandidateRow[];
   list(input?: ArticleListInput): ArticleListResult;
+  createRecommendedSession(input: CreateRecommendedArticleSessionInput): RecommendedArticleSessionRow;
+  findRecommendedSession(id: string, now: number): RecommendedArticleSessionRow | null;
+  getRecommendedSessionInventory(input: {
+    sessionId: string;
+    afterPosition: number;
+    filters: ArticleListInput;
+    now: number;
+  }): RecommendedArticleSessionInventory | null;
   listRecentlyOpened(input?: { limit?: number; rankContext?: string }): ArticleListItemRow[];
   getRecommendedInventory(input: ArticleListInput & { rankContext: string }): RecommendedArticleInventory;
   markArticleIdsRead(articleIds: string[], now: number): number;
@@ -646,18 +673,30 @@ export class SqliteArticleRepository implements ArticleRepository {
     const pageParams =
       keyset && input.view !== "recommended" ? [...filterParams, ...keyset.params] : filterParams;
     let pageLimit = limit;
+    let recommendedSession: RecommendedArticleSessionRow | null = null;
     const rows = (() => {
       if (input.view === "recommended") {
-        const page = this.listRecommendedByRank({
-          rankContext,
-          conditions,
-          filterParams,
-          limit,
-          offset,
-          cursor: input.cursor?.type === "recommended" ? input.cursor : null,
-          timing
-        });
+        const page = input.recommendationSessionId
+          ? this.listRecommendedSession({
+              sessionId: input.recommendationSessionId,
+              conditions,
+              filterParams,
+              limit,
+              cursor:
+                input.cursor?.type === "recommended_session" ? input.cursor : null,
+              timing
+            })
+          : this.listRecommendedByRank({
+              rankContext,
+              conditions,
+              filterParams,
+              limit,
+              offset,
+              cursor: input.cursor?.type === "recommended" ? input.cursor : null,
+              timing
+            });
         pageLimit = page.pageLimit;
+        recommendedSession = page.session;
         return page.rows;
       }
 
@@ -686,8 +725,15 @@ export class SqliteArticleRepository implements ArticleRepository {
     const mapStartedAt = performance.now();
     const items = pageRows.map(mapArticleListItem);
     timing.mapMs = elapsedMs(mapStartedAt);
+    const lastPageRow = pageRows.at(-1) ?? null;
     const nextCursor = hasMore
-      ? cursorForArticleListRow(input.view, input.sort, pageRows.at(-1) ?? null)
+      ? recommendedSession && typeof lastPageRow?.sortSessionPosition === "number"
+        ? {
+            type: "recommended_session" as const,
+            sessionId: recommendedSession.id,
+            position: lastPageRow.sortSessionPosition
+          }
+        : cursorForArticleListRow(input.view, input.sort, lastPageRow)
       : null;
     timing.totalMs = elapsedMs(totalStartedAt);
 
@@ -696,7 +742,15 @@ export class SqliteArticleRepository implements ArticleRepository {
       nextOffset: hasMore ? offset + pageLimit : null,
       nextCursor,
       unreadCount,
-      timing
+      timing,
+      recommendationSession: recommendedSession
+        ? {
+            ...recommendedSession,
+            consumedThrough:
+              lastPageRow?.sortSessionPosition ??
+              (input.cursor?.type === "recommended_session" ? input.cursor.position : null)
+          }
+        : null
     };
   }
 
@@ -721,6 +775,166 @@ export class SqliteArticleRepository implements ArticleRepository {
       )
       .all(rankContext, BASE_RANK_CONTEXT, limit) as ArticleReadDbRow[];
     return rows.map(mapArticleListItem);
+  }
+
+  createRecommendedSession(
+    input: CreateRecommendedArticleSessionInput
+  ): RecommendedArticleSessionRow {
+    const filters = recommendedSessionFilters(input);
+    const latestRerankWindowId =
+      input.rankContext === BASE_RANK_CONTEXT
+        ? null
+        : this.latestRerankWindowId(input.rankContext);
+    const maxItems = Math.max(1, Math.min(Math.trunc(input.maxItems), 1_000));
+    const candidates = latestRerankWindowId
+      ? (this.db
+          .prepare(
+            `
+              select
+                a.id,
+                ars.score as sortScore,
+                case when ars.rerank_position is null then 1 else 0 end as sortRerankMissing,
+                ars.rerank_position as sortRerankPosition,
+                0 as sortRankMissing,
+                coalesce(a.published_at, a.discovered_at) as sortPublishedAt,
+                ars.calculated_at as rankCalculatedAt
+              from article_rank_scores ars
+              join articles a on a.id = ars.article_id
+              join feeds f on f.id = a.feed_id and f.deleted_at is null
+              left join article_states s on s.article_id = a.id
+              where ars.rank_context = ?
+                and ars.rerank_window_id = ?
+                and ${filters.conditions.join(" and ")}
+              order by
+                ars.score desc,
+                case when ars.rerank_position is null then 1 else 0 end,
+                ars.rerank_position asc,
+                coalesce(a.published_at, a.discovered_at) desc,
+                a.id desc
+              limit ?
+            `
+          )
+          .all(
+            input.rankContext,
+            latestRerankWindowId,
+            ...filters.params,
+            maxItems
+          ) as RecommendedSessionCandidateRow[])
+      : input.rankContext === BASE_RANK_CONTEXT
+        ? (this.db
+            .prepare(
+              `
+              select
+                a.id,
+                ars.score as sortScore,
+                1 as sortRerankMissing,
+                null as sortRerankPosition,
+                case when ars.article_id is null then 1 else 0 end as sortRankMissing,
+                coalesce(a.published_at, a.discovered_at) as sortPublishedAt,
+                ars.calculated_at as rankCalculatedAt
+              from articles a
+              join feeds f on f.id = a.feed_id and f.deleted_at is null
+              left join article_states s on s.article_id = a.id
+              left join article_rank_scores ars
+                on ars.article_id = a.id
+               and ars.rank_context = ?
+              where ${filters.conditions.join(" and ")}
+              order by
+                case when ars.article_id is null then 1 else 0 end,
+                ars.score desc,
+                coalesce(a.published_at, a.discovered_at) desc,
+                a.id desc
+              limit ?
+              `
+            )
+            .all(input.rankContext, ...filters.params, maxItems) as RecommendedSessionCandidateRow[])
+        : [];
+
+    const session: RecommendedArticleSessionRow = {
+      id: input.id,
+      rankContext: input.rankContext,
+      rerankWindowId: latestRerankWindowId,
+      scopeKey: input.scopeKey,
+      itemCount: candidates.length,
+      createdAt: input.now,
+      expiresAt: input.expiresAt
+    };
+    const insertSession = this.db.prepare(
+      `
+        insert into recommendation_sessions (
+          id, rank_context, rerank_window_id, scope_key, item_count, created_at, expires_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `
+    );
+    const insertItem = this.db.prepare(
+      `
+        insert into recommendation_session_items (
+          session_id, article_id, position, rank_score, rank_calculated_at
+        ) values (?, ?, ?, ?, ?)
+      `
+    );
+    this.db.transaction(() => {
+      this.db.prepare("delete from recommendation_sessions where expires_at <= ?").run(input.now);
+      insertSession.run(
+        session.id,
+        session.rankContext,
+        session.rerankWindowId,
+        session.scopeKey,
+        session.itemCount,
+        session.createdAt,
+        session.expiresAt
+      );
+      candidates.forEach((candidate, position) => {
+        insertItem.run(
+          session.id,
+          candidate.id,
+          position,
+          candidate.sortScore,
+          candidate.rankCalculatedAt
+        );
+      });
+    })();
+    return session;
+  }
+
+  findRecommendedSession(id: string, now: number): RecommendedArticleSessionRow | null {
+    const row = this.findRecommendedSessionRow(id);
+    return row && row.expiresAt > now ? mapRecommendedSession(row) : null;
+  }
+
+  getRecommendedSessionInventory(input: {
+    sessionId: string;
+    afterPosition: number;
+    filters: ArticleListInput;
+    now: number;
+  }): RecommendedArticleSessionInventory | null {
+    const session = this.findRecommendedSession(input.sessionId, input.now);
+    if (!session) {
+      return null;
+    }
+    const filters = recommendedSessionFilters(input.filters);
+    const row = this.db
+      .prepare(
+        `
+          select
+            count(*) as eligibleCount,
+            coalesce(sum(case when session_items.position > ? then 1 else 0 end), 0) as remainingCount
+          from recommendation_session_items session_items
+          join articles a on a.id = session_items.article_id
+          join feeds f on f.id = a.feed_id and f.deleted_at is null
+          left join article_states s on s.article_id = a.id
+          where session_items.session_id = ?
+            and ${filters.conditions.join(" and ")}
+        `
+      )
+      .get(input.afterPosition, input.sessionId, ...filters.params) as
+      | { eligibleCount: number; remainingCount: number }
+      | undefined;
+    return {
+      session,
+      eligibleCount: row?.eligibleCount ?? 0,
+      remainingCount: row?.remainingCount ?? 0
+    };
   }
 
   getRecommendedInventory(
@@ -859,6 +1073,68 @@ export class SqliteArticleRepository implements ArticleRepository {
     };
   }
 
+  private listRecommendedSession(input: {
+    sessionId: string;
+    conditions: string[];
+    filterParams: unknown[];
+    limit: number;
+    cursor: Extract<ArticleListCursor, { type: "recommended_session" }> | null;
+    timing: ArticleListTiming;
+  }): RecommendedListPage {
+    const sessionRow = this.findRecommendedSessionRow(input.sessionId);
+    if (!sessionRow) {
+      return { rows: [], pageLimit: input.limit, session: null };
+    }
+    const session = mapRecommendedSession(sessionRow);
+    const afterPosition =
+      input.cursor?.sessionId === input.sessionId ? input.cursor.position : -1;
+    const rows = measureArticleListTiming(input.timing, "pageQueryMs", () =>
+      this.db
+        .prepare(
+          `
+            ${baseArticleReadSelect({ includeRank: true, rankSource: "session_items" })}
+            from recommendation_session_items session_items
+            join articles a on a.id = session_items.article_id
+            join feeds f on f.id = a.feed_id and f.deleted_at is null
+            left join article_states s on s.article_id = a.id
+            where session_items.session_id = ?
+              and session_items.position > ?
+              and ${input.conditions.join(" and ")}
+            order by session_items.position
+            limit ?
+          `
+        )
+        .all(
+          input.sessionId,
+          afterPosition,
+          ...input.filterParams,
+          input.limit + 1
+        ) as ArticleReadDbRow[]
+    );
+    return { rows, pageLimit: input.limit, session };
+  }
+
+  private findRecommendedSessionRow(id: string): RecommendedSessionDbRow | null {
+    return (
+      (this.db
+        .prepare(
+          `
+            select
+              id,
+              rank_context as rankContext,
+              rerank_window_id as rerankWindowId,
+              scope_key as scopeKey,
+              item_count as itemCount,
+              created_at as createdAt,
+              expires_at as expiresAt
+            from recommendation_sessions
+            where id = ?
+          `
+        )
+        .get(id) as RecommendedSessionDbRow | undefined) ?? null
+    );
+  }
+
   private listRecommendedByRank(input: {
     rankContext: string;
     conditions: string[];
@@ -916,7 +1192,8 @@ export class SqliteArticleRepository implements ArticleRepository {
       rows: measureArticleListTiming(input.timing, "hydrateMs", () =>
         this.hydrateRecommendedCandidates(input.rankContext, pageCandidates)
       ),
-      pageLimit
+      pageLimit,
+      session: null
     };
   }
 
@@ -1701,11 +1978,63 @@ function unreadArticleCondition(): string {
   `;
 }
 
+function recommendedSessionFilters(input: ArticleListInput): {
+  conditions: string[];
+  params: unknown[];
+} {
+  const conditions = [
+    "a.deleted_at is null",
+    "a.status != 'deleted'",
+    "s.hidden_at is null",
+    "s.not_interested_at is null"
+  ];
+  const params: unknown[] = [];
+  if (input.feedId) {
+    conditions.push("a.feed_id = ?");
+    params.push(input.feedId);
+  }
+  if (input.folderId) {
+    conditions.push("f.folder_id = ?");
+    params.push(input.folderId);
+  }
+  if (typeof input.todayStartAt === "number" && typeof input.todayEndAt === "number") {
+    conditions.push("coalesce(a.published_at, a.discovered_at) >= ?");
+    params.push(input.todayStartAt);
+    conditions.push("coalesce(a.published_at, a.discovered_at) < ?");
+    params.push(input.todayEndAt);
+  }
+  if (input.status === "read") {
+    conditions.push("(s.read_at is not null or coalesce(s.reading_progress, 0) >= 0.9)");
+  } else if (input.status === "unread") {
+    conditions.push(unreadArticleCondition());
+  }
+  if (input.unreadOnly && input.status !== "unread") {
+    conditions.push(unreadArticleCondition());
+  }
+  return { conditions, params };
+}
+
+function mapRecommendedSession(row: RecommendedSessionDbRow): RecommendedArticleSessionRow {
+  return {
+    id: row.id,
+    rankContext: row.rankContext,
+    rerankWindowId: row.rerankWindowId,
+    scopeKey: row.scopeKey,
+    itemCount: row.itemCount,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt
+  };
+}
+
 function baseArticleReadSelect(
-  options: { includeRank?: boolean; rankSource?: "joined" | "recommended_ids" } = {}
+  options: {
+    includeRank?: boolean;
+    rankSource?: "joined" | "recommended_ids" | "session_items";
+  } = {}
 ): string {
   const includeRank = options.includeRank ?? true;
   const useRecommendedIdsRank = includeRank && options.rankSource === "recommended_ids";
+  const useSessionItemsRank = includeRank && options.rankSource === "session_items";
   return `
     select
       a.id,
@@ -1740,33 +2069,48 @@ function baseArticleReadSelect(
       coalesce(a.published_at, a.discovered_at) as sortPublishedAt,
       ${
         includeRank
-          ? useRecommendedIdsRank
+          ? useSessionItemsRank
+            ? "1"
+            : useRecommendedIdsRank
             ? "recommended_ids.sortRerankMissing"
             : "case when rs.rerank_position is null then 1 else 0 end"
           : "null"
       } as sortRerankMissing,
       ${
         includeRank
-          ? useRecommendedIdsRank
+          ? useSessionItemsRank
+            ? "null"
+            : useRecommendedIdsRank
             ? "recommended_ids.sortRerankPosition"
             : "rs.rerank_position"
           : "null"
       } as sortRerankPosition,
       ${
         includeRank
-          ? useRecommendedIdsRank
+          ? useSessionItemsRank
+            ? "0"
+            : useRecommendedIdsRank
             ? "recommended_ids.sortRankMissing"
             : "case when coalesce(rs.score, base_rs.score) is null then 1 else 0 end"
           : "null"
       } as sortRankMissing,
       ${
         includeRank
-          ? useRecommendedIdsRank
+          ? useSessionItemsRank
+            ? "session_items.rank_score"
+            : useRecommendedIdsRank
             ? "recommended_ids.sortScore"
             : "coalesce(rs.score, base_rs.score)"
           : "null"
       } as rankScore,
-      ${includeRank ? "coalesce(rs.calculated_at, base_rs.calculated_at)" : "null"} as rankCalculatedAt
+      ${
+        includeRank
+          ? useSessionItemsRank
+            ? "session_items.rank_calculated_at"
+            : "coalesce(rs.calculated_at, base_rs.calculated_at)"
+          : "null"
+      } as rankCalculatedAt,
+      ${useSessionItemsRank ? "session_items.position" : "null"} as sortSessionPosition
   `;
 }
 

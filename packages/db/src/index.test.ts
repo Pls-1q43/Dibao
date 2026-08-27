@@ -169,6 +169,8 @@ describe("db package", () => {
         "behavior_projection_cursors",
         "user_representation_snapshots",
         "recommendation_exposures",
+        "recommendation_sessions",
+        "recommendation_session_items",
         "exploration_attempts",
         "jobs"
       ]) {
@@ -203,6 +205,8 @@ describe("db package", () => {
       expect(hasIndex(db, "idx_article_states_last_action_at")).toBe(true);
       expect(hasIndex(db, "idx_article_states_last_ignored_at")).toBe(true);
       expect(hasIndex(db, "idx_article_rank_scores_context_recommended_order")).toBe(true);
+      expect(hasIndex(db, "idx_recommendation_sessions_expires_at")).toBe(true);
+      expect(hasIndex(db, "idx_recommendation_session_items_position")).toBe(true);
     } finally {
       db.close();
     }
@@ -247,7 +251,8 @@ describe("db package", () => {
         "023",
         "024",
         "025",
-        "026"
+        "026",
+        "027"
       ]);
       expect(hasColumn(db, "article_states", "liked_at")).toBe(true);
       expect(hasColumn(db, "article_states", "last_action_at")).toBe(true);
@@ -820,7 +825,8 @@ describe("db package", () => {
         "023",
         "024",
         "025",
-        "026"
+        "026",
+        "027"
       ]);
 
       expect(getAppliedMigrations(db).find((migration) => migration.version === "004")?.checksum).toBe(checksum004);
@@ -2446,6 +2452,184 @@ describe("db package", () => {
       });
       expect(withoutCount.unreadCount).toBeNull();
       expect(withoutCount.timing?.unreadCountMs).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps recommendation session order stable across reranks and filters handled items on reload", () => {
+    const db = openDatabase(tempDatabasePath(), { migrate: true });
+    try {
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      const actions = new SqliteArticleActionRepository(db);
+      feeds.upsert({
+        id: "feed_recommendation_session",
+        title: "Recommendation Session Feed",
+        feedUrl: "https://example.com/recommendation-session.xml",
+        now: 1000
+      });
+
+      for (const id of ["a", "b", "c", "stale", "next"]) {
+        articles.upsert({
+          id: `article_session_${id}`,
+          feedId: "feed_recommendation_session",
+          url: `https://example.com/recommendation-session/${id}`,
+          title: `Session ${id}`,
+          publishedAt: 1000,
+          discoveredAt: 1000,
+          dedupeKey: `recommendation-session-${id}`,
+          now: 1000
+        });
+      }
+
+      insertRank(db, "article_session_a", 0.9, 4000, "active_session", {
+        rerankWindowId: "window:current",
+        rerankPosition: 1
+      });
+      insertRank(db, "article_session_b", 0.8, 4000, "active_session", {
+        rerankWindowId: "window:current",
+        rerankPosition: 2
+      });
+      insertRank(db, "article_session_c", 0.7, 4000, "active_session", {
+        rerankWindowId: "window:current",
+        rerankPosition: 3
+      });
+      insertRank(db, "article_session_stale", 0.99, 3000, "active_session", {
+        rerankWindowId: "window:stale",
+        rerankPosition: 1
+      });
+
+      const session = articles.createRecommendedSession({
+        id: "rec_session_0123456789abcdef0123",
+        rankContext: "active_session",
+        scopeKey: "all|unread|all",
+        maxItems: 1000,
+        unreadOnly: true,
+        now: 5000,
+        expiresAt: 10_000
+      });
+      expect(session).toMatchObject({
+        rerankWindowId: "window:current",
+        itemCount: 3
+      });
+
+      const firstPage = articles.list({
+        view: "recommended",
+        rankContext: "active_session",
+        recommendationSessionId: session.id,
+        unreadOnly: true,
+        limit: 2
+      });
+      expect(firstPage.items.map((item) => item.id)).toEqual([
+        "article_session_a",
+        "article_session_b"
+      ]);
+      expect(firstPage.nextCursor).toEqual({
+        type: "recommended_session",
+        sessionId: session.id,
+        position: 1
+      });
+      expect(firstPage.recommendationSession).toMatchObject({
+        id: session.id,
+        consumedThrough: 1
+      });
+
+      insertRank(db, "article_session_next", 1, 6000, "active_session", {
+        rerankWindowId: "window:next",
+        rerankPosition: 1
+      });
+      expect(
+        articles
+          .list({
+            view: "recommended",
+            rankContext: "active_session",
+            recommendationSessionId: session.id,
+            unreadOnly: true,
+            limit: 2,
+            cursor: firstPage.nextCursor ?? undefined
+          })
+          .items.map((item) => item.id)
+      ).toEqual(["article_session_c"]);
+
+      actions.record({ articleId: "article_session_a", type: "not_interested", now: 7000 });
+      articles.markArticleIdsRead(["article_session_b"], 7000);
+      const reload = articles.list({
+        view: "recommended",
+        rankContext: "active_session",
+        recommendationSessionId: session.id,
+        unreadOnly: true,
+        limit: 2
+      });
+      expect(reload.items.map((item) => item.id)).toEqual(["article_session_c"]);
+      expect(
+        articles.getRecommendedSessionInventory({
+          sessionId: session.id,
+          afterPosition: 1,
+          filters: { view: "recommended", unreadOnly: true },
+          now: 8000
+        })
+      ).toMatchObject({
+        eligibleCount: 1,
+        remainingCount: 1
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps baseline recommendation sessions usable before scores are available", () => {
+    const db = openDatabase(tempDatabasePath(), { migrate: true });
+    try {
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      feeds.upsert({
+        id: "feed_recommendation_warmup",
+        title: "Recommendation Warmup Feed",
+        feedUrl: "https://example.com/recommendation-warmup.xml",
+        now: 1000
+      });
+      for (const id of ["high", "low", "unranked"]) {
+        articles.upsert({
+          id: `article_warmup_${id}`,
+          feedId: "feed_recommendation_warmup",
+          url: `https://example.com/recommendation-warmup/${id}`,
+          title: `Warmup ${id}`,
+          publishedAt: id === "unranked" ? 2000 : 1000,
+          discoveredAt: id === "unranked" ? 2000 : 1000,
+          dedupeKey: `recommendation-warmup-${id}`,
+          now: 1000
+        });
+      }
+      insertRank(db, "article_warmup_high", 0.9, 2000);
+      insertRank(db, "article_warmup_low", 0.4, 2000);
+
+      const session = articles.createRecommendedSession({
+        id: "rec_session_fedcba98765432100123",
+        rankContext: "base",
+        scopeKey: "all|all|all",
+        maxItems: 1000,
+        now: 3000,
+        expiresAt: 10_000
+      });
+      expect(session).toMatchObject({
+        rankContext: "base",
+        rerankWindowId: null,
+        itemCount: 3
+      });
+      expect(
+        articles
+          .list({
+            view: "recommended",
+            rankContext: "base",
+            recommendationSessionId: session.id
+          })
+          .items.map((item) => item.id)
+      ).toEqual([
+        "article_warmup_high",
+        "article_warmup_low",
+        "article_warmup_unranked"
+      ]);
     } finally {
       db.close();
     }

@@ -736,6 +736,9 @@ describe("web API client", () => {
             status: "available",
             activeRankContext: "rec_v3:test",
             latestRerankWindowId: "window:new",
+            recommendationSessionId: "rec_session_0123456789abcdef0123",
+            recommendationSessionPosition: 4,
+            recommendationSessionExpiresAt: "2026-05-15T08:12:00.000Z",
             eligibleCount: 12,
             sortedCount: 8,
             remainingSortedCount: 3,
@@ -767,7 +770,9 @@ describe("web API client", () => {
         folderId: "folder_design",
         unreadOnly: true,
         timeWindow: "7d",
-        loadedCount: 5
+        loadedCount: 5,
+        recommendationSessionId: "rec_session_0123456789abcdef0123",
+        recommendationSessionPosition: 4
       })
     ).resolves.toMatchObject({
       status: "available",
@@ -781,7 +786,7 @@ describe("web API client", () => {
       })
     ).toBe("/api/recommendation/inventory/events?feedId=feed_1&timeWindow=24h&loadedCount=10");
     expect(calls).toEqual([
-      "/api/recommendation/inventory?folderId=folder_design&unreadOnly=true&timeWindow=7d&loadedCount=5"
+      "/api/recommendation/inventory?folderId=folder_design&unreadOnly=true&timeWindow=7d&loadedCount=5&recommendationSessionId=rec_session_0123456789abcdef0123&recommendationSessionPosition=4"
     ]);
   });
 
@@ -955,7 +960,16 @@ describe("web API client", () => {
             nextCursor: null
           },
           meta: {
-            unreadCount: 17
+            unreadCount: 17,
+            recommendationSession: {
+              id: "rec_session_0123456789abcdef0123",
+              rankContext: "rec_v3:test",
+              rerankWindowId: "window:new",
+              itemCount: 200,
+              consumedThrough: 19,
+              createdAt: "2026-05-14T08:12:00.000Z",
+              expiresAt: "2026-05-15T08:12:00.000Z"
+            }
           }
         }),
         {
@@ -972,6 +986,7 @@ describe("web API client", () => {
       folderId: "folder_design",
       limit: 20,
       cursor: "cursor_1",
+      recommendationSessionId: "rec_session_0123456789abcdef0123",
       unreadOnly: true,
       timeWindow: "7d"
     });
@@ -992,12 +1007,16 @@ describe("web API client", () => {
     });
 
     expect(calls).toEqual([
-      "/api/articles?view=recommended&limit=20&folderId=folder_design&cursor=cursor_1&unreadOnly=true&timeWindow=7d",
+      "/api/articles?view=recommended&limit=20&folderId=folder_design&cursor=cursor_1&recommendationSessionId=rec_session_0123456789abcdef0123&unreadOnly=true&timeWindow=7d",
       "/api/articles?view=latest&limit=50&unreadOnly=true&timeWindow=24h",
       "/api/articles?view=favorites&limit=50&sort=favorited_asc",
       "/api/articles?view=read_later&limit=50&sort=read_later_desc"
     ]);
     expect(first.meta.unreadCount).toBe(17);
+    expect(first.meta.recommendationSession).toMatchObject({
+      id: "rec_session_0123456789abcdef0123",
+      consumedThrough: 19
+    });
   });
 
   it("fetches reader discovery modules with encoded article ids", async () => {

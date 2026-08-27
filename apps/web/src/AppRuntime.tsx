@@ -9,6 +9,7 @@ import {
   type ArticleActionRequest,
   type ArticleDetail,
   type ArticleListItem,
+  type ArticleListResponse,
   type ArticleSearchSort,
   type ArticleSearchState,
   type ArticleState,
@@ -182,6 +183,7 @@ const READER_DISCOVERY_REQUEST_TIMEOUT_MS = 10_000;
 const ARTICLE_STATE_OVERLAY_STORAGE_KEY = "dibao:article-state-overlay:v1";
 const ARTICLE_STATE_OVERLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTICLE_STATE_OVERLAY_LIMIT = 500;
+const RECOMMENDATION_SESSION_STORAGE_PREFIX = "dibao:recommendation-session:v1:";
 const AUTH_GATE_RETRY_DELAYS_MS = [500, 1500, 3000, 5000, 10_000, 30_000] as const;
 const AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT = 1;
 
@@ -207,6 +209,52 @@ type ArticleStateOverlay = {
   states: Map<string, ArticleState>;
   locallyUpdatedIds: Set<string>;
 };
+
+type ReaderRecommendationSession = NonNullable<
+  ArticleListResponse["meta"]["recommendationSession"]
+> & {
+  scopeKey: string;
+};
+
+function recommendationSessionScopeKey(
+  selection: SourceSelection,
+  unreadOnly: boolean,
+  timeWindow: ArticleTimeWindow
+): string {
+  const source = selection.type === "all"
+    ? "all"
+    : selection.type === "feed"
+      ? `feed:${selection.feedId}`
+      : `folder:${selection.folderId}`;
+  return `${source}|unread:${unreadOnly ? "1" : "0"}|time:${timeWindow}`;
+}
+
+function storedRecommendationSessionId(scopeKey: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.sessionStorage.getItem(
+      `${RECOMMENDATION_SESSION_STORAGE_PREFIX}${scopeKey}`
+    );
+  } catch {
+    return null;
+  }
+}
+
+function storeRecommendationSessionId(scopeKey: string, sessionId: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      `${RECOMMENDATION_SESSION_STORAGE_PREFIX}${scopeKey}`,
+      sessionId
+    );
+  } catch {
+    // Recommendation continuity can fall back to a fresh server session.
+  }
+}
 
 type PersonalizedRelatedRequestContext = {
   articleId: string;
@@ -409,6 +457,8 @@ export function App() {
   );
   const [recommendationInventory, setRecommendationInventory] =
     useState<RecommendationInventory | null>(null);
+  const [recommendationSession, setRecommendationSession] =
+    useState<ReaderRecommendationSession | null>(null);
   const [allRecommendationClusters, setAllRecommendationClusters] = useState<
     RecommendationClusterItem[]
   >([]);
@@ -652,6 +702,19 @@ export function App() {
     setLoadMoreError(null);
     setIsLoadingMoreArticles(false);
     setRelatedSearchMeta(null);
+    setRecommendationSession(null);
+  }
+
+  function rememberRecommendationSession(
+    session: ArticleListResponse["meta"]["recommendationSession"],
+    scopeKey: string
+  ): void {
+    if (!session) {
+      setRecommendationSession(null);
+      return;
+    }
+    storeRecommendationSessionId(scopeKey, session.id);
+    setRecommendationSession({ ...session, scopeKey });
   }
 
   function handleSelectSource(source: SourceSelection) {
@@ -1638,13 +1701,23 @@ export function App() {
     setExplanationError(null);
 
     try {
+      const activeRecommendationScopeKey = recommendationSessionScopeKey(
+        selection,
+        onlyUnread,
+        selectedTimeWindow
+      );
+      const persistedRecommendationSessionId =
+        view === "recommended"
+          ? storedRecommendationSessionId(activeRecommendationScopeKey)
+          : null;
       const requestInput = {
         ...articleQueryFor(selection),
         view,
         limit: 50,
         unreadOnly: supportsUnreadOnly(view) ? onlyUnread : false,
         timeWindow: supportsQuickFilters(view) ? selectedTimeWindow : "all",
-        sort: articleSortForView(view, sort, laterSort)
+        sort: articleSortForView(view, sort, laterSort),
+        recommendationSessionId: persistedRecommendationSessionId
       };
       if (isUsingOfflineData && offlineScope) {
         if (offlineConnectionMode === "empty") {
@@ -1671,6 +1744,7 @@ export function App() {
         setArticles(responseArticles);
         setUnreadCount(response.unreadCount);
         setNextArticleCursor(response.nextCursor);
+        setRecommendationSession(null);
         return;
       }
       const requestStartedAt = performance.now();
@@ -1700,6 +1774,12 @@ export function App() {
         locallyUpdatedArticleIds.current
       );
       rememberArticleStates(responseArticles, articleStateById.current);
+      if (view === "recommended") {
+        rememberRecommendationSession(
+          response.meta.recommendationSession,
+          activeRecommendationScopeKey
+        );
+      }
       setArticles(
         articlesVisibleForUnreadFilter(responseArticles, supportsUnreadOnly(view) && onlyUnread)
       );
@@ -1728,6 +1808,8 @@ export function App() {
           dibaoApi.listArticles({
             ...requestInput,
             limit: 1,
+            recommendationSessionId:
+              response.meta.recommendationSession?.id ?? persistedRecommendationSessionId,
             includeUnreadCount: true,
             signal
           })
@@ -2020,7 +2102,9 @@ export function App() {
       folderId: selectedFolder?.id ?? null,
       unreadOnly,
       timeWindow,
-      loadedCount: articles.length
+      loadedCount: articles.length,
+      recommendationSessionId: recommendationSession?.id ?? null,
+      recommendationSessionPosition: recommendationSession?.consumedThrough ?? null
     };
     let disposed = false;
     setIsRecommendationInventoryLoading(true);
@@ -2087,6 +2171,8 @@ export function App() {
     articles.length,
     currentArticleView,
     isUsingOfflineData,
+    recommendationSession?.consumedThrough,
+    recommendationSession?.id,
     selectedFeed?.id,
     selectedFolder?.id,
     t.errors.api,
@@ -3187,6 +3273,11 @@ export function App() {
         appPage.type === "search" && isRelatedSearchForm(submittedSearchForm)
           ? submittedSearchForm.relatedArticle?.id ?? null
           : null;
+      const activeRecommendationScopeKey = recommendationSessionScopeKey(
+        sourceSelection,
+        unreadOnly,
+        timeWindow
+      );
       const response =
         appPage.type === "search"
           ? await withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
@@ -3217,6 +3308,11 @@ export function App() {
                 view: currentArticleView,
                 limit: 50,
                 cursor: nextArticleCursor,
+                recommendationSessionId:
+                  currentArticleView === "recommended"
+                    ? recommendationSession?.id ??
+                      storedRecommendationSessionId(activeRecommendationScopeKey)
+                    : null,
                 unreadOnly: supportsUnreadOnly(currentArticleView) ? unreadOnly : false,
                 timeWindow: supportsQuickFilters(currentArticleView) ? timeWindow : "all",
                 sort: articleSortForView(currentArticleView, favoriteSort, readLaterSort),
@@ -3233,6 +3329,12 @@ export function App() {
         locallyUpdatedArticleIds.current
       );
       rememberArticleStates(responseArticles, articleStateById.current);
+      if (appPage.type !== "search" && currentArticleView === "recommended") {
+        rememberRecommendationSession(
+          response.meta.recommendationSession,
+          activeRecommendationScopeKey
+        );
+      }
       const visibleResponseArticles =
         appPage.type === "search"
           ? responseArticles

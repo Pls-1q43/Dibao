@@ -54,7 +54,8 @@ import {
   type PluginJobType,
   type JobType,
   type ProfileSignalCountRow,
-  type RecommendedArticleInventory
+  type RecommendedArticleInventory,
+  type RecommendedArticleSessionInventory
 } from "@dibao/db";
 import { cosineSimilarity, profileAlgorithmDefaults } from "@dibao/ranking";
 import { dibaoVersion, type ApiError } from "@dibao/shared";
@@ -308,6 +309,7 @@ type ArticleQuery = {
   limit?: string;
   cursor?: string;
   sort?: string;
+  recommendationSessionId?: string;
 };
 
 type ReaderDiscoveryQuery = {
@@ -322,6 +324,7 @@ type RelatedSearchQuery = {
 
 type RecommendationInventoryQuery = ArticleQuery & {
   loadedCount?: string;
+  recommendationSessionPosition?: string;
 };
 
 type SearchQuery = {
@@ -467,6 +470,9 @@ type RecommendationInventoryResponse = {
   baseFallbackCount: number;
   unrankedFallbackCount: number;
   loadedCount: number;
+  recommendationSessionId: string | null;
+  recommendationSessionPosition: number | null;
+  recommendationSessionExpiresAt: string | null;
   rankingJob: {
     queued: number;
     running: number;
@@ -510,6 +516,8 @@ type EncodedCursorPayload = CursorPayload | { keyset: ArticleListCursor };
 
 const ARTICLE_EXPLANATION_CACHE_TTL_MS = 60_000;
 const ARTICLE_EXPLANATION_CACHE_MAX_ENTRIES = 500;
+const RECOMMENDATION_SESSION_TTL_MS = 24 * 60 * 60_000;
+const RECOMMENDATION_SESSION_MAX_ITEMS = 1_000;
 const WAL_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
 const WAL_MAINTENANCE_MIN_BYTES = 16 * 1024 * 1024;
 
@@ -1086,6 +1094,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     {
       input: ArticleListInput;
       loadedCount: number;
+      recommendationSessionPosition: number;
       send: (payload: RecommendationInventoryResponse) => void;
       heartbeat: () => void;
       close: () => void;
@@ -1458,8 +1467,10 @@ export function buildServer(options: BuildServerOptions = {}) {
 
   function getRecommendationInventoryResponse(
     input: ArticleListInput,
-    loadedCount: number
+    loadedCount: number,
+    recommendationSessionPosition: number
   ): RecommendationInventoryResponse {
+    const now = options.now?.() ?? Date.now();
     const inventory = articles.getRecommendedInventory({
       ...input,
       view: "recommended",
@@ -1470,7 +1481,77 @@ export function buildServer(options: BuildServerOptions = {}) {
       queued: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "queued"),
       running: jobs.countByTypeAndStatus(RANKING_RECALCULATE_JOB_TYPE, "running")
     };
-    return mapRecommendationInventory(inventory, loadedCount, rankingJob, options.now?.() ?? Date.now());
+    const sessionInventory = input.recommendationSessionId
+      ? articles.getRecommendedSessionInventory({
+          sessionId: input.recommendationSessionId,
+          afterPosition: recommendationSessionPosition,
+          filters: input,
+          now
+        })
+      : null;
+    return mapRecommendationInventory(
+      inventory,
+      loadedCount,
+      rankingJob,
+      now,
+      sessionInventory,
+      recommendationSessionPosition
+    );
+  }
+
+  function resolveRecommendationSession(
+    input: ArticleListInput,
+    scopeKey: string
+  ): { sessionId: string; resetCursor: boolean } {
+    const now = options.now?.() ?? Date.now();
+    const activeRankContext = rankingService.getActiveRankContext();
+    const requestedSessionId =
+      input.recommendationSessionId ??
+      (input.cursor?.type === "recommended_session" ? input.cursor.sessionId : undefined);
+    if (requestedSessionId) {
+      const existing = articles.findRecommendedSession(requestedSessionId, now);
+      if (existing?.scopeKey === scopeKey) {
+        const sessionInventory = articles.getRecommendedSessionInventory({
+          sessionId: existing.id,
+          afterPosition: -1,
+          filters: input,
+          now
+        });
+        if ((sessionInventory?.eligibleCount ?? 0) > 0) {
+          return { sessionId: existing.id, resetCursor: false };
+        }
+        const currentInventory = articles.getRecommendedInventory({
+          ...input,
+          rankContext: activeRankContext
+        });
+        const currentSessionCandidateCount =
+          currentInventory.latestRerankWindowId
+            ? currentInventory.latestActiveCount
+            : activeRankContext === BASE_RANK_CONTEXT
+              ? currentInventory.latestActiveCount + currentInventory.unrankedFallbackCount
+              : 0;
+        if (
+          existing.rankContext === activeRankContext &&
+          existing.rerankWindowId === currentInventory.latestRerankWindowId &&
+          currentSessionCandidateCount === 0
+        ) {
+          return { sessionId: existing.id, resetCursor: false };
+        }
+      }
+    }
+
+    const created = articles.createRecommendedSession({
+      ...input,
+      id: `rec_session_${randomBytes(10).toString("hex")}`,
+      rankContext: activeRankContext,
+      scopeKey,
+      maxItems: RECOMMENDATION_SESSION_MAX_ITEMS,
+      now,
+      expiresAt: now + RECOMMENDATION_SESSION_TTL_MS,
+      cursor: undefined,
+      recommendationSessionId: undefined
+    });
+    return { sessionId: created.id, resetCursor: true };
   }
 
   function ensureRecommendationInventoryHeartbeat(): void {
@@ -1492,7 +1573,11 @@ export function buildServer(options: BuildServerOptions = {}) {
     for (const subscriber of recommendationInventorySubscribers.values()) {
       try {
         subscriber.send(
-          getRecommendationInventoryResponse(subscriber.input, subscriber.loadedCount)
+          getRecommendationInventoryResponse(
+            subscriber.input,
+            subscriber.loadedCount,
+            subscriber.recommendationSessionPosition
+          )
         );
       } catch (error) {
         app.log.warn({ error, reason }, "recommendation.inventory.broadcast_failed");
@@ -2105,7 +2190,11 @@ export function buildServer(options: BuildServerOptions = {}) {
       }
 
       return {
-        data: getRecommendationInventoryResponse(parsed.input, parsed.loadedCount)
+        data: getRecommendationInventoryResponse(
+          parsed.input,
+          parsed.loadedCount,
+          parsed.recommendationSessionPosition
+        )
       };
     }
   );
@@ -2172,6 +2261,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       recommendationInventorySubscribers.set(subscriberId, {
         input: parsed.input,
         loadedCount: parsed.loadedCount,
+        recommendationSessionPosition: parsed.recommendationSessionPosition,
         send,
         heartbeat,
         close: () => {
@@ -2180,7 +2270,13 @@ export function buildServer(options: BuildServerOptions = {}) {
         }
       });
       ensureRecommendationInventoryHeartbeat();
-      send(getRecommendationInventoryResponse(parsed.input, parsed.loadedCount));
+      send(
+        getRecommendationInventoryResponse(
+          parsed.input,
+          parsed.loadedCount,
+          parsed.recommendationSessionPosition
+        )
+      );
     }
   );
 
@@ -2936,10 +3032,23 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const startedAt = performance.now();
-    const result = articles.list({
+    const activeRankContext = rankingService.getActiveRankContext();
+    const listInput: ArticleListInput = {
       ...parsed.input,
-      rankContext: rankingService.getActiveRankContext()
-    });
+      rankContext: activeRankContext
+    };
+    if ((parsed.input.view ?? "latest") === "recommended") {
+      const resolvedSession = resolveRecommendationSession(
+        parsed.input,
+        recommendationSessionScopeKey(request.query)
+      );
+      listInput.recommendationSessionId = resolvedSession.sessionId;
+      if (resolvedSession.resetCursor) {
+        listInput.cursor = undefined;
+        listInput.offset = undefined;
+      }
+    }
+    const result = articles.list(listInput);
     const responseMapStartedAt = performance.now();
     const data = result.items.map(mapArticleListItem);
     const responseMapMs = performance.now() - responseMapStartedAt;
@@ -2951,6 +3060,10 @@ export function buildServer(options: BuildServerOptions = {}) {
         sort: parsed.input.sort ?? null,
         limit: parsed.input.limit ?? null,
         offset: parsed.input.offset ?? 0,
+        cursorType: parsed.input.cursor?.type ?? null,
+        recommendationSessionId: result.recommendationSession?.id ?? null,
+        recommendationSessionPosition: result.recommendationSession?.consumedThrough ?? null,
+        rerankWindowId: result.recommendationSession?.rerankWindowId ?? null,
         includeUnreadCount: parsed.input.includeUnreadCount ?? true,
         itemCount: result.items.length,
         hasMore: result.nextOffset !== null,
@@ -2973,7 +3086,22 @@ export function buildServer(options: BuildServerOptions = {}) {
         nextCursor: encodeCursor(result.nextCursor ?? result.nextOffset)
       },
       meta: {
-        unreadCount: result.unreadCount
+        unreadCount: result.unreadCount,
+        ...((parsed.input.view ?? "latest") === "recommended"
+          ? {
+              recommendationSession: result.recommendationSession
+                ? {
+                    id: result.recommendationSession.id,
+                    rankContext: result.recommendationSession.rankContext,
+                    rerankWindowId: result.recommendationSession.rerankWindowId,
+                    itemCount: result.recommendationSession.itemCount,
+                    consumedThrough: result.recommendationSession.consumedThrough,
+                    createdAt: timestampToIsoValue(result.recommendationSession.createdAt),
+                    expiresAt: timestampToIsoValue(result.recommendationSession.expiresAt)
+                  }
+                : null
+            }
+          : {})
       }
     };
   });
@@ -5695,6 +5823,40 @@ function parseArticleQuery(
     };
   }
 
+  const recommendationSessionId = parseRecommendationSessionId(query.recommendationSessionId);
+  if (recommendationSessionId === null) {
+    return {
+      ok: false,
+      message: "recommendationSessionId is invalid",
+      details: { field: "recommendationSessionId" }
+    };
+  }
+  if (recommendationSessionId !== undefined && view !== "recommended") {
+    return {
+      ok: false,
+      message: "recommendationSessionId requires the recommended view",
+      details: { field: "recommendationSessionId" }
+    };
+  }
+  if (cursor?.type === "recommended_session" && view !== "recommended") {
+    return {
+      ok: false,
+      message: "recommended session cursor requires the recommended view",
+      details: { field: "cursor" }
+    };
+  }
+  if (
+    cursor?.type === "recommended_session" &&
+    recommendationSessionId !== undefined &&
+    cursor.sessionId !== recommendationSessionId
+  ) {
+    return {
+      ok: false,
+      message: "recommendation session cursor does not match recommendationSessionId",
+      details: { fields: ["cursor", "recommendationSessionId"] }
+    };
+  }
+
   const sort = parseArticleSort(query.sort);
   if (sort === null) {
     return {
@@ -5745,6 +5907,9 @@ function parseArticleQuery(
   if (cursor && cursor.type !== "offset") {
     input.cursor = cursor;
   }
+  if (recommendationSessionId !== undefined) {
+    input.recommendationSessionId = recommendationSessionId;
+  }
 
   if (query.feedId !== undefined) {
     input.feedId = query.feedId;
@@ -5777,7 +5942,12 @@ function parseRecommendationInventoryQuery(
   query: RecommendationInventoryQuery,
   now: (() => number) | undefined
 ):
-  | { ok: true; input: ArticleListInput; loadedCount: number }
+  | {
+      ok: true;
+      input: ArticleListInput;
+      loadedCount: number;
+      recommendationSessionPosition: number;
+    }
   | { ok: false; message: string; details?: unknown } {
   if (query.view !== undefined && query.view !== "recommended") {
     return {
@@ -5793,6 +5963,16 @@ function parseRecommendationInventoryQuery(
       ok: false,
       message: "loadedCount must be a non-negative integer",
       details: { field: "loadedCount" }
+    };
+  }
+  const recommendationSessionPosition = parseRecommendationSessionPosition(
+    query.recommendationSessionPosition
+  );
+  if (recommendationSessionPosition === null) {
+    return {
+      ok: false,
+      message: "recommendationSessionPosition must be a non-negative integer",
+      details: { field: "recommendationSessionPosition" }
     };
   }
 
@@ -5820,8 +6000,20 @@ function parseRecommendationInventoryQuery(
       offset: undefined,
       limit: undefined
     },
-    loadedCount
+    loadedCount,
+    recommendationSessionPosition
   };
+}
+
+function recommendationSessionScopeKey(query: ArticleQuery): string {
+  return JSON.stringify({
+    feedId: query.feedId?.trim() || null,
+    folderId: query.folderId?.trim() || null,
+    status: query.status ?? null,
+    unreadOnly: query.unreadOnly === "true",
+    timeWindow:
+      query.timeWindow ?? (query.todayOnly === "true" ? "24h" : "all")
+  });
 }
 
 function parseLoadedCount(value: string | undefined): number | null {
@@ -5837,15 +6029,35 @@ function parseLoadedCount(value: string | undefined): number | null {
   return parsed;
 }
 
+function parseRecommendationSessionPosition(value: string | undefined): number | null {
+  if (value === undefined) {
+    return -1;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000 ? parsed : null;
+}
+
+function parseRecommendationSessionId(value: string | undefined): string | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return /^rec_session_[a-f0-9]{20}$/.test(normalized) ? normalized : null;
+}
+
 function mapRecommendationInventory(
   inventory: RecommendedArticleInventory,
   loadedCount: number,
   rankingJob: { queued: number; running: number },
-  now: number
+  now: number,
+  sessionInventory: RecommendedArticleSessionInventory | null,
+  recommendationSessionPosition: number
 ): RecommendationInventoryResponse {
   const normalizedLoadedCount = Math.max(0, Math.trunc(loadedCount));
   const fallbackCount = inventory.baseFallbackCount + inventory.unrankedFallbackCount;
-  const remainingSortedCount = Math.max(0, inventory.sortedCount - normalizedLoadedCount);
+  const sortedCount = sessionInventory?.eligibleCount ?? inventory.latestActiveCount;
+  const remainingSortedCount = sessionInventory?.remainingCount ??
+    Math.max(0, inventory.latestActiveCount - normalizedLoadedCount);
   const hasRankingJob = rankingJob.queued + rankingJob.running > 0;
   const status: RecommendationInventoryState = hasRankingJob
     ? "ranking"
@@ -5858,7 +6070,7 @@ function mapRecommendationInventory(
     activeRankContext: inventory.rankContext,
     latestRerankWindowId: inventory.latestRerankWindowId,
     eligibleCount: inventory.eligibleCount,
-    sortedCount: inventory.sortedCount,
+    sortedCount,
     remainingSortedCount,
     latestActiveCount: inventory.latestActiveCount,
     staleActiveCount: inventory.staleActiveCount,
@@ -5866,6 +6078,12 @@ function mapRecommendationInventory(
     baseFallbackCount: inventory.baseFallbackCount,
     unrankedFallbackCount: inventory.unrankedFallbackCount,
     loadedCount: normalizedLoadedCount,
+    recommendationSessionId: sessionInventory?.session.id ?? null,
+    recommendationSessionPosition:
+      sessionInventory ? recommendationSessionPosition : null,
+    recommendationSessionExpiresAt: sessionInventory
+      ? timestampToIsoValue(sessionInventory.session.expiresAt)
+      : null,
     rankingJob,
     lastRankedAt: timestampToIso(inventory.lastRankedAt),
     updatedAt: timestampToIsoValue(now)
@@ -7081,6 +7299,15 @@ function isArticleListCursor(value: unknown): value is ArticleListCursor {
     return false;
   }
   const cursor = value as Partial<ArticleListCursor>;
+  if (cursor.type === "recommended_session") {
+    return (
+      typeof cursor.sessionId === "string" &&
+      /^rec_session_[a-f0-9]{20}$/.test(cursor.sessionId) &&
+      typeof cursor.position === "number" &&
+      Number.isInteger(cursor.position) &&
+      cursor.position >= 0
+    );
+  }
   if (cursor.type === "recommended") {
     return (
       typeof cursor.publishedAt === "number" &&

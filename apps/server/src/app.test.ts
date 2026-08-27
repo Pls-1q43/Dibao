@@ -3106,7 +3106,7 @@ describe("server API vertical slice", () => {
       feedUrl: "https://example.com/inventory.xml",
       now: 1000
     });
-    for (const id of ["active_new", "active_old", "base_only", "unranked"]) {
+    for (const id of ["active_new", "active_new_second", "active_old", "base_only", "unranked"]) {
       articles.upsert({
         id: `article_${id}`,
         feedId: "feed_inventory",
@@ -3126,6 +3126,14 @@ describe("server API vertical slice", () => {
       rerankPosition: 1
     });
     insertRankForContext(db, {
+      articleId: "article_active_new_second",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      score: 0.85,
+      calculatedAt: 5000,
+      rerankWindowId: "window:new",
+      rerankPosition: 2
+    });
+    insertRankForContext(db, {
       articleId: "article_active_old",
       rankContext: TEST_ACTIVE_RANK_CONTEXT,
       score: 0.8,
@@ -3138,9 +3146,21 @@ describe("server API vertical slice", () => {
     const app = buildServer({ db, logger: false, now: () => 6000 });
 
     try {
+      const firstPage = await app.inject({
+        method: "GET",
+        url: "/api/articles?view=recommended&unreadOnly=true&limit=1&includeUnreadCount=false"
+      });
+      expect(firstPage.statusCode, firstPage.body).toBe(200);
+      const recommendationSession = firstPage.json().meta.recommendationSession;
+      expect(recommendationSession).toMatchObject({
+        rerankWindowId: "window:new",
+        itemCount: 2,
+        consumedThrough: 0
+      });
+
       const response = await app.inject({
         method: "GET",
-        url: "/api/recommendation/inventory?unreadOnly=true&loadedCount=1"
+        url: `/api/recommendation/inventory?unreadOnly=true&loadedCount=1&recommendationSessionId=${encodeURIComponent(recommendationSession.id)}&recommendationSessionPosition=0`
       });
 
       expect(response.statusCode, response.body).toBe(200);
@@ -3149,10 +3169,12 @@ describe("server API vertical slice", () => {
           status: "available",
           activeRankContext: TEST_ACTIVE_RANK_CONTEXT,
           latestRerankWindowId: "window:new",
-          eligibleCount: 4,
+          recommendationSessionId: recommendationSession.id,
+          recommendationSessionPosition: 0,
+          eligibleCount: 5,
           sortedCount: 2,
           remainingSortedCount: 1,
-          latestActiveCount: 1,
+          latestActiveCount: 2,
           staleActiveCount: 1,
           fallbackCount: 2,
           baseFallbackCount: 1,
@@ -8294,10 +8316,11 @@ describe("server API vertical slice", () => {
     }
   });
 
-  it("keeps the latest active rerank window first and backfills stale active before base", async () => {
+  it("freezes only the latest active rerank window into a recommendation session", async () => {
     const db = createEmptyDatabase();
     const feeds = new SqliteFeedRepository(db);
     const articles = new SqliteArticleRepository(db);
+    const actions = new SqliteArticleActionRepository(db);
     const embeddings = new SqliteEmbeddingRepository(db);
     feeds.upsert({
       id: "feed_active_window",
@@ -8307,6 +8330,8 @@ describe("server API vertical slice", () => {
     });
     for (const [id, title, publishedAt] of [
       ["article_active_new", "Latest active window", 3000],
+      ["article_active_new_second", "Latest active window second", 2900],
+      ["article_active_new_third", "Latest active window third", 2800],
       ["article_active_old", "Older active window", 2000],
       ["article_base_only", "Base fallback only", 1000],
       ["article_unranked", "Unranked fallback only", 4000]
@@ -8358,20 +8383,80 @@ describe("server API vertical slice", () => {
       rerankPosition: 0,
       rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:new`
     });
+    insertRankForContext(db, {
+      articleId: "article_active_new_second",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      embeddingIndexId: "index_active_window",
+      score: 0.4,
+      calculatedAt: 7000,
+      rerankPosition: 1,
+      rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:new`
+    });
+    insertRankForContext(db, {
+      articleId: "article_active_new_third",
+      rankContext: TEST_ACTIVE_RANK_CONTEXT,
+      embeddingIndexId: "index_active_window",
+      score: 0.3,
+      calculatedAt: 7000,
+      rerankPosition: 2,
+      rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:new`
+    });
     const app = buildServer({ db, logger: false });
 
     try {
       const response = await app.inject({
         method: "GET",
-        url: "/api/articles?view=recommended&limit=10"
+        url: "/api/articles?view=recommended&limit=2"
       });
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_active_new",
-        "article_active_old",
-        "article_base_only",
-        "article_unranked"
+        "article_active_new_second"
+      ]);
+      expect(response.json().meta.recommendationSession).toMatchObject({
+        rankContext: TEST_ACTIVE_RANK_CONTEXT,
+        rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:new`,
+        itemCount: 3,
+        consumedThrough: 1
+      });
+      expect(response.json().page.nextCursor).toEqual(expect.any(String));
+
+      insertRankForContext(db, {
+        articleId: "article_unranked",
+        rankContext: TEST_ACTIVE_RANK_CONTEXT,
+        embeddingIndexId: "index_active_window",
+        score: 1,
+        calculatedAt: 8000,
+        rerankPosition: 0,
+        rerankWindowId: `${TEST_ACTIVE_RANK_CONTEXT}:next`
+      });
+      const secondPage = await app.inject({
+        method: "GET",
+        url: `/api/articles?view=recommended&limit=2&recommendationSessionId=${encodeURIComponent(response.json().meta.recommendationSession.id)}&cursor=${encodeURIComponent(response.json().page.nextCursor)}`
+      });
+      expect(secondPage.statusCode, secondPage.body).toBe(200);
+      expect(secondPage.json().data.map((article: { id: string }) => article.id)).toEqual([
+        "article_active_new_third"
+      ]);
+
+      actions.record({
+        articleId: "article_active_new",
+        type: "not_interested",
+        now: 9000
+      });
+      actions.record({
+        articleId: "article_active_new_second",
+        type: "not_interested",
+        now: 9000
+      });
+      const reload = await app.inject({
+        method: "GET",
+        url: `/api/articles?view=recommended&limit=2&recommendationSessionId=${encodeURIComponent(response.json().meta.recommendationSession.id)}`
+      });
+      expect(reload.statusCode, reload.body).toBe(200);
+      expect(reload.json().data.map((article: { id: string }) => article.id)).toEqual([
+        "article_active_new_third"
       ]);
     } finally {
       await app.close();
@@ -8392,17 +8477,28 @@ describe("server API vertical slice", () => {
       expect(first.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_recommended"
       ]);
-      expect(first.json().meta).toEqual({ unreadCount: null });
+      expect(first.json().meta).toMatchObject({
+        unreadCount: null,
+        recommendationSession: {
+          rankContext: "base",
+          itemCount: 2,
+          consumedThrough: 0
+        }
+      });
       expect(first.json().page.nextCursor).toEqual(expect.any(String));
 
       const second = await app.inject({
         method: "GET",
-        url: `/api/articles?view=recommended&limit=1&cursor=${encodeURIComponent(first.json().page.nextCursor)}`
+        url: `/api/articles?view=recommended&limit=1&recommendationSessionId=${encodeURIComponent(first.json().meta.recommendationSession.id)}&cursor=${encodeURIComponent(first.json().page.nextCursor)}`
       });
       expect(second.statusCode, second.body).toBe(200);
       expect(second.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_recent"
       ]);
+      expect(second.json().meta.recommendationSession).toMatchObject({
+        id: first.json().meta.recommendationSession.id,
+        consumedThrough: 1
+      });
     } finally {
       await app.close();
       db.close();
@@ -8648,7 +8744,14 @@ describe("server API vertical slice", () => {
       expect(recommended.json().data.map((article: { id: string }) => article.id)).toEqual([
         "article_recommended"
       ]);
-      expect(recommended.json().meta).toEqual({ unreadCount: 1 });
+      expect(recommended.json().meta).toMatchObject({
+        unreadCount: 1,
+        recommendationSession: {
+          rankContext: "base",
+          itemCount: 1,
+          consumedThrough: 0
+        }
+      });
 
       const impression = await postJson(app, "/api/articles/article_recommended/actions", {
         type: "impression"

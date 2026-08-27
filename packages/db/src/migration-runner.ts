@@ -78,6 +78,9 @@ const recommendedRankSortIndexPath = fileURLToPath(
 const recommendationV3MemoryPath = fileURLToPath(
   new URL("../migrations/026_recommendation_v3_memory.sql", import.meta.url)
 );
+const recommendationSessionsPath = fileURLToPath(
+  new URL("../migrations/027_recommendation_sessions.sql", import.meta.url)
+);
 
 export function loadDefaultMigrations(): Migration[] {
   return [
@@ -205,6 +208,11 @@ export function loadDefaultMigrations(): Migration[] {
       version: "026",
       name: "recommendation_v3_memory",
       sql: readFileSync(recommendationV3MemoryPath, "utf8")
+    },
+    {
+      version: "027",
+      name: "recommendation_sessions",
+      sql: readFileSync(recommendationSessionsPath, "utf8")
     }
   ];
 }

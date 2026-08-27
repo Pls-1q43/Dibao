@@ -1,4 +1,4 @@
-const CACHE_VERSION = "dibao-pwa-v7";
+const CACHE_VERSION = "dibao-pwa-v8";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
