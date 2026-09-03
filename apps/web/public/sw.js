@@ -1,4 +1,4 @@
-const CACHE_VERSION = "dibao-pwa-v8";
+const CACHE_VERSION = "dibao-pwa-v9";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
@@ -228,14 +228,17 @@ async function networkFirstNavigation(request) {
         await cacheDiscoveredStaticAssets(cache, html);
       }
     }
+    if (response.status >= 500) {
+      return (await cachedNavigationResponse(cache, request)) ?? response;
+    }
     return response;
   } catch {
-    return (
-      (await cache.match(request)) ??
-      (await cache.match("/index.html")) ??
-      Response.error()
-    );
+    return (await cachedNavigationResponse(cache, request)) ?? Response.error();
   }
+}
+
+async function cachedNavigationResponse(cache, request) {
+  return (await cache.match(request)) ?? (await cache.match("/index.html"));
 }
 
 async function staleWhileRevalidate(request) {

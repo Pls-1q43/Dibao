@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerServiceWorker } from "./pwa.js";
 
@@ -227,4 +228,80 @@ describe("service worker source", () => {
     expect(source).toContain("imageScopesByClientId");
     expect(source).toContain("event.clientId");
   });
+
+  it("falls back to the cached app shell for server-side navigation failures", async () => {
+    const cachedShell = new Response("cached app shell", {
+      headers: { "content-type": "text/html" },
+      status: 200
+    });
+    const { cache, networkFirstNavigation } = loadNavigationHandler({
+      cachedShell,
+      networkResponse: new Response("Bad gateway", { status: 502 })
+    });
+
+    const response = await networkFirstNavigation(
+      new Request("https://dibao.test/?view=recommended")
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("cached app shell");
+    expect(cache.match).toHaveBeenCalledWith("/index.html");
+  });
+
+  it("does not hide client-side navigation errors behind the cached app shell", async () => {
+    const networkResponse = new Response("Not found", { status: 404 });
+    const { cache, networkFirstNavigation } = loadNavigationHandler({
+      cachedShell: new Response("cached app shell", { status: 200 }),
+      networkResponse
+    });
+
+    const response = await networkFirstNavigation(
+      new Request("https://dibao.test/missing")
+    );
+
+    expect(response).toBe(networkResponse);
+    expect(cache.match).not.toHaveBeenCalled();
+  });
 });
+
+function loadNavigationHandler(input: {
+  cachedShell: Response;
+  networkResponse: Response;
+}): {
+  cache: { match: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn> };
+  networkFirstNavigation: (request: Request) => Promise<Response>;
+} {
+  const source = readFileSync(resolve("public/sw.js"), "utf8");
+  const cache = {
+    match: vi.fn(async (request: Request | string) =>
+      request === "/index.html" ? input.cachedShell : undefined
+    ),
+    put: vi.fn()
+  };
+  const context = {
+    Map,
+    Promise,
+    Request,
+    Response,
+    Set,
+    URL,
+    caches: {
+      open: vi.fn(async () => cache)
+    },
+    encodeURIComponent,
+    fetch: vi.fn(async () => input.networkResponse),
+    self: {
+      addEventListener: vi.fn(),
+      location: { origin: "https://dibao.test" }
+    }
+  } as Record<string, unknown>;
+
+  runInNewContext(source, context);
+
+  return {
+    cache,
+    networkFirstNavigation: context.networkFirstNavigation as (
+      request: Request
+    ) => Promise<Response>
+  };
+}
