@@ -85,6 +85,12 @@ describe("offline reading helpers", () => {
         false
       )
     ).toBeNull();
+    expect(
+      offlineModePromptReasonForError(
+        new DOMException("Startup request timed out", "AbortError"),
+        false
+      )
+    ).toBe("server-unavailable");
   });
 
   it("keeps offline mode entry and exit user-controlled", () => {
@@ -93,6 +99,10 @@ describe("offline reading helpers", () => {
     expect(runtime.match(/applyOfflineBootstrap\(/g)).toHaveLength(2);
     expect(runtime).toContain("isOfflineModeActive(bootstrap.profile.scopeKey)");
     expect(runtime).toContain('void offerOfflineMode("network-offline")');
+    expect(runtime).toContain("AUTH_GATE_REQUEST_TIMEOUT_MS");
+    expect(runtime).toContain("SERVER_AVAILABILITY_CHECK_INTERVAL_MS");
+    expect(runtime).toContain("dibaoApi.getAuthSession(signal)");
+    expect(runtime).toContain('window.addEventListener("focus", checkWhenVisible)');
     expect(runtime).toContain("setAuthGateRetryToken((value) => value + 1)");
     expect(runtime).toContain("onExit: isUsingOfflineData");
     expect(runtime).not.toContain("reconnectAttempt");

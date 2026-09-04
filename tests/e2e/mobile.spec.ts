@@ -23,6 +23,35 @@ test("mobile browser exposes PWA metadata", async ({ page }) => {
   );
 });
 
+test("mobile PWA offers cached reading when the server becomes unreachable", async ({ page }) => {
+  const offlineManifest = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/offline/manifest"
+  );
+  await login(page);
+  await expect((await offlineManifest).status()).toBe(200);
+  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+
+  await page.route("**/api/auth/session", (route) => route.abort("failed"));
+  await expect
+    .poll(async () => {
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      return page.getByRole("button", { name: "切换到离线模式" }).count();
+    })
+    .toBe(1);
+  await expect(page.getByText(/服务器暂时无法连接。本机有 \d+ 篇离线文章/)).toBeVisible();
+
+  await page.unroute("**/api/auth/session");
+  await page.route("**/api/auth/session", () => undefined);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: "切换到离线模式" })).toBeVisible();
+  await page.getByRole("button", { name: "切换到离线模式" }).click();
+  await expect(
+    page.getByRole("button", { name: /查看离线阅读状态：服务器不可用/ })
+  ).toBeVisible();
+  await page.getByRole("link", { name: "最新" }).click();
+  await expect(page.getByRole("link", { name: /E2E Article/ }).first()).toBeVisible();
+});
+
 test("mobile MVP reader smoke has visible controls and no horizontal overflow", async ({ page }) => {
   await login(page);
 
@@ -437,6 +466,33 @@ async function login(page: Page): Promise<void> {
 
   await expect(page.getByRole("link", { name: "最新" })).toBeVisible();
   await expect(page.getByRole("link", { name: "推荐" })).toBeVisible();
+}
+
+async function hasActiveOfflineSnapshot(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => new Promise<boolean>((resolve, reject) => {
+      const request = indexedDB.open("dibao-offline-reading");
+      request.onerror = () => reject(request.error ?? new Error("Offline database unavailable"));
+      request.onsuccess = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains("profiles")) {
+          database.close();
+          resolve(false);
+          return;
+        }
+        const transaction = database.transaction("profiles", "readonly");
+        const profiles = transaction.objectStore("profiles").getAll();
+        profiles.onerror = () => reject(profiles.error ?? new Error("Offline profiles unavailable"));
+        profiles.onsuccess = () => {
+          const active = profiles.result.some((profile) =>
+            Boolean((profile as { activeSnapshotId?: string | null }).activeSnapshotId)
+          );
+          database.close();
+          resolve(active);
+        };
+      };
+    })
+  );
 }
 
 async function blockExternalBrowserRequests(page: Page): Promise<void> {

@@ -107,6 +107,39 @@ describe("web API client", () => {
     ]);
   });
 
+  it("forwards abort signals to startup gate requests", async () => {
+    const controller = new AbortController();
+    const calls: Array<{ path: string; signal: AbortSignal | null | undefined }> = [];
+    const api = createDibaoApi(async (input, init) => {
+      const path = String(input);
+      calls.push({ path, signal: init?.signal });
+      return new Response(
+        JSON.stringify({
+          data: path.endsWith("/session")
+            ? { setupCompleted: true, authenticated: false, username: null }
+            : {
+                setupCompleted: true,
+                hasFeeds: false,
+                hasEmbeddingProvider: false,
+                firstRefreshStatus: "idle"
+              }
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    });
+
+    await api.getAuthSession(controller.signal);
+    await api.getSetupStatus(controller.signal);
+
+    expect(calls).toEqual([
+      { path: "/api/auth/session", signal: controller.signal },
+      { path: "/api/setup/status", signal: controller.signal }
+    ]);
+  });
+
   it("fetches feed folders", async () => {
     const calls: string[] = [];
     const api = createDibaoApi(async (input) => {

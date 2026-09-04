@@ -258,11 +258,15 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
     await expect(page.getByRole("heading", { level: 1, name: "订阅源管理" })).toBeVisible();
     await expect(page.getByText(/网络连接已中断。本机有 \d+ 篇离线文章/)).toBeVisible();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.locator("#root main")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("ERR_INTERNET_DISCONNECTED");
+    await expect(page.getByText(/网络连接已中断。本机有 \d+ 篇离线文章/)).toBeVisible();
     await page.getByRole("button", { name: "切换到离线模式" }).click();
     await expect(
       page.getByRole("button", { name: /查看离线阅读状态：离线 · \d+ 篇可用/ })
     ).toBeVisible();
-    await page.goto("/");
+    await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("#root main")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("ERR_INTERNET_DISCONNECTED");
     await expect(

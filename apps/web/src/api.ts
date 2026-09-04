@@ -1407,8 +1407,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
   }
 
   return {
-    async getAuthSession(): Promise<AuthSession> {
-      return (await request<AuthSession>("/api/auth/session")).data;
+    async getAuthSession(signal?: AbortSignal): Promise<AuthSession> {
+      return (await request<AuthSession>("/api/auth/session", { signal })).data;
     },
 
     async setupAuth(
@@ -1463,8 +1463,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       ).data;
     },
 
-    async getSetupStatus(): Promise<SetupStatus> {
-      return (await request<SetupStatus>("/api/setup/status")).data;
+    async getSetupStatus(signal?: AbortSignal): Promise<SetupStatus> {
+      return (await request<SetupStatus>("/api/setup/status", { signal })).data;
     },
 
     async selectOptionalPlugin(

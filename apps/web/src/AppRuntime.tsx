@@ -180,6 +180,8 @@ const ARTICLE_LIST_REQUEST_TIMEOUT_MS = 10_000;
 const ARTICLE_LIST_FAILURE_TIMEOUT_MS = ARTICLE_LIST_REQUEST_TIMEOUT_MS * 3;
 const ARTICLE_DETAIL_REQUEST_TIMEOUT_MS = 12_000;
 const READER_DISCOVERY_REQUEST_TIMEOUT_MS = 10_000;
+const AUTH_GATE_REQUEST_TIMEOUT_MS = 5_000;
+const SERVER_AVAILABILITY_CHECK_INTERVAL_MS = 15_000;
 const ARTICLE_STATE_OVERLAY_STORAGE_KEY = "dibao:article-state-overlay:v1";
 const ARTICLE_STATE_OVERLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTICLE_STATE_OVERLAY_LIMIT = 500;
@@ -555,6 +557,7 @@ export function App() {
   const personalizedDiscoveryRequestId = useRef(0);
   const personalizedDiscoveryRequest = useRef<PersonalizedRelatedRequestContext | null>(null);
   const reconnectInFlight = useRef(false);
+  const serverAvailabilityCheckInFlight = useRef(false);
   const manualOfflineMode = useRef(false);
   const dismissedOfflinePromptReason = useRef<OfflineModePromptReason | null>(null);
   const offlinePromptRequestId = useRef(0);
@@ -951,7 +954,7 @@ export function App() {
   }, [applySettings]);
 
   const markServerAvailable = useCallback(() => {
-    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    setIsOffline(false);
     dismissedOfflinePromptReason.current = null;
     setOfflineModePrompt(null);
   }, []);
@@ -985,6 +988,35 @@ export function App() {
     const reason = offlineModePromptReasonForError(error);
     return reason ? offerOfflineMode(reason) : false;
   }, [offerOfflineMode]);
+
+  const checkServerAvailability = useCallback(async (): Promise<boolean> => {
+    if (
+      manualOfflineMode.current ||
+      isUsingOfflineData ||
+      serverAvailabilityCheckInFlight.current
+    ) {
+      return false;
+    }
+    if (navigator.onLine === false) {
+      setIsOffline(true);
+      await offerOfflineMode("network-offline");
+      return false;
+    }
+
+    serverAvailabilityCheckInFlight.current = true;
+    try {
+      await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+        dibaoApi.getAuthSession(signal)
+      );
+      markServerAvailable();
+      return true;
+    } catch (error) {
+      await offerOfflineModeForError(error);
+      return false;
+    } finally {
+      serverAvailabilityCheckInFlight.current = false;
+    }
+  }, [isUsingOfflineData, markServerAvailable, offerOfflineMode, offerOfflineModeForError]);
 
   const handleEnterOfflineMode = useCallback(async () => {
     if (!offlineModePrompt || isEnteringOfflineMode) return;
@@ -1054,8 +1086,10 @@ export function App() {
 
       for (let attempt = 0; !cancelled; attempt += 1) {
         try {
-          const session = await dibaoApi.getAuthSession();
-          if (!cancelled) {
+          const session = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+            dibaoApi.getAuthSession(signal)
+          );
+          if (!cancelled && !manualOfflineMode.current) {
             manualOfflineMode.current = false;
             markServerAvailable();
             const nextStage = stageForAuthSession(session);
@@ -1083,7 +1117,8 @@ export function App() {
           }
           return;
         } catch (error) {
-          if (await offerOfflineModeForError(error) || cancelled) return;
+          if (cancelled || manualOfflineMode.current) return;
+          if (await offerOfflineModeForError(error)) return;
           if (!cancelled) {
             setAuthError(
               attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
@@ -1115,8 +1150,6 @@ export function App() {
   useEffect(() => {
     function handleOnline() {
       setIsOffline(false);
-      dismissedOfflinePromptReason.current = null;
-      setOfflineModePrompt(null);
       if (!manualOfflineMode.current && appStageRef.current.type === "auth-loading") {
         setAuthGateRetryToken((value) => value + 1);
       }
@@ -1124,17 +1157,22 @@ export function App() {
 
     function handleOffline() {
       setIsOffline(true);
+      void offerOfflineMode("network-offline");
     }
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    setIsOffline(navigator.onLine === false);
+    const browserOffline = navigator.onLine === false;
+    setIsOffline(browserOffline);
+    if (browserOffline) {
+      void offerOfflineMode("network-offline");
+    }
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, []);
+  }, [offerOfflineMode]);
 
   useEffect(() => {
     function handlePwaUpdateAvailable(event: Event) {
@@ -1160,8 +1198,10 @@ export function App() {
 
       for (let attempt = 0; !cancelled; attempt += 1) {
         try {
-          const status = await dibaoApi.getSetupStatus();
-          if (!cancelled) {
+          const status = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+            dibaoApi.getSetupStatus(signal)
+          );
+          if (!cancelled && !manualOfflineMode.current) {
             markServerAvailable();
             setDerivedDataUpgrade(status.coreDatabaseMigration ?? status.derivedDataUpgrade ?? null);
             const nextStage = stageForSetupStatus(status);
@@ -1172,7 +1212,8 @@ export function App() {
           }
           return;
         } catch (error) {
-          if (await offerOfflineModeForError(error) || cancelled) return;
+          if (cancelled || manualOfflineMode.current) return;
+          if (await offerOfflineModeForError(error)) return;
           if (!cancelled) {
             setAuthError(
               attempt >= AUTH_GATE_ERROR_VISIBLE_AFTER_ATTEMPT
@@ -1540,7 +1581,9 @@ export function App() {
     setOfflineConnectionMode("reconnecting");
     setOfflineCacheError(null);
     try {
-      const session = await dibaoApi.getAuthSession();
+      const session = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+        dibaoApi.getAuthSession(signal)
+      );
       if (
         !session.authenticated ||
         !session.username ||
@@ -1595,9 +1638,49 @@ export function App() {
   }, [offlineScope, reconnectToServer]);
 
   useEffect(() => {
-    if (!isOffline || isUsingOfflineData || appStage.type !== "reader") return;
+    if (!isOffline || isUsingOfflineData) return;
     void offerOfflineMode("network-offline");
-  }, [appStage.type, isOffline, isUsingOfflineData, offerOfflineMode]);
+  }, [isOffline, isUsingOfflineData, offerOfflineMode]);
+
+  useEffect(() => {
+    if (
+      appStage.type !== "reader" ||
+      isUsingOfflineData ||
+      !offlineReadingEnabled ||
+      !offlineScope ||
+      offlineSummary.availableCount <= 0
+    ) {
+      return;
+    }
+
+    const checkWhenVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        void checkServerAvailability();
+      }
+    };
+    const interval = window.setInterval(
+      checkWhenVisible,
+      SERVER_AVAILABILITY_CHECK_INTERVAL_MS
+    );
+
+    window.addEventListener("focus", checkWhenVisible);
+    window.addEventListener("pageshow", checkWhenVisible);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", checkWhenVisible);
+      window.removeEventListener("pageshow", checkWhenVisible);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [
+    appStage.type,
+    checkServerAvailability,
+    isUsingOfflineData,
+    offlineReadingEnabled,
+    offlineScope,
+    offlineSummary.availableCount
+  ]);
 
   useEffect(() => {
     if (
