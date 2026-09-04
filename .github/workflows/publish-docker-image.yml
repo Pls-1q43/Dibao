@@ -38,6 +38,22 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release source gates
+        shell: bash
+        run: |
+          npm test
+          npm run typecheck
+          npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+
       - name: Compute image name
         id: image
         shell: bash
@@ -103,30 +119,25 @@ jobs:
             org.opencontainers.image.title=Dibao
             org.opencontainers.image.description=Self-hosted single-user personalized RSS reader
 
-      - name: Build and push image
+      - name: Build release candidate image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: dibao-release-candidate:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           secret-files: |
             dibao_sentry_config=${{ env.DIBAO_SENTRY_CONFIG_FILE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify published image Sentry config
+      - name: Verify candidate image Sentry config
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
-          else
-            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
-          fi
-
-          docker pull --platform linux/amd64 "$image_ref"
+          image_ref="dibao-release-candidate:${GITHUB_SHA}"
           docker run -i --rm --platform linux/amd64 "$image_ref" node --input-type=module - <<'NODE'
           import { readFileSync, readdirSync } from "node:fs";
           import { join } from "node:path";
@@ -171,24 +182,23 @@ jobs:
       - name: Verify release container install and upgrade
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            image_ref="${{ steps.image.outputs.name }}:${{ inputs.image_tag }}"
-          else
-            image_ref="${{ steps.image.outputs.name }}:${GITHUB_REF_NAME}"
-          fi
-
-          previous_image="${{ steps.image.outputs.name }}:v0.2.1"
+          image_ref="dibao-release-candidate:${GITHUB_SHA}"
+          previous_image="${{ steps.image.outputs.name }}:v0.3.1"
+          oldest_image="${{ steps.image.outputs.name }}:v0.2.1"
           expected_version="$(node -p "require('./package.json').version")"
           fresh_name="dibao-release-fresh-${GITHUB_RUN_ID}"
           old_name="dibao-release-upgrade-old-${GITHUB_RUN_ID}"
           new_name="dibao-release-upgrade-new-${GITHUB_RUN_ID}"
+          oldest_old_name="dibao-release-oldest-old-${GITHUB_RUN_ID}"
+          oldest_new_name="dibao-release-oldest-new-${GITHUB_RUN_ID}"
           fresh_data="$(mktemp -d)"
           upgrade_data="$(mktemp -d)"
-          chmod 777 "$fresh_data" "$upgrade_data"
+          oldest_upgrade_data="$(mktemp -d)"
+          chmod 777 "$fresh_data" "$upgrade_data" "$oldest_upgrade_data"
 
           cleanup() {
-            docker rm -f "$fresh_name" "$old_name" "$new_name" >/dev/null 2>&1 || true
-            sudo rm -rf "$fresh_data" "$upgrade_data"
+            docker rm -f "$fresh_name" "$old_name" "$new_name" "$oldest_old_name" "$oldest_new_name" >/dev/null 2>&1 || true
+            sudo rm -rf "$fresh_data" "$upgrade_data" "$oldest_upgrade_data"
           }
           trap cleanup EXIT
 
@@ -235,17 +245,130 @@ jobs:
             return 1
           }
 
+          seed_legacy_vector_index() {
+            local name="$1"
+            docker exec -i "$name" node --input-type=module - <<'NODE'
+          import {
+            openDatabase,
+            SqliteArticleRepository,
+            SqliteEmbeddingRepository,
+            SqliteFeedRepository,
+            toVectorBlob
+          } from "@dibao/db";
+
+          const db = openDatabase("/data/dibao.sqlite", { migrate: false });
+          try {
+            const now = Date.now();
+            new SqliteFeedRepository(db).upsert({
+              id: "release_upgrade_feed",
+              title: "Release upgrade fixture",
+              feedUrl: "https://example.invalid/release-upgrade.xml",
+              now
+            });
+            new SqliteArticleRepository(db).upsert({
+              id: "release_upgrade_article",
+              feedId: "release_upgrade_feed",
+              url: "https://example.invalid/release-upgrade",
+              title: "Release upgrade fixture",
+              dedupeKey: "release-upgrade-fixture",
+              now
+            });
+            const embeddings = new SqliteEmbeddingRepository(db);
+            embeddings.upsertProvider({
+              id: "release_upgrade_provider",
+              type: "embedded_local",
+              name: "Release upgrade fixture",
+              model: "release-upgrade-2d",
+              dimension: 2,
+              enabled: true,
+              now
+            });
+            embeddings.createIndex({
+              id: "release_upgrade_index",
+              providerId: "release_upgrade_provider",
+              model: "release-upgrade-2d",
+              dimension: 2,
+              now
+            });
+            db.exec("create virtual table vec_articles_release_upgrade_index using vec0(embedding float[2])");
+            const vectorBlob = toVectorBlob([1, 0]);
+            db.prepare(`
+              insert into article_embeddings (
+                article_id, embedding_index_id, vector_blob, content_hash, created_at, updated_at
+              ) values ('release_upgrade_article', 'release_upgrade_index', ?, 'release-upgrade-hash', ?, ?)
+            `).run(vectorBlob, now, now);
+            const vecRowid = Number(
+              db.prepare("insert into vec_articles_release_upgrade_index (embedding) values (?)")
+                .run(vectorBlob).lastInsertRowid
+            );
+            db.prepare(`
+              insert into article_vector_rows (
+                article_id, embedding_index_id, vec_rowid, created_at
+              ) values ('release_upgrade_article', 'release_upgrade_index', ?, ?)
+            `).run(vecRowid, now);
+          } finally {
+            db.close();
+          }
+          NODE
+          }
+
+          vector_upgrade_complete() {
+            local name="$1"
+            docker exec "$name" node -e 'const Database = require("better-sqlite3"); const db = new Database("/data/dibao.sqlite", { readonly: true }); const table = db.prepare("select sql from sqlite_master where name = ?").get("vec_articles_release_upgrade_index"); const embeddings = db.prepare("select count(*) as count from article_embeddings where embedding_index_id = ?").get("release_upgrade_index").count; const mappings = db.prepare("select count(*) as count from article_vector_rows where embedding_index_id = ?").get("release_upgrade_index").count; db.close(); process.exit(table?.sql?.includes("distance_metric=cosine") && embeddings === 1 && mappings === 1 ? 0 : 1);'
+          }
+
+          wait_vector_upgrade() {
+            local name="$1"
+            for _ in $(seq 1 180); do
+              if vector_upgrade_complete "$name" >/dev/null 2>&1; then
+                echo "Legacy vector index upgraded to cosine without replacing embeddings."
+                return 0
+              fi
+              sleep 2
+            done
+            docker logs "$name" --tail 250 || true
+            echo "::error::Container $name did not finish the legacy vector index upgrade."
+            return 1
+          }
+
           docker run -d --name "$fresh_name" -p 18081:8080 -v "$fresh_data:/data" "$image_ref"
           wait_health "$fresh_name" "http://127.0.0.1:18081" "$expected_version"
-          wait_latest_migration "$fresh_name" "026 recommendation_v3_memory"
+          wait_latest_migration "$fresh_name" "027 recommendation_sessions"
           docker rm -f "$fresh_name"
 
           docker pull "$previous_image"
           docker run -d --name "$old_name" -p 18082:8080 -v "$upgrade_data:/data" "$previous_image"
-          wait_health "$old_name" "http://127.0.0.1:18082" "0.2.1"
-          wait_latest_migration "$old_name" "025 recommended_rank_sort_index"
+          wait_health "$old_name" "http://127.0.0.1:18082" "0.3.1"
+          wait_latest_migration "$old_name" "026 recommendation_v3_memory"
+          seed_legacy_vector_index "$old_name"
           docker rm -f "$old_name"
 
           docker run -d --name "$new_name" -p 18083:8080 -v "$upgrade_data:/data" "$image_ref"
           wait_health "$new_name" "http://127.0.0.1:18083" "$expected_version"
-          wait_latest_migration "$new_name" "026 recommendation_v3_memory" "http://127.0.0.1:18083"
+          wait_latest_migration "$new_name" "027 recommendation_sessions"
+          wait_vector_upgrade "$new_name"
+          docker rm -f "$new_name"
+
+          docker pull "$oldest_image"
+          docker run -d --name "$oldest_old_name" -p 18084:8080 -v "$oldest_upgrade_data:/data" "$oldest_image"
+          wait_health "$oldest_old_name" "http://127.0.0.1:18084" "0.2.1"
+          wait_latest_migration "$oldest_old_name" "025 recommended_rank_sort_index"
+          docker rm -f "$oldest_old_name"
+
+          docker run -d --name "$oldest_new_name" -p 18085:8080 -v "$oldest_upgrade_data:/data" "$image_ref"
+          wait_health "$oldest_new_name" "http://127.0.0.1:18085" "$expected_version"
+          wait_latest_migration "$oldest_new_name" "027 recommendation_sessions"
+
+      - name: Publish verified multi-platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          secret-files: |
+            dibao_sentry_config=${{ env.DIBAO_SENTRY_CONFIG_FILE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

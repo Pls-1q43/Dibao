@@ -6,6 +6,15 @@ import { startFixtureServer } from "./fixtures.js";
 const accessPassword = "correct horse battery";
 const e2eDatabasePath = resolve(".tmp/e2e/dibao.sqlite");
 
+test.beforeAll(() => {
+  const db = new Database(e2eDatabasePath);
+  try {
+    db.prepare("update embedding_providers set enabled = 0 where enabled = 1").run();
+  } finally {
+    db.close();
+  }
+});
+
 test.beforeEach(async ({ page }) => {
   await blockExternalBrowserRequests(page);
 });

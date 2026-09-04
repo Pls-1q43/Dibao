@@ -94,7 +94,7 @@ services:
       DIBAO_HOST: 0.0.0.0
       DIBAO_PORT: "8080"
       DIBAO_DATABASE_PATH: /data/dibao.sqlite
-      DIBAO_COOKIE_SECURE: "false"
+      DIBAO_COOKIE_SECURE: "auto"
     volumes:
       - ./data:/data
 ```
@@ -174,7 +174,7 @@ ollama pull bge-m3
 - iOS Safari：分享 -> 添加到主屏幕。
 - Desktop Chrome / Edge：地址栏安装按钮，或浏览器菜单 -> 安装。
 
-`localhost` / `127.0.0.1` 通常可直接安装。局域网 IP 或公网域名建议使用 HTTPS；如果放在 HTTPS 反向代理后，把 `DIBAO_COOKIE_SECURE` 设为 `true`。
+`localhost` / `127.0.0.1` 通常可直接安装。局域网 IP 或公网域名建议使用 HTTPS。`DIBAO_COOKIE_SECURE=auto` 会根据直连协议或反向代理的 `X-Forwarded-Proto` 自动选择 Cookie 安全属性。
 
 ### 备份与升级
 
@@ -223,7 +223,7 @@ Dibao 采用 [Business Source License 1.1](./LICENSE.md)（`BUSL-1.1`）实现 s
 
 **局域网 HTTP 登录后没有保持会话？**
 
-确认 `DIBAO_COOKIE_SECURE=false`。只有 HTTPS 反向代理后才建议设为 `true`。
+保持 `DIBAO_COOKIE_SECURE=auto`，并确认反向代理传递正确的 `X-Forwarded-Proto`。只使用 HTTP 且代理无法传递该头时，可显式设为 `false`。
 
 **Feed 刷新失败怎么办？**
 
@@ -243,7 +243,8 @@ Dibao 采用 [Business Source License 1.1](./LICENSE.md)（`BUSL-1.1`）实现 s
 | `DIBAO_HOST` | `0.0.0.0` | Server 监听地址。 |
 | `DIBAO_PORT` | `8080` | Server 监听端口。 |
 | `DIBAO_DATABASE_PATH` | `/data/dibao.sqlite` | SQLite 数据库路径。 |
-| `DIBAO_COOKIE_SECURE` | `false` | HTTP/LAN 自托管可保持 `false`；HTTPS 反向代理后建议设为 `true`。 |
+| `DIBAO_COOKIE_SECURE` | `auto` | 根据直连协议或 `X-Forwarded-Proto` 自动设置；也可显式设为 `true` 或 `false`。 |
+| `DIBAO_ALLOWED_ORIGINS` | 空 | 额外允许发起写请求的可信浏览器 Origin，多个值以逗号分隔。仅在反向代理无法保留 Host 时配置。 |
 | `DIBAO_BACKGROUND_JOBS` | `true` | Docker 默认启动独立 worker 进程执行后台任务；设为 `false` 可关闭 worker。直接运行 server 进程时，只有设为 `true` 才会在该进程内执行后台任务。 |
 | `DIBAO_JOB_RUNNER_MAX_JOBS_PER_DRAIN` | `5` | worker 每轮最多处理的 due jobs 数量，避免后台任务被单轮无限 drain，也避免吞吐退化到一次只跑一个 job。 |
 | `DIBAO_FOREGROUND_QUIET_WINDOW_MS` | `30000` | worker 检测到前台使用后的低优先级任务暂停窗口。 |

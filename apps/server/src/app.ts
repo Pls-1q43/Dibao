@@ -1077,9 +1077,6 @@ export function buildServer(options: BuildServerOptions = {}) {
     settings,
     now: options.now
   });
-  const cookieOptions = {
-    secure: resolveCookieSecure(options.cookieSecure)
-  };
   const authRequired = options.authRequired ?? true;
   let maintenanceTickTimer: NodeJS.Timeout | null = null;
   let maintenanceInitialTickTimer: NodeJS.Timeout | null = null;
@@ -1399,6 +1396,14 @@ export function buildServer(options: BuildServerOptions = {}) {
 
     if (pathname && isApiPath(pathname)) {
       reply.header("Cache-Control", "no-store");
+      if (isUnsafeMethod(request.method) && !isTrustedBrowserWriteRequest(request)) {
+        return sendApiError(
+          reply,
+          403,
+          "CSRF_ORIGIN_MISMATCH",
+          "The request origin does not match this Dibao instance"
+        );
+      }
     }
 
     if (pathname && !isApiPath(pathname)) {
@@ -1797,7 +1802,11 @@ export function buildServer(options: BuildServerOptions = {}) {
       }
       reply.header(
         "set-cookie",
-        serializeSessionCookie(session.token, session.expiresAt, cookieOptions)
+        serializeSessionCookie(
+          session.token,
+          session.expiresAt,
+          cookieOptionsForRequest(request, options.cookieSecure)
+        )
       );
       return {
         data: {
@@ -1819,7 +1828,11 @@ export function buildServer(options: BuildServerOptions = {}) {
       const session = await authService.login(parsed.username, parsed.password, requestMeta(request));
       reply.header(
         "set-cookie",
-        serializeSessionCookie(session.token, session.expiresAt, cookieOptions)
+        serializeSessionCookie(
+          session.token,
+          session.expiresAt,
+          cookieOptionsForRequest(request, options.cookieSecure)
+        )
       );
       return {
         data: {
@@ -1833,7 +1846,10 @@ export function buildServer(options: BuildServerOptions = {}) {
 
   app.post("/api/auth/logout", async (request, reply) => {
     authService.logout(readSessionCookie(request.headers.cookie));
-    reply.header("set-cookie", serializeClearSessionCookie(cookieOptions));
+    reply.header(
+      "set-cookie",
+      serializeClearSessionCookie(cookieOptionsForRequest(request, options.cookieSecure))
+    );
     return {
       data: {
         ok: true
@@ -1841,9 +1857,12 @@ export function buildServer(options: BuildServerOptions = {}) {
     };
   });
 
-  app.post("/api/auth/logout-all", async (_request, reply) => {
+  app.post("/api/auth/logout-all", async (request, reply) => {
     authService.logoutAll();
-    reply.header("set-cookie", serializeClearSessionCookie(cookieOptions));
+    reply.header(
+      "set-cookie",
+      serializeClearSessionCookie(cookieOptionsForRequest(request, options.cookieSecure))
+    );
     return {
       data: {
         ok: true
@@ -1865,7 +1884,11 @@ export function buildServer(options: BuildServerOptions = {}) {
       );
       reply.header(
         "set-cookie",
-        serializeSessionCookie(session.token, session.expiresAt, cookieOptions)
+        serializeSessionCookie(
+          session.token,
+          session.expiresAt,
+          cookieOptionsForRequest(request, options.cookieSecure)
+        )
       );
       return {
         data: {
@@ -3712,13 +3735,13 @@ function registerWebStaticRoutes(
 
       const assetPath = resolveStaticAssetPath(webDistDir, pathname);
       if (assetPath) {
-        return sendStaticFile(reply, request.method, assetPath);
+        return sendWebStaticFile(reply, request.method, assetPath);
       }
 
       if (pathname === "/service-worker.js") {
         const serviceWorkerPath = resolveStaticAssetPath(webDistDir, "/sw.js");
         if (serviceWorkerPath) {
-          return sendStaticFile(reply, request.method, serviceWorkerPath);
+          return sendWebStaticFile(reply, request.method, serviceWorkerPath);
         }
         return reply.status(404).type("text/plain; charset=utf-8").send("Not found");
       }
@@ -3728,7 +3751,7 @@ function registerWebStaticRoutes(
         return reply.status(404).type("text/plain; charset=utf-8").send("Not found");
       }
 
-      return sendStaticFile(reply, request.method, indexPath);
+      return sendWebStaticFile(reply, request.method, indexPath);
     }
   });
 }
@@ -3805,6 +3828,41 @@ function sendStaticFile(reply: FastifyReply, method: string, filePath: string) {
   }
 
   return reply.send(readFileSync(filePath));
+}
+
+function sendWebStaticFile(reply: FastifyReply, method: string, filePath: string) {
+  applyMainAppSecurityHeaders(reply, filePath);
+  return sendStaticFile(reply, method, filePath);
+}
+
+function applyMainAppSecurityHeaders(reply: FastifyReply, filePath: string): void {
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("Cross-Origin-Opener-Policy", "same-origin");
+  reply.header("X-XSS-Protection", "0");
+  if (extname(filePath).toLowerCase() !== ".html") {
+    return;
+  }
+  reply.header(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: http: https:",
+      "font-src 'self' data:",
+      "connect-src 'self' http: https:",
+      "worker-src 'self'",
+      "manifest-src 'self'",
+      "frame-src 'self'"
+    ].join("; ")
+  );
 }
 
 function applyPluginAssetSecurityHeaders(reply: FastifyReply, filePath: string): void {
@@ -3886,19 +3944,115 @@ function contentTypeForStaticFile(filePath: string): string {
   }
 }
 
-function resolveCookieSecure(value: boolean | undefined): boolean {
+function cookieOptionsForRequest(
+  request: FastifyRequest,
+  value: boolean | undefined
+): { secure: boolean } {
   if (value !== undefined) {
-    return value;
+    return { secure: value };
   }
 
   if (process.env.DIBAO_COOKIE_SECURE === "true") {
-    return true;
+    return { secure: true };
   }
   if (process.env.DIBAO_COOKIE_SECURE === "false") {
+    return { secure: false };
+  }
+
+  const forwardedProtocol = normalizeHttpProtocol(
+    firstForwardedValue(singleHeaderValue(request.headers["x-forwarded-proto"]))
+  );
+  return {
+    secure: forwardedProtocol
+      ? forwardedProtocol === "https:"
+      : request.protocol === "https"
+  };
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
+
+function isTrustedBrowserWriteRequest(request: FastifyRequest): boolean {
+  const originHeader = singleHeaderValue(request.headers.origin);
+  const fetchSite = singleHeaderValue(request.headers["sec-fetch-site"])?.toLowerCase();
+
+  if (!originHeader) {
+    return fetchSite === undefined || fetchSite === "same-origin" || fetchSite === "none";
+  }
+  if (originHeader === "null") {
     return false;
   }
 
-  return process.env.NODE_ENV === "production";
+  const originAuthority = authorityFromOrigin(originHeader);
+  if (!originAuthority) {
+    return false;
+  }
+
+  const forwardedProtocol = firstForwardedValue(
+    singleHeaderValue(request.headers["x-forwarded-proto"])
+  );
+  const protocol = normalizeHttpProtocol(forwardedProtocol) ?? `${request.protocol}:`;
+  const candidateAuthorities = new Set<string>();
+  for (const host of [
+    singleHeaderValue(request.headers.host),
+    firstForwardedValue(singleHeaderValue(request.headers["x-forwarded-host"]))
+  ]) {
+    const authority = host ? authorityFromHost(host, protocol) : null;
+    if (authority) {
+      candidateAuthorities.add(authority);
+    }
+  }
+  for (const allowedOrigin of (process.env.DIBAO_ALLOWED_ORIGINS ?? "").split(",")) {
+    const authority = authorityFromOrigin(allowedOrigin.trim());
+    if (authority) {
+      candidateAuthorities.add(authority);
+    }
+  }
+
+  return candidateAuthorities.has(originAuthority);
+}
+
+function singleHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function firstForwardedValue(value: string | undefined): string | undefined {
+  return value?.split(",", 1)[0]?.trim() || undefined;
+}
+
+function normalizeHttpProtocol(value: string | undefined): "http:" | "https:" | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.toLowerCase().replace(/:$/, "");
+  return normalized === "http" || normalized === "https" ? `${normalized}:` : null;
+}
+
+function authorityFromOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return normalizedAuthority(url);
+  } catch {
+    return null;
+  }
+}
+
+function authorityFromHost(value: string, protocol: string): string | null {
+  try {
+    return normalizedAuthority(new URL(`${protocol}//${value}`));
+  } catch {
+    return null;
+  }
+}
+
+function normalizedAuthority(url: URL): string {
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  return `${hostname}:${port}`;
 }
 
 function isAnonymousRoute(method: string, routePath: string | undefined): boolean {

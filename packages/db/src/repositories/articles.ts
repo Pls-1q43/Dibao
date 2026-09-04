@@ -143,6 +143,7 @@ export interface ArticleRepository {
   }): ArticleRetentionCandidateRow[];
   list(input?: ArticleListInput): ArticleListResult;
   createRecommendedSession(input: CreateRecommendedArticleSessionInput): RecommendedArticleSessionRow;
+  deleteRecommendedSession(id: string): void;
   findRecommendedSession(id: string, now: number): RecommendedArticleSessionRow | null;
   getRecommendedSessionInventory(input: {
     sessionId: string;
@@ -895,6 +896,10 @@ export class SqliteArticleRepository implements ArticleRepository {
       });
     })();
     return session;
+  }
+
+  deleteRecommendedSession(id: string): void {
+    this.db.prepare("delete from recommendation_sessions where id = ?").run(id);
   }
 
   findRecommendedSession(id: string, now: number): RecommendedArticleSessionRow | null {

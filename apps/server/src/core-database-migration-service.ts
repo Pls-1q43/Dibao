@@ -7,13 +7,17 @@ import {
   getAppliedMigrations,
   loadDefaultMigrations,
   runMigrations,
+  SqliteVecVectorStore,
   type AppliedMigration,
   type DibaoDatabase,
-  type Migration
+  type Migration,
+  type VectorIndexUpgradePlan,
+  type VectorIndexUpgradeResult
 } from "@dibao/db";
+import { dibaoVersion } from "@dibao/shared";
 
 export const CORE_DATABASE_MIGRATION_ID = "core-database-schema-migrations" as const;
-export const CORE_DATABASE_MIGRATION_TARGET_VERSION = "0.2" as const;
+export const CORE_DATABASE_MIGRATION_TARGET_VERSION = dibaoVersion;
 
 export type CoreDatabaseMigrationState =
   | "not_required"
@@ -25,6 +29,7 @@ export type CoreDatabaseMigrationState =
 export type CoreDatabaseMigrationStep =
   | "detecting"
   | "schemaMigration"
+  | "vectorIndexMigration"
   | "completed"
   | "failed"
   | "skipped";
@@ -48,7 +53,16 @@ export type CoreDatabaseMigrationStatus = {
   error: string | null;
   result: {
     appliedNow: AppliedMigration[];
+    vectorIndexesUpgraded: VectorIndexUpgradeResult[];
   } | null;
+};
+
+type CoreDatabaseUpgradeWork = {
+  required: boolean;
+  reason: string;
+  pending: readonly Migration[];
+  vectorPlans: readonly VectorIndexUpgradePlan[];
+  totalWorkUnits: number;
 };
 
 export type CoreDatabaseMigrationServiceOptions = {
@@ -88,7 +102,7 @@ export class CoreDatabaseMigrationService {
       return this.status;
     }
 
-    const detection = this.detectPendingMigrations();
+    const detection = this.detectUpgradeWork();
     if (!detection.required) {
       this.status = statusFor({
         state: "not_required",
@@ -108,7 +122,7 @@ export class CoreDatabaseMigrationService {
       blocking: true,
       step: "detecting",
       reason: detection.reason,
-      total: detection.pending.length,
+      total: detection.totalWorkUnits,
       current: 0,
       now: this.now(),
       result: null
@@ -154,18 +168,18 @@ export class CoreDatabaseMigrationService {
       await delay(this.deferMs);
     }
 
-    const pending = this.detectPendingMigrations().pending;
+    const work = this.detectUpgradeWork();
     const startedAt = this.now();
     this.status = {
       ...initial,
       state: "running",
       blocking: true,
-      step: "schemaMigration",
+      step: work.pending.length > 0 ? "schemaMigration" : "vectorIndexMigration",
       progress: {
         current: 0,
-        total: pending.length,
+        total: work.totalWorkUnits,
         chunksProcessed: 0,
-        percent: pending.length > 0 ? 0 : 1
+        percent: work.totalWorkUnits > 0 ? 0 : 1
       },
       startedAt,
       finishedAt: null,
@@ -173,16 +187,16 @@ export class CoreDatabaseMigrationService {
     };
 
     try {
-      const appliedNow = await this.applyMigrations(pending);
+      const result = await this.applyUpgradeWork(work);
       this.status = {
         ...this.status,
         state: "completed",
         blocking: false,
         step: "completed",
-        progress: progressFor(pending.length, pending.length),
+        progress: progressFor(work.totalWorkUnits, work.totalWorkUnits),
         finishedAt: this.now(),
         error: null,
-        result: { appliedNow }
+        result
       };
       return this.status;
     } catch (error) {
@@ -198,11 +212,20 @@ export class CoreDatabaseMigrationService {
     }
   }
 
-  private applyMigrations(pending: readonly Migration[]): Promise<AppliedMigration[]> {
+  private applyUpgradeWork(
+    work: CoreDatabaseUpgradeWork
+  ): Promise<NonNullable<CoreDatabaseMigrationStatus["result"]>> {
     if (this.shouldRunInChildProcess()) {
-      return this.applyMigrationsInChildProcess(pending);
+      return this.applyUpgradeWorkInChildProcess(work);
     }
-    return Promise.resolve(runMigrations(this.options.db, this.migrations, this.now));
+
+    const appliedNow = runMigrations(this.options.db, this.migrations, this.now);
+    const vectorStore = new SqliteVecVectorStore(this.options.db);
+    const vectorIndexesUpgraded = vectorStore.upgradeIndexesToCosine({
+      embeddingIndexIds: work.vectorPlans.map((plan) => plan.embeddingIndexId),
+      onProgress: (progress) => this.recordVectorProgress(work, progress)
+    });
+    return Promise.resolve({ appliedNow, vectorIndexesUpgraded });
   }
 
   private shouldRunInChildProcess(): boolean {
@@ -212,9 +235,9 @@ export class CoreDatabaseMigrationService {
     return Boolean(this.options.databasePath && this.options.databasePath !== ":memory:");
   }
 
-  private applyMigrationsInChildProcess(
-    pending: readonly Migration[]
-  ): Promise<AppliedMigration[]> {
+  private applyUpgradeWorkInChildProcess(
+    work: CoreDatabaseUpgradeWork
+  ): Promise<NonNullable<CoreDatabaseMigrationStatus["result"]>> {
     const databasePath = this.options.databasePath;
     if (!databasePath) {
       return Promise.reject(new Error("databasePath is required for child-process migrations"));
@@ -232,6 +255,7 @@ export class CoreDatabaseMigrationService {
       let stdoutBuffer = "";
       let stderr = "";
       let finalAppliedNow: AppliedMigration[] | null = null;
+      let finalVectorIndexesUpgraded: VectorIndexUpgradeResult[] | null = null;
       let settled = false;
 
       child.stdout?.on("data", (chunk) => {
@@ -239,8 +263,9 @@ export class CoreDatabaseMigrationService {
         const lines = stdoutBuffer.split(/\r?\n/);
         stdoutBuffer = lines.pop() ?? "";
         for (const line of lines) {
-          this.handleChildMessage(line, pending, (appliedNow) => {
-            finalAppliedNow = appliedNow;
+          this.handleChildMessage(line, work, (result) => {
+            finalAppliedNow = result.appliedNow;
+            finalVectorIndexesUpgraded = result.vectorIndexesUpgraded;
           });
         }
       });
@@ -265,8 +290,9 @@ export class CoreDatabaseMigrationService {
           this.activeChild = null;
         }
         if (stdoutBuffer.trim()) {
-          this.handleChildMessage(stdoutBuffer, pending, (appliedNow) => {
-            finalAppliedNow = appliedNow;
+          this.handleChildMessage(stdoutBuffer, work, (result) => {
+            finalAppliedNow = result.appliedNow;
+            finalVectorIndexesUpgraded = result.vectorIndexesUpgraded;
           });
           stdoutBuffer = "";
         }
@@ -275,7 +301,10 @@ export class CoreDatabaseMigrationService {
         }
         settled = true;
         if (code === 0) {
-          resolvePromise(finalAppliedNow ?? []);
+          resolvePromise({
+            appliedNow: finalAppliedNow ?? [],
+            vectorIndexesUpgraded: finalVectorIndexesUpgraded ?? []
+          });
           return;
         }
         reject(
@@ -291,8 +320,8 @@ export class CoreDatabaseMigrationService {
 
   private handleChildMessage(
     line: string,
-    pending: readonly Migration[],
-    onCompleted: (appliedNow: AppliedMigration[]) => void
+    work: CoreDatabaseUpgradeWork,
+    onCompleted: (result: NonNullable<CoreDatabaseMigrationStatus["result"]>) => void
   ): void {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -314,7 +343,8 @@ export class CoreDatabaseMigrationService {
       const current = Math.max(0, message.index - 1);
       this.status = {
         ...this.status,
-        progress: progressFor(current, message.total || pending.length)
+        step: "schemaMigration",
+        progress: progressFor(current, work.totalWorkUnits)
       };
       return;
     }
@@ -322,16 +352,25 @@ export class CoreDatabaseMigrationService {
     if (message.type === "migration_applied") {
       this.status = {
         ...this.status,
-        progress: progressFor(message.index, message.total || pending.length)
+        step: "schemaMigration",
+        progress: progressFor(message.index, work.totalWorkUnits)
       };
       return;
     }
 
+    if (message.type === "vector_index_progress") {
+      this.recordVectorProgress(work, message);
+      return;
+    }
+
     if (message.type === "completed") {
-      onCompleted(message.appliedNow);
+      onCompleted({
+        appliedNow: message.appliedNow,
+        vectorIndexesUpgraded: message.vectorIndexesUpgraded ?? []
+      });
       this.status = {
         ...this.status,
-        progress: progressFor(pending.length, pending.length)
+        progress: progressFor(work.totalWorkUnits, work.totalWorkUnits)
       };
       return;
     }
@@ -348,11 +387,36 @@ export class CoreDatabaseMigrationService {
     }
   }
 
-  private detectPendingMigrations(): {
-    required: boolean;
-    reason: string;
-    pending: readonly Migration[];
-  } {
+  private recordVectorProgress(
+    work: CoreDatabaseUpgradeWork,
+    progress: { embeddingIndexId: string; current: number; total: number }
+  ): void {
+    if (!this.status || this.status.state !== "running") {
+      return;
+    }
+    const planIndex = work.vectorPlans.findIndex(
+      (plan) => plan.embeddingIndexId === progress.embeddingIndexId
+    );
+    if (planIndex < 0) {
+      return;
+    }
+    const precedingVectorUnits = work.vectorPlans
+      .slice(0, planIndex)
+      .reduce((total, plan) => total + plan.workUnits, 0);
+    const plan = work.vectorPlans[planIndex];
+    const currentInPlan = Math.min(
+      plan.workUnits,
+      progress.total > 0 ? Math.max(0, progress.current) : plan.workUnits
+    );
+    const current = work.pending.length + precedingVectorUnits + currentInPlan;
+    this.status = {
+      ...this.status,
+      step: "vectorIndexMigration",
+      progress: progressFor(current, work.totalWorkUnits)
+    };
+  }
+
+  private detectUpgradeWork(): CoreDatabaseUpgradeWork {
     const applied = getAppliedMigrations(this.options.db);
     const appliedByVersion = new Map(applied.map((migration) => [migration.version, migration]));
     const pending: Migration[] = [];
@@ -369,13 +433,25 @@ export class CoreDatabaseMigrationService {
       }
     }
 
-    return pending.length > 0
-      ? {
-          required: true,
-          reason: `pending_core_migrations:${pending.map((migration) => migration.version).join(",")}`,
-          pending
-        }
-      : { required: false, reason: "no_pending_core_migrations", pending };
+    const vectorPlans = new SqliteVecVectorStore(this.options.db).listCosineUpgradePlans();
+    const reasons = [
+      pending.length > 0
+        ? `pending_core_migrations:${pending.map((migration) => migration.version).join(",")}`
+        : null,
+      vectorPlans.length > 0
+        ? `pending_vector_index_upgrades:${vectorPlans.map((plan) => plan.embeddingIndexId).join(",")}`
+        : null
+    ].filter((reason): reason is string => Boolean(reason));
+    const totalWorkUnits =
+      pending.length + vectorPlans.reduce((total, plan) => total + plan.workUnits, 0);
+
+    return {
+      required: reasons.length > 0,
+      reason: reasons.join(";") || "no_pending_core_migrations_or_vector_upgrades",
+      pending,
+      vectorPlans,
+      totalWorkUnits
+    };
   }
 }
 
@@ -393,6 +469,13 @@ type CoreMigrationRunnerMessage =
   | {
       type: "completed";
       appliedNow: AppliedMigration[];
+      vectorIndexesUpgraded?: VectorIndexUpgradeResult[];
+    }
+  | {
+      type: "vector_index_progress";
+      embeddingIndexId: string;
+      current: number;
+      total: number;
     }
   | {
       type: "failed";

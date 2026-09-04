@@ -5,9 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   loadDefaultMigrations,
   openDatabase,
-  runMigrations
+  runMigrations,
+  SqliteEmbeddingRepository,
+  SqliteVecVectorStore
 } from "@dibao/db";
 import {
+  readCoreMigrationReadiness,
   waitForCoreMigrationsReady
 } from "./core-migration-wait.js";
 
@@ -96,6 +99,45 @@ describe("worker core migration wait", () => {
             error: null
           }
         }
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps the worker paused while a legacy vector index still needs conversion", () => {
+    const dbPath = tempDatabasePath();
+    const db = openDatabase(dbPath, { migrate: false });
+    try {
+      runMigrations(db);
+      const embeddings = new SqliteEmbeddingRepository(db);
+      embeddings.upsertProvider({
+        id: "provider_wait",
+        type: "embedded_local",
+        name: "Wait provider",
+        model: "wait-2d",
+        dimension: 2,
+        enabled: true,
+        now: 1000
+      });
+      embeddings.createIndex({
+        id: "index_wait",
+        providerId: "provider_wait",
+        model: "wait-2d",
+        dimension: 2,
+        now: 1000
+      });
+      db.exec("create virtual table vec_articles_index_wait using vec0(embedding float[2])");
+
+      expect(readCoreMigrationReadiness(dbPath)).toMatchObject({
+        ready: false,
+        vectorIndexesPending: ["index_wait"]
+      });
+
+      new SqliteVecVectorStore(db).upgradeIndexesToCosine();
+      expect(readCoreMigrationReadiness(dbPath)).toMatchObject({
+        ready: true,
+        vectorIndexesPending: []
       });
     } finally {
       db.close();

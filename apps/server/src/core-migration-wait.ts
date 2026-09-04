@@ -3,6 +3,7 @@ import {
   getAppliedMigrations,
   loadDefaultMigrations,
   openDatabase,
+  SqliteVecVectorStore,
   type AppliedMigration
 } from "@dibao/db";
 
@@ -15,6 +16,7 @@ export type CoreMigrationReadiness = {
   migrationTablePresent: boolean;
   expectedVersion: string | null;
   latestApplied: Pick<AppliedMigration, "version" | "name" | "appliedAt"> | null;
+  vectorIndexesPending: string[];
   ready: boolean;
   error: string | null;
 };
@@ -93,6 +95,7 @@ export function readCoreMigrationReadiness(
       migrationTablePresent: false,
       expectedVersion,
       latestApplied: null,
+      vectorIndexesPending: [],
       ready: false,
       error: null
     };
@@ -101,7 +104,6 @@ export function readCoreMigrationReadiness(
   let db: ReturnType<typeof openDatabase> | null = null;
   try {
     db = openDatabase(databasePath, {
-      loadSqliteVec: false,
       migrate: false
     });
     const table = db
@@ -121,12 +123,16 @@ export function readCoreMigrationReadiness(
         migrationTablePresent: false,
         expectedVersion,
         latestApplied: null,
+        vectorIndexesPending: [],
         ready: false,
         error: null
       };
     }
 
     const latest = getAppliedMigrations(db).at(-1) ?? null;
+    const vectorIndexesPending = new SqliteVecVectorStore(db)
+      .listCosineUpgradePlans()
+      .map((plan) => plan.embeddingIndexId);
     return {
       databasePath,
       databaseExists: true,
@@ -139,7 +145,11 @@ export function readCoreMigrationReadiness(
             appliedAt: latest.appliedAt
           }
         : null,
-      ready: expectedVersion !== null && latest?.version === expectedVersion,
+      vectorIndexesPending,
+      ready:
+        expectedVersion !== null &&
+        latest?.version === expectedVersion &&
+        vectorIndexesPending.length === 0,
       error: null
     };
   } catch (error) {
@@ -149,6 +159,7 @@ export function readCoreMigrationReadiness(
       migrationTablePresent: false,
       expectedVersion,
       latestApplied: null,
+      vectorIndexesPending: [],
       ready: false,
       error: error instanceof Error ? error.message : String(error)
     };

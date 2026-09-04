@@ -1,4 +1,11 @@
-import { openDatabase, runMigrations, type AppliedMigration, type Migration } from "@dibao/db";
+import {
+  openDatabase,
+  runMigrations,
+  SqliteVecVectorStore,
+  type AppliedMigration,
+  type Migration,
+  type VectorIndexUpgradeResult
+} from "@dibao/db";
 
 const databasePath = process.env.DIBAO_DATABASE_PATH;
 
@@ -34,9 +41,25 @@ try {
       });
     }
   });
+  const vectorStore = new SqliteVecVectorStore(db);
+  const vectorIndexesUpgraded: VectorIndexUpgradeResult[] = [];
+  for (const plan of vectorStore.listCosineUpgradePlans()) {
+    vectorIndexesUpgraded.push(
+      ...vectorStore.upgradeIndexesToCosine({
+        embeddingIndexIds: [plan.embeddingIndexId],
+        onProgress: (progress) => {
+          emit({
+            type: "vector_index_progress",
+            ...progress
+          });
+        }
+      })
+    );
+  }
   emit({
     type: "completed",
-    appliedNow
+    appliedNow,
+    vectorIndexesUpgraded
   });
 } catch (error) {
   emit({
@@ -75,6 +98,13 @@ function emit(
     | {
         type: "completed";
         appliedNow: AppliedMigration[];
+        vectorIndexesUpgraded: VectorIndexUpgradeResult[];
+      }
+    | {
+        type: "vector_index_progress";
+        embeddingIndexId: string;
+        current: number;
+        total: number;
       }
     | {
         type: "failed";

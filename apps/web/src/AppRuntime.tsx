@@ -88,11 +88,17 @@ import {
   activateOfflineImageScope,
   cacheOnlineArticleDetail,
   clearOfflineCache,
+  clearOfflineScopeRevocation,
   clearOfflineScope,
+  clearPendingServerLogout,
   getOfflineArticleDetail,
   getOfflineCacheSummary,
+  hasPendingServerLogout,
+  isOfflineScopeRevoked,
   isOfflineModeActive,
   listOfflineArticles,
+  markOfflineScopeRevoked,
+  markPendingServerLogout,
   offlineModePromptReasonForError,
   offlineScopeKey,
   queueOfflineArticleAction,
@@ -1086,6 +1092,12 @@ export function App() {
 
       for (let attempt = 0; !cancelled; attempt += 1) {
         try {
+          if (await hasPendingServerLogout()) {
+            await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+              dibaoApi.logout(signal)
+            );
+            await clearPendingServerLogout();
+          }
           const session = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getAuthSession(signal)
           );
@@ -1096,7 +1108,7 @@ export function App() {
             setAuthUsername(session.authenticated ? session.username : null);
             if (session.authenticated && session.username) {
               try {
-                const profile = await rememberOfflineSession(session.username);
+                const profile = await rememberAuthenticatedOfflineSession(session.username);
                 if (cancelled) return;
                 setOfflineScope(profile.scopeKey);
                 setOfflineProfile(profile);
@@ -2509,8 +2521,9 @@ export function App() {
     try {
       if (mode === "setup") {
         await dibaoApi.setupAuth(username, password, telemetryEnabled);
+        await clearPendingServerLogout();
         try {
-          const profile = await rememberOfflineSession(username.trim());
+          const profile = await rememberAuthenticatedOfflineSession(username.trim());
           const connectedAt = Date.now();
           await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
           setOfflineScope(profile.scopeKey);
@@ -2524,8 +2537,9 @@ export function App() {
         setAppStage({ type: "setup-sources" });
       } else {
         await dibaoApi.login(username, password);
+        await clearPendingServerLogout();
         try {
-          const profile = await rememberOfflineSession(username.trim());
+          const profile = await rememberAuthenticatedOfflineSession(username.trim());
           const connectedAt = Date.now();
           await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
           setOfflineScope(profile.scopeKey);
@@ -2557,17 +2571,51 @@ export function App() {
     }
 
     try {
-      if (!isUsingOfflineData) await dibaoApi.logout();
+      let localOfflineDataRevoked = offlineScope === null;
+      if (offlineScope) {
+        try {
+          await markOfflineScopeRevoked(offlineScope);
+          localOfflineDataRevoked = true;
+        } catch {
+          await clearOfflineScope(offlineScope);
+          localOfflineDataRevoked = true;
+        }
+      }
+
+      let pendingServerLogoutRecorded = false;
+      try {
+        await markPendingServerLogout();
+        pendingServerLogoutRecorded = true;
+      } catch {
+        // A reachable server can still complete logout without a retry marker.
+      }
+
+      let serverLogoutDeferred = false;
+      try {
+        await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
+          dibaoApi.logout(signal)
+        );
+        await clearPendingServerLogout();
+      } catch (error) {
+        if (!pendingServerLogoutRecorded) {
+          throw error;
+        }
+        serverLogoutDeferred = true;
+      }
+
       if (offlineScope) {
         try {
           await clearOfflineScope(offlineScope);
-        } catch {
-          // The authenticated session is already closed; finish logout even if local cleanup fails.
+        } catch (error) {
+          if (!localOfflineDataRevoked) {
+            throw error;
+          }
         }
       }
       setAuthUsername(null);
       setAppStage({ type: "login" });
       resetReaderState();
+      setAuthError(serverLogoutDeferred ? t.auth.errors.logoutPending : null);
     } catch (error) {
       setLogoutError(userMessageForError(error, t.errors.api) || t.auth.errors.logout);
     }
@@ -5318,6 +5366,17 @@ function isRelatedSearchResponse(response: unknown): response is RelatedSearchRe
     "totalCount" in response &&
     typeof (response as { totalCount?: unknown }).totalCount === "number"
   );
+}
+
+async function rememberAuthenticatedOfflineSession(
+  username: string
+): Promise<OfflineProfileRecord> {
+  const scopeKey = offlineScopeKey(username);
+  if (await isOfflineScopeRevoked(scopeKey)) {
+    await clearOfflineScope(scopeKey);
+    await clearOfflineScopeRevocation(scopeKey);
+  }
+  return await rememberOfflineSession(username);
 }
 
 function isAbortError(error: unknown): boolean {

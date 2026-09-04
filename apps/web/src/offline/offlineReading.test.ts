@@ -7,6 +7,8 @@ import {
   MIN_OFFLINE_RECOMMENDED_TARGET,
   isOfflineFallbackError,
   isOfflineModeActive,
+  isOfflineScopeRevokedInStorage,
+  hasPendingServerLogoutInStorage,
   offlineModePromptReasonForError,
   normalizeOfflineDeviceSettings,
   normalizeRecommendedTarget,
@@ -57,6 +59,24 @@ describe("offline reading helpers", () => {
     expect(isOfflineModeActive("reader-scope", storage)).toBe(false);
   });
 
+  it("treats logout and offline revocation markers as fail-closed state", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null
+    };
+    const scopeKey = "https://dibao.test::reader";
+    values.set(`dibao:offline-reading:revoked-scope:v1:${scopeKey}`, "1");
+    values.set("dibao:auth:pending-server-logout:v1:https://dibao.test", "1");
+
+    expect(isOfflineScopeRevokedInStorage(scopeKey, storage)).toBe(true);
+    expect(hasPendingServerLogoutInStorage("https://dibao.test", storage)).toBe(true);
+
+    values.set(`dibao:offline-reading:revoked-scope:v1:${scopeKey}`, "0");
+    values.set("dibao:auth:pending-server-logout:v1:https://dibao.test", "0");
+    expect(isOfflineScopeRevokedInStorage(scopeKey, storage)).toBe(false);
+    expect(hasPendingServerLogoutInStorage("https://dibao.test", storage)).toBe(false);
+  });
+
   it("falls back only for network and server availability failures", () => {
     expect(isOfflineFallbackError(new TypeError("network failed"))).toBe(true);
     expect(isOfflineFallbackError(new ApiRequestError(503, "UNAVAILABLE", "down"))).toBe(true);
@@ -105,6 +125,10 @@ describe("offline reading helpers", () => {
     expect(runtime).toContain('window.addEventListener("focus", checkWhenVisible)');
     expect(runtime).toContain("setAuthGateRetryToken((value) => value + 1)");
     expect(runtime).toContain("onExit: isUsingOfflineData");
+    expect(runtime).toContain("await markOfflineScopeRevoked(offlineScope)");
+    expect(runtime).toContain("await markPendingServerLogout()");
+    expect(runtime).toContain("if (await hasPendingServerLogout())");
+    expect(runtime).toContain("dibaoApi.logout(signal)");
     expect(runtime).not.toContain("reconnectAttempt");
     expect(runtime).not.toContain("deferredOnlineActivation");
   });

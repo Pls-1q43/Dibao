@@ -91,7 +91,7 @@ services:
       DIBAO_HOST: 0.0.0.0
       DIBAO_PORT: "8080"
       DIBAO_DATABASE_PATH: /data/dibao.sqlite
-      DIBAO_COOKIE_SECURE: "false"
+      DIBAO_COOKIE_SECURE: "auto"
     volumes:
       - ./data:/data
 ```
@@ -165,7 +165,7 @@ ollama pull bge-m3
 - iOS Safari：共有メニューから「ホーム画面に追加」。
 - Desktop Chrome / Edge：アドレスバーのインストールボタン、またはブラウザメニューからインストール。
 
-`localhost` / `127.0.0.1` では通常そのままインストールできます。LAN IP や公開ドメインで使う場合は HTTPS を推奨します。HTTPS リバースプロキシの後ろで動かす場合は、`DIBAO_COOKIE_SECURE` を `true` に設定してください。
+`localhost` / `127.0.0.1` では通常そのままインストールできます。LAN IP や公開ドメインで使う場合は HTTPS を推奨します。`DIBAO_COOKIE_SECURE=auto` は直接接続のプロトコルまたはリバースプロキシの `X-Forwarded-Proto` に応じて Cookie を自動設定します。
 
 ### バックアップとアップグレード
 
@@ -226,7 +226,7 @@ Base URL、モデル名、dimension、API Key が一致しているか確認し�
 
 **LAN 内の HTTP でログイン状態が維持されません。**
 
-`DIBAO_COOKIE_SECURE=false` を確認してください。HTTPS リバースプロキシの後ろで動かす場合だけ `true` を推奨します。
+`DIBAO_COOKIE_SECURE=auto` のままにし、リバースプロキシが正しい `X-Forwarded-Proto` を渡していることを確認してください。HTTP だけを使い、プロキシがそのヘッダーを渡せない場合は `false` を明示的に設定できます。
 
 **フィード更新に失敗したら？**
 
@@ -242,7 +242,8 @@ Base URL、モデル名、dimension、API Key が一致しているか確認し�
 | `DIBAO_HOST` | `0.0.0.0` | Server の listen address。 |
 | `DIBAO_PORT` | `8080` | Server の listen port。 |
 | `DIBAO_DATABASE_PATH` | `/data/dibao.sqlite` | SQLite database path。 |
-| `DIBAO_COOKIE_SECURE` | `false` | HTTP / LAN のセルフホストでは `false` のまま利用できます。HTTPS リバースプロキシの後ろでは `true` を推奨します。 |
+| `DIBAO_COOKIE_SECURE` | `auto` | 直接接続のプロトコルまたは `X-Forwarded-Proto` から自動判定します。`true` / `false` の明示指定も可能です。 |
+| `DIBAO_ALLOWED_ORIGINS` | 空 | 書き込みリクエストを許可する追加の信頼済みブラウザー Origin。複数値はカンマ区切りです。プロキシが Host を保持できない場合のみ使います。 |
 | `DIBAO_BACKGROUND_JOBS` | `true` | `false` にすると background job runner を停止します。主にテスト用途です。 |
 | `DIBAO_FETCH_TIMEOUT_MS` | `15000` | RSS、discover、full-content fetch の単一リクエスト timeout。 |
 | `DIBAO_FETCH_FEED_MAX_BYTES` | `5242880` | RSS / discover response の最大読み取りバイト数。 |

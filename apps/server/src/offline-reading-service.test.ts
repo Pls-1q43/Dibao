@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   ArticleDetailRow,
+  ArticleListInput,
   ArticleListItemRow,
   ArticleStateSnapshot,
+  CreateRecommendedArticleSessionInput,
   OfflineArticleMetadataRow
 } from "@dibao/db";
 import {
@@ -20,26 +22,51 @@ describe("OfflineReadingService", () => {
       article(`recent-${index}`, 100 - index, { openedAt: 10_000 - index })
     );
     const unreadable = new Set(recommended.filter((_, index) => index % 5 === 0).map((item) => item.id));
-    const list = vi.fn((input: { view: "recommended" | "read_later"; limit: number; offset: number }) => {
+    const list = vi.fn((input: ArticleListInput) => {
       const rows = input.view === "recommended" ? recommended : readLater;
-      const items = rows.slice(input.offset, input.offset + input.limit);
+      const offset = input.cursor?.type === "recommended_session"
+        ? input.cursor.position + 1
+        : input.offset ?? 0;
+      const limit = input.limit ?? 100;
+      const items = rows.slice(offset, offset + limit);
+      const hasMore = offset + items.length < rows.length;
       return {
         items,
-        nextCursor: null,
-        nextOffset: input.offset + items.length < rows.length ? input.offset + items.length : null,
+        nextCursor:
+          input.view === "recommended" && hasMore
+            ? {
+                type: "recommended_session" as const,
+                sessionId: input.recommendationSessionId ?? "offline-session",
+                position: offset + items.length - 1
+              }
+            : null,
+        nextOffset: input.view === "read_later" && hasMore ? offset + items.length : null,
         unreadCount: null,
-        timing: emptyTiming()
+        timing: emptyTiming(),
+        recommendationSession: null
       };
     });
     const findOfflineMetadataByIds = vi.fn((ids: string[]) =>
       ids.map((id) => metadata(id, !unreadable.has(id)))
     );
+    const createRecommendedSession = vi.fn((input: CreateRecommendedArticleSessionInput) => ({
+      id: input.id,
+      rankContext: input.rankContext,
+      rerankWindowId: "window:test",
+      scopeKey: input.scopeKey,
+      itemCount: recommended.length,
+      createdAt: input.now,
+      expiresAt: input.expiresAt
+    }));
+    const deleteRecommendedSession = vi.fn();
     const service = new OfflineReadingService({
       articles: {
         findDetailsByIds: () => [],
         findOfflineMetadataByIds,
         list,
-        listRecentlyOpened: () => recent
+        listRecentlyOpened: () => recent,
+        createRecommendedSession,
+        deleteRecommendedSession
       },
       getActiveRankContext: () => "rank:test",
       now: () => 42_000
@@ -65,10 +92,19 @@ describe("OfflineReadingService", () => {
       recommendedTarget: 100,
       snapshotId: expect.stringMatching(/^[a-f0-9]{24}$/)
     });
+    expect(createRecommendedSession).toHaveBeenCalledWith(expect.objectContaining({
+      rankContext: "rank:test",
+      maxItems: 200,
+      unreadOnly: true
+    }));
+    expect(deleteRecommendedSession).toHaveBeenCalledWith(
+      expect.stringMatching(/^offline_session_/)
+    );
     expect(list).toHaveBeenCalledWith(expect.objectContaining({
       view: "recommended",
       unreadOnly: true,
-      offset: 100
+      recommendationSessionId: expect.stringMatching(/^offline_session_/),
+      cursor: expect.objectContaining({ position: 99 })
     }));
     expect(list).toHaveBeenCalledWith(expect.objectContaining({
       view: "read_later",
@@ -93,9 +129,20 @@ describe("OfflineReadingService", () => {
           nextCursor: null,
           nextOffset: null,
           unreadCount: null,
-          timing: emptyTiming()
+          timing: emptyTiming(),
+          recommendationSession: null
         }),
-        listRecentlyOpened: () => []
+        listRecentlyOpened: () => [],
+        createRecommendedSession: (input) => ({
+          id: input.id,
+          rankContext: input.rankContext,
+          rerankWindowId: null,
+          scopeKey: input.scopeKey,
+          itemCount: 0,
+          createdAt: input.now,
+          expiresAt: input.expiresAt
+        }),
+        deleteRecommendedSession: () => undefined
       },
       getActiveRankContext: () => "base"
     });
@@ -110,9 +157,19 @@ describe("OfflineReadingService", () => {
         findDetailsByIds,
         findOfflineMetadataByIds: () => [],
         list: () => ({
-          items: [], nextCursor: null, nextOffset: null, unreadCount: null, timing: emptyTiming()
+          items: [], nextCursor: null, nextOffset: null, unreadCount: null, timing: emptyTiming(), recommendationSession: null
         }),
-        listRecentlyOpened: () => []
+        listRecentlyOpened: () => [],
+        createRecommendedSession: (input) => ({
+          id: input.id,
+          rankContext: input.rankContext,
+          rerankWindowId: null,
+          scopeKey: input.scopeKey,
+          itemCount: 0,
+          createdAt: input.now,
+          expiresAt: input.expiresAt
+        }),
+        deleteRecommendedSession: () => undefined
       },
       getActiveRankContext: () => "rank:test"
     });

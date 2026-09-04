@@ -262,6 +262,27 @@ describe("service worker source", () => {
     expect(response).toBe(networkResponse);
     expect(cache.match).not.toHaveBeenCalled();
   });
+
+  it("never replaces the cached app shell with a non-HTML navigation response", async () => {
+    const networkResponse = new Response("<svg></svg>", {
+      headers: { "content-type": "image/svg+xml" },
+      status: 200
+    });
+    const { cache, networkFirstNavigation } = loadNavigationHandler({
+      cachedShell: new Response("cached app shell", {
+        headers: { "content-type": "text/html" },
+        status: 200
+      }),
+      networkResponse
+    });
+
+    const response = await networkFirstNavigation(
+      new Request("https://dibao.test/logo.svg")
+    );
+
+    expect(response).toBe(networkResponse);
+    expect(cache.put).not.toHaveBeenCalled();
+  });
 });
 
 function loadNavigationHandler(input: {

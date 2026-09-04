@@ -14,7 +14,40 @@ export interface VectorStore {
   deleteArticleVectors(articleId: string): number;
   searchSimilarArticles(input: SimilarArticleQuery): VectorSearchResult[];
   rebuildIndex(embeddingIndexId: string): void;
+  listCosineUpgradePlans(): VectorIndexUpgradePlan[];
+  upgradeIndexesToCosine(input?: VectorIndexUpgradeInput): VectorIndexUpgradeResult[];
 }
+
+export type VectorIndexUpgradeReason =
+  | "missing_table"
+  | "legacy_distance_metric"
+  | "row_mapping_mismatch"
+  | "vector_row_count_mismatch";
+
+export type VectorIndexUpgradePlan = {
+  embeddingIndexId: string;
+  tableName: string;
+  dimension: number;
+  embeddingCount: number;
+  workUnits: number;
+  reason: VectorIndexUpgradeReason;
+};
+
+export type VectorIndexUpgradeProgress = {
+  embeddingIndexId: string;
+  current: number;
+  total: number;
+};
+
+export type VectorIndexUpgradeInput = {
+  embeddingIndexIds?: readonly string[];
+  onProgress?: (progress: VectorIndexUpgradeProgress) => void;
+};
+
+export type VectorIndexUpgradeResult = {
+  embeddingIndexId: string;
+  articlesReindexed: number;
+};
 
 export class SqliteVecVectorStore implements VectorStore {
   constructor(private readonly db: DibaoDatabase) {}
@@ -217,54 +250,83 @@ export class SqliteVecVectorStore implements VectorStore {
 
   rebuildIndex(embeddingIndexId: string): void {
     const index = this.getEmbeddingIndex(embeddingIndexId);
-    const now = Date.now();
-    const rows = this.db
+    this.rebuildVecTableWithCosine(index);
+  }
+
+  listCosineUpgradePlans(): VectorIndexUpgradePlan[] {
+    if (
+      !this.tableExists("embedding_indexes") ||
+      !this.tableExists("article_embeddings") ||
+      !this.tableExists("article_vector_rows")
+    ) {
+      return [];
+    }
+
+    const indexes = this.db
       .prepare(
         `
-          select article_id as articleId, vector_blob as vectorBlob
-          from article_embeddings
-          where embedding_index_id = ?
-          order by article_id
+          select
+            id,
+            dimension,
+            table_name as tableName
+          from embedding_indexes
+          order by created_at, id
         `
       )
-      .all(embeddingIndexId) as Array<{ articleId: string; vectorBlob: Buffer }>;
+      .all() as Array<Pick<EmbeddingIndexRow, "id" | "dimension" | "tableName">>;
 
-    this.db.transaction(() => {
-      this.createVecTable(index);
-      this.db.exec(`delete from ${quoteIdentifier(index.tableName)}`);
-      this.db
-        .prepare("delete from article_vector_rows where embedding_index_id = ?")
-        .run(embeddingIndexId);
+    return indexes.flatMap((index) => {
+      assertSafeVecTableName(index.tableName);
+      const embeddingCount = this.countEmbeddings(index.id);
+      const existing = this.db
+        .prepare("select sql from sqlite_master where type = 'table' and name = ?")
+        .get(index.tableName) as { sql: string | null } | undefined;
 
-      const insertVec = this.db.prepare(
-        `
-          insert into ${quoteIdentifier(index.tableName)} (embedding)
-          values (?)
-        `
-      );
-      const insertRow = this.db.prepare(
-        `
-          insert into article_vector_rows (
-            article_id,
-            embedding_index_id,
-            vec_rowid,
-            created_at
-          )
-          values (?, ?, ?, ?)
-        `
-      );
-
-      for (const row of rows) {
-        this.validateVectorDimension(row.vectorBlob, index);
-        const result = insertVec.run(row.vectorBlob);
-        insertRow.run(
-          row.articleId,
-          embeddingIndexId,
-          Number(result.lastInsertRowid),
-          now
-        );
+      if (!existing) {
+        return embeddingCount > 0
+          ? [upgradePlan(index, embeddingCount, "missing_table")]
+          : [];
       }
-    })();
+      if (!isCosineVecTableSql(existing.sql)) {
+        return [upgradePlan(index, embeddingCount, "legacy_distance_metric")];
+      }
+
+      const mappingCount = countRow(
+        this.db
+          .prepare(
+            "select count(*) as count from article_vector_rows where embedding_index_id = ?"
+          )
+          .get(index.id)
+      );
+      if (mappingCount !== embeddingCount) {
+        return [upgradePlan(index, embeddingCount, "row_mapping_mismatch")];
+      }
+
+      const vectorRowCount = countRow(
+        this.db.prepare(`select count(*) as count from ${quoteIdentifier(index.tableName)}`).get()
+      );
+      return vectorRowCount !== embeddingCount
+        ? [upgradePlan(index, embeddingCount, "vector_row_count_mismatch")]
+        : [];
+    });
+  }
+
+  upgradeIndexesToCosine(input: VectorIndexUpgradeInput = {}): VectorIndexUpgradeResult[] {
+    const requestedIds = input.embeddingIndexIds
+      ? new Set(input.embeddingIndexIds)
+      : null;
+    const plans = this.listCosineUpgradePlans().filter(
+      (plan) => !requestedIds || requestedIds.has(plan.embeddingIndexId)
+    );
+
+    return plans.map((plan) => {
+      const index = this.getEmbeddingIndex(plan.embeddingIndexId);
+      const articlesReindexed = this.rebuildVecTableWithCosine(index, input.onProgress);
+      return {
+        embeddingIndexId: index.id,
+        articlesReindexed
+      };
+    });
   }
 
   private getEmbeddingIndex(embeddingIndexId: string): EmbeddingIndexRow {
@@ -307,8 +369,11 @@ export class SqliteVecVectorStore implements VectorStore {
       if (isCosineVecTableSql(existing.sql)) {
         return;
       }
-      this.recreateVecTableWithCosine(index);
-      return;
+      throw vectorIndexUpgradeRequiredError(index.id, "legacy_distance_metric");
+    }
+
+    if (this.countEmbeddings(index.id) > 0) {
+      throw vectorIndexUpgradeRequiredError(index.id, "missing_table");
     }
 
     this.db.exec(
@@ -319,7 +384,10 @@ export class SqliteVecVectorStore implements VectorStore {
     );
   }
 
-  private recreateVecTableWithCosine(index: EmbeddingIndexRow): void {
+  private rebuildVecTableWithCosine(
+    index: EmbeddingIndexRow,
+    onProgress?: (progress: VectorIndexUpgradeProgress) => void
+  ): number {
     const rows = this.db
       .prepare(
         `
@@ -331,6 +399,12 @@ export class SqliteVecVectorStore implements VectorStore {
       )
       .all(index.id) as Array<{ articleId: string; vectorBlob: Buffer }>;
     const now = Date.now();
+
+    onProgress?.({
+      embeddingIndexId: index.id,
+      current: 0,
+      total: rows.length
+    });
 
     this.db.transaction(() => {
       this.db.exec(`drop table if exists ${quoteIdentifier(index.tableName)}`);
@@ -362,12 +436,46 @@ export class SqliteVecVectorStore implements VectorStore {
         `
       );
 
-      for (const row of rows) {
+      for (const [rowIndex, row] of rows.entries()) {
         this.validateVectorDimension(row.vectorBlob, index);
         const result = insertVec.run(row.vectorBlob);
         insertRow.run(row.articleId, index.id, Number(result.lastInsertRowid), now);
+        if ((rowIndex + 1) % 100 === 0 || rowIndex + 1 === rows.length) {
+          onProgress?.({
+            embeddingIndexId: index.id,
+            current: rowIndex + 1,
+            total: rows.length
+          });
+        }
       }
     })();
+
+    if (rows.length === 0) {
+      onProgress?.({
+        embeddingIndexId: index.id,
+        current: 1,
+        total: 1
+      });
+    }
+    return rows.length;
+  }
+
+  private countEmbeddings(embeddingIndexId: string): number {
+    return countRow(
+      this.db
+        .prepare(
+          "select count(*) as count from article_embeddings where embedding_index_id = ?"
+        )
+        .get(embeddingIndexId)
+    );
+  }
+
+  private tableExists(tableName: string): boolean {
+    return Boolean(
+      this.db
+        .prepare("select 1 as ok from sqlite_master where type = 'table' and name = ?")
+        .get(tableName)
+    );
   }
 
   private validateVectorDimension(vectorBlob: Buffer, index: EmbeddingIndexRow): void {
@@ -398,4 +506,32 @@ function quoteIdentifier(identifier: string): string {
 
 function isCosineVecTableSql(sql: string | null): boolean {
   return /\bdistance_metric\s*=\s*cosine\b/i.test(sql ?? "");
+}
+
+function upgradePlan(
+  index: Pick<EmbeddingIndexRow, "id" | "dimension" | "tableName">,
+  embeddingCount: number,
+  reason: VectorIndexUpgradeReason
+): VectorIndexUpgradePlan {
+  return {
+    embeddingIndexId: index.id,
+    tableName: index.tableName,
+    dimension: index.dimension,
+    embeddingCount,
+    workUnits: Math.max(1, embeddingCount),
+    reason
+  };
+}
+
+function vectorIndexUpgradeRequiredError(
+  embeddingIndexId: string,
+  reason: VectorIndexUpgradeReason
+): Error {
+  return new Error(
+    `Vector index ${embeddingIndexId} requires the blocking cosine upgrade (${reason})`
+  );
+}
+
+function countRow(row: unknown): number {
+  return (row as { count?: number } | undefined)?.count ?? 0;
 }

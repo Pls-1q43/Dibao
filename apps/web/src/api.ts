@@ -403,6 +403,7 @@ export type DerivedDataUpgradeStatus = {
   step:
     | "detecting"
     | "schemaMigration"
+    | "vectorIndexMigration"
     | "reset"
     | "replay"
     | "labels"
@@ -1438,10 +1439,11 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       ).data;
     },
 
-    async logout(): Promise<AuthOkResponse> {
+    async logout(signal?: AbortSignal): Promise<AuthOkResponse> {
       return (
         await request<AuthOkResponse>("/api/auth/logout", {
-          method: "POST"
+          method: "POST",
+          signal
         })
       ).data;
     },

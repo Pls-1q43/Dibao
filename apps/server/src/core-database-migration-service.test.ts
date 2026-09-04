@@ -6,7 +6,12 @@ import {
   getAppliedMigrations,
   loadDefaultMigrations,
   openDatabase,
-  runMigrations
+  runMigrations,
+  SqliteArticleRepository,
+  SqliteEmbeddingRepository,
+  SqliteFeedRepository,
+  SqliteVecVectorStore,
+  toVectorBlob
 } from "@dibao/db";
 import { CoreDatabaseMigrationService } from "./core-database-migration-service.js";
 
@@ -93,6 +98,101 @@ describe("CoreDatabaseMigrationService", () => {
           percent: 1
         }
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("blocks ordinary startup until legacy vector indexes are upgraded without new embeddings", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db);
+      const feeds = new SqliteFeedRepository(db);
+      const articles = new SqliteArticleRepository(db);
+      const embeddings = new SqliteEmbeddingRepository(db);
+      feeds.upsert({
+        id: "feed_upgrade",
+        title: "Upgrade",
+        feedUrl: "https://example.com/upgrade.xml",
+        now: 1000
+      });
+      articles.upsert({
+        id: "article_upgrade",
+        feedId: "feed_upgrade",
+        url: "https://example.com/upgrade",
+        title: "Upgrade fixture",
+        dedupeKey: "upgrade",
+        now: 1000
+      });
+      embeddings.upsertProvider({
+        id: "provider_upgrade",
+        type: "embedded_local",
+        name: "Upgrade provider",
+        model: "upgrade-2d",
+        dimension: 2,
+        enabled: true,
+        now: 1000
+      });
+      embeddings.createIndex({
+        id: "index_upgrade",
+        providerId: "provider_upgrade",
+        model: "upgrade-2d",
+        dimension: 2,
+        now: 1000
+      });
+      db.exec("create virtual table vec_articles_index_upgrade using vec0(embedding float[2])");
+      const vectorBlob = toVectorBlob([1, 0]);
+      db.prepare(
+        `
+          insert into article_embeddings (
+            article_id,
+            embedding_index_id,
+            vector_blob,
+            content_hash,
+            created_at,
+            updated_at
+          ) values ('article_upgrade', 'index_upgrade', ?, 'hash', 1000, 1000)
+        `
+      ).run(vectorBlob);
+      const vecRowid = Number(
+        db.prepare("insert into vec_articles_index_upgrade (embedding) values (?)")
+          .run(vectorBlob).lastInsertRowid
+      );
+      db.prepare(
+        `
+          insert into article_vector_rows (
+            article_id,
+            embedding_index_id,
+            vec_rowid,
+            created_at
+          ) values ('article_upgrade', 'index_upgrade', ?, 1000)
+        `
+      ).run(vecRowid);
+
+      const service = new CoreDatabaseMigrationService({
+        db,
+        deferMs: 0,
+        now: () => 2000
+      });
+      expect(service.getStatus()).toMatchObject({
+        state: "pending",
+        blocking: true,
+        step: "detecting",
+        progress: { current: 0, total: 1 }
+      });
+
+      await expect(service.startIfRequired()).resolves.toMatchObject({
+        state: "completed",
+        blocking: false,
+        step: "completed",
+        result: {
+          appliedNow: [],
+          vectorIndexesUpgraded: [
+            { embeddingIndexId: "index_upgrade", articlesReindexed: 1 }
+          ]
+        }
+      });
+      expect(new SqliteVecVectorStore(db).listCosineUpgradePlans()).toEqual([]);
     } finally {
       db.close();
     }

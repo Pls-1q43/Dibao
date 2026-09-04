@@ -223,6 +223,11 @@ describe("server API vertical slice", () => {
       expect(root.statusCode, root.body).toBe(200);
       expect(root.headers["content-type"]).toContain("text/html");
       expect(root.headers["cache-control"]).toBe("no-store");
+      expect(root.headers["x-content-type-options"]).toBe("nosniff");
+      expect(root.headers["x-frame-options"]).toBe("DENY");
+      expect(root.headers["referrer-policy"]).toBe("no-referrer");
+      expect(root.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(root.headers["content-security-policy"]).toContain("connect-src 'self' http: https:");
       expect(root.body).toContain("Dibao shell");
       expect(asset.statusCode, asset.body).toBe(200);
       expect(asset.headers["content-type"]).toContain("text/javascript");
@@ -1619,6 +1624,77 @@ describe("server API vertical slice", () => {
           username: null
         }
       });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("rejects cross-origin browser writes while allowing the configured proxy host and API clients", async () => {
+    const db = createEmptyDatabase();
+    const app = buildRealServer({ db, logger: false });
+
+    try {
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/api/auth/setup",
+        headers: {
+          "content-type": "application/json",
+          host: "dibao.test",
+          origin: "https://attacker.test"
+        },
+        payload: {
+          username: "Pls",
+          password: "correct horse battery"
+        }
+      });
+      expect(blocked.statusCode, blocked.body).toBe(403);
+      expect(blocked.json()).toMatchObject({
+        error: { code: "CSRF_ORIGIN_MISMATCH" }
+      });
+
+      const setup = await app.inject({
+        method: "POST",
+        url: "/api/auth/setup",
+        headers: {
+          "content-type": "application/json",
+          host: "127.0.0.1:1118",
+          origin: "https://dibao.test",
+          "x-forwarded-host": "dibao.test",
+          "x-forwarded-proto": "https"
+        },
+        payload: {
+          username: "Pls",
+          password: "correct horse battery"
+        }
+      });
+      expect(setup.statusCode, setup.body).toBe(200);
+      expectSessionCookieAttributes(setup.headers["set-cookie"], true);
+      const cookie = cookieHeaderFromSetCookie(setup.headers["set-cookie"]);
+
+      const blockedSameSite = await app.inject({
+        method: "POST",
+        url: "/api/auth/logout",
+        headers: {
+          cookie,
+          "sec-fetch-site": "same-site"
+        }
+      });
+      expect(blockedSameSite.statusCode, blockedSameSite.body).toBe(403);
+
+      const apiClientLogout = await app.inject({
+        method: "POST",
+        url: "/api/auth/logout",
+        headers: { cookie }
+      });
+      expect(apiClientLogout.statusCode, apiClientLogout.body).toBe(200);
+
+      const directHttpLogin = await postJson(app, "/api/auth/login", {
+        username: "Pls",
+        password: "correct horse battery"
+      });
+      expect(directHttpLogin.statusCode, directHttpLogin.body).toBe(200);
+      expectSessionCookieAttributes(directHttpLogin.headers["set-cookie"], false);
     } finally {
       await app.close();
       db.close();

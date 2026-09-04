@@ -120,23 +120,25 @@ export const zhCN = {
     errors: {
       session: "无法读取登录状态。",
       setupStatus: "无法读取实例状态。",
-      logout: "退出登录失败。"
+      logout: "退出登录失败。",
+      logoutPending: "已从本设备退出。服务器恢复连接后会自动完成退出。"
     }
   },
   upgrade: {
     kicker: "版本升级",
-    title: "正在重建推荐画像",
-    body: "邸报正在修复旧版本产生的兴趣簇数据。完成前会暂停阅读界面，避免旧画像继续影响推荐。",
-    failedBody: "推荐画像重建未完成。请重试，或查看服务日志后再继续。",
+    title: "正在完成版本升级",
+    body: "邸报正在更新数据库与推荐数据。完成前会暂停阅读界面，避免新旧数据混用。",
+    failedBody: "版本升级未完成。请重试，或查看服务日志后再继续。",
     progressLabel: "升级进度",
-    costNote: "本次迁移只重建兴趣簇、主题组、标签和排序等派生数据；不会重建 Embedding，也不会产生额外 Embedding API 费用。",
+    costNote: "本次升级只处理数据库结构、本地向量索引和推荐派生数据；不会重新请求 Embedding，也不会产生额外 API 费用。",
     progress: (current: number, total: number, percent: number) =>
-      total > 0 ? `${current} / ${total} 篇文章 · ${percent}%` : "正在准备数据",
+      total > 0 ? `${current} / ${total} · ${percent}%` : "正在准备数据",
     retry: "重试重建",
     retrying: "重试中",
     steps: {
       detecting: "检查需要修复的数据",
       schemaMigration: "更新数据库结构",
+      vectorIndexMigration: "升级本地向量索引",
       reset: "清理旧的兴趣簇与家族",
       replay: "回放历史阅读信号",
       labels: "重建兴趣簇标签",
@@ -1599,23 +1601,25 @@ export const enUS = {
     errors: {
       session: "Could not check your session.",
       setupStatus: "Could not read instance status.",
-      logout: "Log out failed."
+      logout: "Log out failed.",
+      logoutPending: "You are logged out on this device. Server logout will finish automatically after the connection returns."
     }
   },
   upgrade: {
     kicker: "Version upgrade",
-    title: "Rebuilding your recommendation profile",
-    body: "Dibao is repairing interest-cluster data created by an older version. The reader is paused until the rebuild finishes so stale profile data cannot affect recommendations.",
-    failedBody: "The recommendation profile rebuild did not finish. Retry after checking the server log if needed.",
+    title: "Completing the version upgrade",
+    body: "Dibao is updating its database and recommendation data. The reader is paused until the upgrade finishes so old and new data cannot be mixed.",
+    failedBody: "The version upgrade did not finish. Retry after checking the server log if needed.",
     progressLabel: "Upgrade progress",
-    costNote: "This migration only rebuilds derived profile data such as clusters, topic families, labels, and ranking rows. It does not rebuild embeddings or create additional embedding API charges.",
+    costNote: "This upgrade only updates database structures, local vector indexes, and derived recommendation data. It does not request embeddings again or create additional API charges.",
     progress: (current: number, total: number, percent: number) =>
-      total > 0 ? `${current} / ${total} articles · ${percent}%` : "Preparing data",
+      total > 0 ? `${current} / ${total} · ${percent}%` : "Preparing data",
     retry: "Retry rebuild",
     retrying: "Retrying",
     steps: {
       detecting: "Checking profile data",
       schemaMigration: "Updating database schema",
+      vectorIndexMigration: "Upgrading the local vector index",
       reset: "Clearing old clusters and families",
       replay: "Replaying reading signals",
       labels: "Rebuilding cluster labels",
@@ -3068,23 +3072,25 @@ export const jaJP = {
     errors: {
       session: "ログイン状態を取得できませんでした。",
       setupStatus: "インスタンス状態を取得できませんでした。",
-      logout: "ログアウトに失敗しました。"
+      logout: "ログアウトに失敗しました。",
+      logoutPending: "このデバイスからログアウトしました。接続の復旧後、サーバー側のログアウトが自動的に完了します。"
     }
   },
   upgrade: {
     kicker: "バージョンアップ",
-    title: "おすすめプロファイルを再構築しています",
-    body: "旧バージョンで作成された興味クラスターデータを修復しています。古いプロファイルが推薦に影響しないよう、完了までリーダーを一時停止します。",
-    failedBody: "おすすめプロファイルの再構築が完了しませんでした。必要に応じてサーバーログを確認し、もう一度お試しください。",
+    title: "バージョンアップを完了しています",
+    body: "邸報のデータベースとおすすめデータを更新しています。新旧のデータが混在しないよう、完了までリーダーを一時停止します。",
+    failedBody: "バージョンアップが完了しませんでした。必要に応じてサーバーログを確認し、もう一度お試しください。",
     progressLabel: "アップグレード進捗",
-    costNote: "この移行では、クラスター、トピックファミリー、ラベル、並び替えなどの派生データだけを再構築します。Embedding は再生成せず、追加の Embedding API 費用は発生しません。",
+    costNote: "このアップグレードでは、データベース構造、ローカルベクトル索引、おすすめの派生データだけを更新します。Embedding を再リクエストせず、追加の API 費用は発生しません。",
     progress: (current: number, total: number, percent: number) =>
-      total > 0 ? `${current} / ${total} 件の記事 · ${percent}%` : "データを準備しています",
+      total > 0 ? `${current} / ${total} · ${percent}%` : "データを準備しています",
     retry: "再構築を再試行",
     retrying: "再試行中",
     steps: {
       detecting: "修復対象のデータを確認",
       schemaMigration: "データベース構造を更新",
+      vectorIndexMigration: "ローカルベクトル索引を更新",
       reset: "古いクラスターとファミリーを削除",
       replay: "読書シグナルを再生",
       labels: "クラスターラベルを再構築",

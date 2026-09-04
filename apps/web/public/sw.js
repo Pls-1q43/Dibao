@@ -1,4 +1,4 @@
-const CACHE_VERSION = "dibao-pwa-v10";
+const CACHE_VERSION = "dibao-pwa-v11";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
@@ -220,13 +220,11 @@ async function networkFirstNavigation(request) {
 
   try {
     const response = await fetch(request);
-    if (response.ok) {
+    if (response.ok && isHtmlResponse(response)) {
       await cache.put(request, response.clone());
       await cache.put("/index.html", response.clone());
-      if (isHtmlResponse(response)) {
-        const html = await response.clone().text();
-        await cacheDiscoveredStaticAssets(cache, html);
-      }
+      const html = await response.clone().text();
+      await cacheDiscoveredStaticAssets(cache, html);
     }
     if (response.status >= 500) {
       return (await cachedNavigationResponse(cache, request)) ?? response;

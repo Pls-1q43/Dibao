@@ -32,6 +32,10 @@ const OFFLINE_PAGE_SIZE = 50;
 const ARTICLE_BATCH_SIZE = 25;
 const SYNC_CHANNEL_NAME = "dibao-offline-sync";
 const ACTIVE_MODE_STORAGE_KEY = "dibao:offline-reading:active-mode:v1";
+const REVOKED_SCOPE_STORAGE_PREFIX = "dibao:offline-reading:revoked-scope:v1:";
+const REVOKED_SCOPE_META_PREFIX = "offline-reading:revoked-scope:v1:";
+const PENDING_SERVER_LOGOUT_STORAGE_PREFIX = "dibao:auth:pending-server-logout:v1:";
+const PENDING_SERVER_LOGOUT_META_PREFIX = "auth:pending-server-logout:v1:";
 const SYNC_LEASE_DURATION_MS = 30_000;
 
 export type OfflineDeviceSettings = {
@@ -170,6 +174,130 @@ export function setOfflineModeActive(
   }
 }
 
+export function isOfflineScopeRevokedInStorage(
+  scopeKey: string,
+  storage: Pick<Storage, "getItem"> = window.localStorage
+): boolean {
+  try {
+    return storage.getItem(revokedScopeStorageKey(scopeKey)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function isOfflineScopeRevoked(scopeKey: string): Promise<boolean> {
+  const localMarker = readStorageMarker(revokedScopeStorageKey(scopeKey));
+  if (localMarker !== null) {
+    return localMarker === "1";
+  }
+  if (!isOfflineStorageSupported()) {
+    return false;
+  }
+  try {
+    return Boolean(
+      await getRecord<MetaRecord>(META_STORE, revokedScopeMetaKey(scopeKey))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function markOfflineScopeRevoked(scopeKey: string): Promise<void> {
+  const storedLocally = setStorageMarker(revokedScopeStorageKey(scopeKey), "1");
+  let storedInDatabase = false;
+  if (isOfflineStorageSupported()) {
+    try {
+      await putRecord(META_STORE, {
+        key: revokedScopeMetaKey(scopeKey),
+        value: "1"
+      } satisfies MetaRecord);
+      storedInDatabase = true;
+    } catch {
+      // The localStorage marker still prevents a cold offline bootstrap.
+    }
+  }
+  if (!storedLocally && !storedInDatabase) {
+    throw new Error("Unable to persist the offline logout marker");
+  }
+  setOfflineModeActive(null);
+  activateOfflineImageScope(null);
+}
+
+export async function clearOfflineScopeRevocation(scopeKey: string): Promise<void> {
+  setStorageMarker(revokedScopeStorageKey(scopeKey), "0");
+  if (isOfflineStorageSupported()) {
+    try {
+      await deleteRecord(META_STORE, revokedScopeMetaKey(scopeKey));
+    } catch {
+      // The local tombstone takes precedence over a stale durable marker.
+    }
+  }
+}
+
+export function hasPendingServerLogoutInStorage(
+  origin: string,
+  storage: Pick<Storage, "getItem"> = window.localStorage
+): boolean {
+  try {
+    return storage.getItem(pendingServerLogoutStorageKey(origin)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function hasPendingServerLogout(
+  origin = window.location.origin
+): Promise<boolean> {
+  const localMarker = readStorageMarker(pendingServerLogoutStorageKey(origin));
+  if (localMarker !== null) {
+    return localMarker === "1";
+  }
+  if (!isOfflineStorageSupported()) {
+    return false;
+  }
+  try {
+    return Boolean(
+      await getRecord<MetaRecord>(META_STORE, pendingServerLogoutMetaKey(origin))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function markPendingServerLogout(
+  origin = window.location.origin
+): Promise<void> {
+  const storedLocally = setStorageMarker(pendingServerLogoutStorageKey(origin), "1");
+  let storedInDatabase = false;
+  if (isOfflineStorageSupported()) {
+    try {
+      await putRecord(META_STORE, {
+        key: pendingServerLogoutMetaKey(origin),
+        value: "1"
+      } satisfies MetaRecord);
+      storedInDatabase = true;
+    } catch {
+      // The localStorage marker is sufficient when IndexedDB is unavailable.
+    }
+  }
+  if (!storedLocally && !storedInDatabase) {
+    throw new Error("Unable to persist the pending server logout marker");
+  }
+}
+
+export async function clearPendingServerLogout(
+  origin = window.location.origin
+): Promise<void> {
+  setStorageMarker(pendingServerLogoutStorageKey(origin), "0");
+  if (isOfflineStorageSupported()) {
+    try {
+      await deleteRecord(META_STORE, pendingServerLogoutMetaKey(origin));
+    } catch {
+      // The local tombstone takes precedence over a stale durable marker.
+    }
+  }
+}
+
 export async function rememberOfflineSession(username: string): Promise<OfflineProfileRecord> {
   const origin = window.location.origin;
   const scopeKey = offlineScopeKey(username, origin);
@@ -211,6 +339,10 @@ export async function readOfflineBootstrap(): Promise<{
   const origin = window.location.origin;
   const meta = await getRecord<MetaRecord>(META_STORE, lastScopeKey(origin));
   if (!meta) {
+    return null;
+  }
+  if (await isOfflineScopeRevoked(meta.value)) {
+    activateOfflineImageScope(null);
     return null;
   }
   const storedProfile = await getRecord<OfflineProfileRecord>(PROFILES_STORE, meta.value);
@@ -1546,6 +1678,39 @@ function articleKey(scopeKey: string, articleId: string): string {
 
 function lastScopeKey(origin: string): string {
   return `last-scope::${origin}`;
+}
+
+function revokedScopeStorageKey(scopeKey: string): string {
+  return `${REVOKED_SCOPE_STORAGE_PREFIX}${scopeKey}`;
+}
+
+function revokedScopeMetaKey(scopeKey: string): string {
+  return `${REVOKED_SCOPE_META_PREFIX}${scopeKey}`;
+}
+
+function pendingServerLogoutStorageKey(origin: string): string {
+  return `${PENDING_SERVER_LOGOUT_STORAGE_PREFIX}${origin}`;
+}
+
+function pendingServerLogoutMetaKey(origin: string): string {
+  return `${PENDING_SERVER_LOGOUT_META_PREFIX}${origin}`;
+}
+
+function setStorageMarker(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readStorageMarker(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
 function syncLeaseKey(scopeKey: string): string {

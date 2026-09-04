@@ -88,7 +88,7 @@ services:
       DIBAO_HOST: 0.0.0.0
       DIBAO_PORT: "8080"
       DIBAO_DATABASE_PATH: /data/dibao.sqlite
-      DIBAO_COOKIE_SECURE: "false"
+      DIBAO_COOKIE_SECURE: "auto"
     volumes:
       - ./data:/data
 ```
@@ -195,4 +195,4 @@ In the SQLite database under the local `./data` folder mounted at `/data`.
 
 **Can I install it on my phone?**
 
-Yes, as a PWA from Safari, Chrome, or Edge. HTTPS is recommended outside localhost.
+Yes, as a PWA from Safari, Chrome, or Edge. HTTPS is recommended outside localhost. The default `DIBAO_COOKIE_SECURE=auto` follows the direct protocol or the reverse proxy's `X-Forwarded-Proto` header.

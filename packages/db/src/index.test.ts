@@ -1553,7 +1553,7 @@ describe("db package", () => {
     }
   });
 
-  it("creates user-visible article vector tables with explicit cosine distance and migrates legacy L2 tables", () => {
+  it("requires an explicit blocking upgrade before using legacy L2 vector tables", () => {
     const db = openDatabase(tempDatabasePath(), { migrate: true });
     try {
       const feeds = new SqliteFeedRepository(db);
@@ -1651,6 +1651,45 @@ describe("db package", () => {
       insertRow.run("article_l2_near", l2NearRow);
 
       const vectorStore = new SqliteVecVectorStore(db);
+      expect(vectorStore.listCosineUpgradePlans()).toEqual([
+        expect.objectContaining({
+          embeddingIndexId: "index_vec_metric",
+          embeddingCount: 2,
+          workUnits: 2,
+          reason: "legacy_distance_metric"
+        })
+      ]);
+      expect(() =>
+        vectorStore.searchSimilarArticles({
+          embeddingIndexId: "index_vec_metric",
+          vector: [1, 0],
+          limit: 2
+        })
+      ).toThrow("requires the blocking cosine upgrade");
+      expect(
+        (
+          db
+            .prepare("select sql from sqlite_master where name = 'vec_articles_index_vec_metric'")
+            .get() as { sql: string }
+        ).sql
+      ).not.toContain("distance_metric=cosine");
+
+      const progress: Array<{ current: number; total: number }> = [];
+      expect(
+        vectorStore.upgradeIndexesToCosine({
+          onProgress: ({ current, total }) => progress.push({ current, total })
+        })
+      ).toEqual([
+        {
+          embeddingIndexId: "index_vec_metric",
+          articlesReindexed: 2
+        }
+      ]);
+      expect(progress).toEqual([
+        { current: 0, total: 2 },
+        { current: 2, total: 2 }
+      ]);
+
       const result = vectorStore.searchSimilarArticles({
         embeddingIndexId: "index_vec_metric",
         vector: [1, 0],

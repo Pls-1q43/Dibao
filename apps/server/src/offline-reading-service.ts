@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type {
   ArticleDetailRow,
+  ArticleListCursor,
   ArticleListItemRow,
   ArticleRepository,
   OfflineArticleMetadataRow
@@ -41,6 +42,8 @@ export class OfflineReadingService {
         | "findOfflineMetadataByIds"
         | "list"
         | "listRecentlyOpened"
+        | "createRecommendedSession"
+        | "deleteRecommendedSession"
       >;
       getActiveRankContext: () => string;
       now?: () => number;
@@ -49,16 +52,37 @@ export class OfflineReadingService {
 
   createManifest(recommendedLimit: number): OfflineManifest {
     const rankContext = this.options.getActiveRankContext();
+    const generatedAt = this.options.now?.() ?? Date.now();
     const normalizedRecommendedLimit = clampInteger(
       recommendedLimit,
       OFFLINE_RECOMMENDED_LIMIT_MIN,
       OFFLINE_RECOMMENDED_LIMIT_MAX
     );
-    const recommended = this.listReadableView({
+    const recommendationSession = this.options.articles.createRecommendedSession({
+      id: `offline_session_${randomBytes(10).toString("hex")}`,
       rankContext,
-      target: normalizedRecommendedLimit,
-      view: "recommended"
+      scopeKey: "offline:recommended:unread",
+      maxItems: Math.min(
+        OFFLINE_RECOMMENDED_LIMIT_MAX,
+        normalizedRecommendedLimit * 2
+      ),
+      now: generatedAt,
+      expiresAt: generatedAt + 5 * 60_000,
+      view: "recommended",
+      unreadOnly: true,
+      includeUnreadCount: false
     });
+    let recommended: OfflineManifestArticle[];
+    try {
+      recommended = this.listReadableView({
+        rankContext,
+        target: normalizedRecommendedLimit,
+        view: "recommended",
+        recommendationSessionId: recommendationSession.id
+      });
+    } finally {
+      this.options.articles.deleteRecommendedSession(recommendationSession.id);
+    }
     const readLater = this.listReadableView({
       rankContext,
       target: OFFLINE_READ_LATER_LIMIT,
@@ -72,7 +96,6 @@ export class OfflineReadingService {
       0,
       OFFLINE_RECENT_LIMIT
     );
-    const generatedAt = this.options.now?.() ?? Date.now();
     const snapshotId = createSnapshotId({ rankContext, recommended, readLater, recent });
 
     return {
@@ -97,9 +120,11 @@ export class OfflineReadingService {
     rankContext: string;
     target: number;
     view: "recommended" | "read_later";
+    recommendationSessionId?: string;
   }): OfflineManifestArticle[] {
     const result: OfflineManifestArticle[] = [];
     let offset = 0;
+    let cursor: ArticleListCursor | null = null;
     let exhausted = false;
 
     while (!exhausted && result.length < input.target) {
@@ -109,14 +134,21 @@ export class OfflineReadingService {
         sort: input.view === "read_later" ? "read_later_desc" : undefined,
         rankContext: input.rankContext,
         limit: OFFLINE_PAGE_SIZE,
-        offset,
+        offset: input.recommendationSessionId ? undefined : offset,
+        cursor: cursor ?? undefined,
+        recommendationSessionId: input.recommendationSessionId,
         includeUnreadCount: false
       });
       result.push(...this.readableManifestArticles(page.items, result.length));
-      if (page.nextOffset === null || page.items.length === 0) {
+      const hasNextPage = input.recommendationSessionId
+        ? page.nextCursor !== null
+        : page.nextOffset !== null;
+      if (!hasNextPage || page.items.length === 0) {
         exhausted = true;
+      } else if (input.recommendationSessionId) {
+        cursor = page.nextCursor ?? null;
       } else {
-        offset = page.nextOffset;
+        offset = page.nextOffset ?? offset;
       }
     }
 

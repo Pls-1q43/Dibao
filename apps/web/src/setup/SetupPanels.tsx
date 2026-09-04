@@ -214,8 +214,8 @@ export function DerivedDataUpgradePanel(props: {
   const percent = progress ? Math.max(0, Math.min(100, Math.round(progress.percent * 100))) : 0;
   const step = props.status?.step ?? "detecting";
   const isFailed = props.status?.state === "failed";
-  const articleTotal = progress?.total ?? 0;
-  const articleCurrent = progress?.current ?? 0;
+  const workTotal = progress?.total ?? 0;
+  const workCurrent = progress?.current ?? 0;
 
   return (
     <section className={styles.authPanel} aria-labelledby="derived-data-upgrade-title">
@@ -233,7 +233,7 @@ export function DerivedDataUpgradePanel(props: {
       </div>
       <div className={styles.setupStatusBox} aria-live="polite">
         <strong>{t.upgrade.steps[step]}</strong>
-        <p>{t.upgrade.progress(articleCurrent, articleTotal, percent)}</p>
+        <p>{t.upgrade.progress(workCurrent, workTotal, percent)}</p>
         <p>{t.upgrade.costNote}</p>
         <progress
           aria-label={t.upgrade.progressLabel}
