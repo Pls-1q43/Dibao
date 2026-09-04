@@ -251,7 +251,7 @@ describe("service worker source", () => {
     expect(source).toContain("articleImageCacheFirst");
     expect(source).toContain("imageScopesByClientId");
     expect(source).toContain("event.clientId");
-    expect(source).toContain('CACHE_VERSION = "dibao-pwa-v12"');
+    expect(source).toContain('CACHE_VERSION = "dibao-pwa-v13"');
     expect(source).toContain("MAX_ARTICLE_IMAGE_URLS_PER_MESSAGE");
     expect(source).toContain('event.waitUntil(precacheAppShell());');
     expect(source).not.toContain("precacheAppShell().then(() => self.skipWaiting())");

@@ -1365,6 +1365,7 @@ describe("web i18n", () => {
     expect(html).toContain("稍后读中的文章读完后，自动移出稍后读");
     expect(html).toContain("无限加载：滚动到列表底部时自动加载下一批文章");
     expect(html).toContain("启用离线阅读");
+    expect(html).toContain("不会同步到其他客户端");
     expect(html).toContain('role="switch"');
     expect(html).toContain("type=\"range\"");
     expect(html).toContain("兴趣簇上限");

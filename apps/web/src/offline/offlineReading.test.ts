@@ -90,11 +90,21 @@ describe("offline reading helpers", () => {
     ).toBeNull();
   });
 
-  it("keeps offline reading enabled for existing device settings", () => {
+  it("defaults offline reading to disabled when the device has no explicit setting", () => {
+    expect(normalizeOfflineDeviceSettings(undefined)).toEqual({
+      enabled: false,
+      recommendedTarget: DEFAULT_OFFLINE_RECOMMENDED_TARGET
+    });
     expect(normalizeOfflineDeviceSettings({ recommendedTarget: 200 })).toEqual({
-      enabled: true,
+      enabled: false,
       recommendedTarget: 200
     });
+  });
+
+  it("preserves an explicit per-device offline reading choice", () => {
+    expect(
+      normalizeOfflineDeviceSettings({ enabled: true, recommendedTarget: 200 })
+    ).toEqual({ enabled: true, recommendedTarget: 200 });
     expect(
       normalizeOfflineDeviceSettings({ enabled: false, recommendedTarget: 1_000 })
     ).toEqual({ enabled: false, recommendedTarget: 1_000 });

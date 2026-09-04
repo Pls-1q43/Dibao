@@ -1438,7 +1438,7 @@ export const zhCN = {
     backToCached: "返回缓存列表",
     settings: {
       title: "离线阅读",
-      body: "自动保存已排序的未读推荐，并为稍后读和最近阅读保留离线副本。此设置只保存在当前设备。",
+      body: "自动保存已排序的未读推荐，并为稍后读和最近阅读保留离线副本。此设置仅保存在当前浏览器或已安装的 PWA，不会同步到其他客户端。",
       toggleLabel: "启用离线阅读",
       toggleBody: "关闭后停止保存和使用离线副本，并清除此设备的离线缓存。",
       disabledState: "此设备不会保存或使用离线文章。重新开启后将在联网时自动准备。",
@@ -2920,7 +2920,7 @@ export const enUS = {
     backToCached: "Back to cached articles",
     settings: {
       title: "Offline reading",
-      body: "Automatically save sorted unread recommendations and keep offline copies of Read Later and recently read articles. This setting stays on this device.",
+      body: "Automatically save sorted unread recommendations and keep offline copies of Read Later and recently read articles. This setting is stored only in this browser or installed PWA and does not sync to other clients.",
       toggleLabel: "Enable offline reading",
       toggleBody: "Turning this off stops saving and using offline copies, and clears this device's offline cache.",
       disabledState: "This device will not save or use offline articles. Turn offline reading back on to prepare them automatically when online.",
@@ -4391,7 +4391,7 @@ export const jaJP = {
     backToCached: "キャッシュ済み一覧に戻る",
     settings: {
       title: "オフライン閲覧",
-      body: "並び替え済みの未読おすすめを自動保存し、あとで読む記事と最近読んだ記事のオフラインコピーを保持します。この設定は現在の端末だけに保存されます。",
+      body: "並び替え済みの未読おすすめを自動保存し、あとで読む記事と最近読んだ記事のオフラインコピーを保持します。この設定は現在のブラウザまたはインストール済み PWA にのみ保存され、他のクライアントには同期されません。",
       toggleLabel: "オフライン閲覧を有効にする",
       toggleBody: "オフにするとオフラインコピーの保存と使用を停止し、この端末のキャッシュを消去します。",
       disabledState: "この端末ではオフライン記事を保存または使用しません。再度有効にすると、オンライン時に自動で準備します。",

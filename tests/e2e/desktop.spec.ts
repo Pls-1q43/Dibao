@@ -207,6 +207,14 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
 
     await page.getByRole("link", { name: "设置" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "设置" })).toBeVisible();
+    const offlineToggle = page.getByRole("switch", { name: "启用离线阅读" });
+    await expect(offlineToggle).not.toBeChecked();
+    const offlineManifest = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/offline/manifest"
+    );
+    await offlineToggle.check();
+    await expect((await offlineManifest).status()).toBe(200);
+    await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
     await page.getByRole("tab", { name: "算法" }).click();
     await page.getByLabel("Base URL").fill(`${fixture.origin}/v1`);
     await page.getByLabel("模型").fill("e2e-embedding");
@@ -399,6 +407,35 @@ async function loginDesktop(page: import("@playwright/test").Page): Promise<void
   await page.getByRole("textbox", { name: "访问密码" }).fill(accessPassword);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByRole("link", { name: "最新" })).toBeVisible();
+}
+
+async function hasActiveOfflineSnapshot(
+  page: import("@playwright/test").Page
+): Promise<boolean> {
+  return page.evaluate(
+    () => new Promise<boolean>((resolve, reject) => {
+      const request = indexedDB.open("dibao-offline-reading");
+      request.onerror = () => reject(request.error ?? new Error("Offline database unavailable"));
+      request.onsuccess = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains("profiles")) {
+          database.close();
+          resolve(false);
+          return;
+        }
+        const transaction = database.transaction("profiles", "readonly");
+        const profiles = transaction.objectStore("profiles").getAll();
+        profiles.onerror = () => reject(profiles.error ?? new Error("Offline profiles unavailable"));
+        profiles.onsuccess = () => {
+          const active = profiles.result.some((profile) =>
+            Boolean((profile as { activeSnapshotId?: string | null }).activeSnapshotId)
+          );
+          database.close();
+          resolve(active);
+        };
+      };
+    })
+  );
 }
 
 async function saveFeedAndWait(page: import("@playwright/test").Page): Promise<void> {

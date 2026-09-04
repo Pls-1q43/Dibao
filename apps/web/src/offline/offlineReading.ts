@@ -313,7 +313,7 @@ export async function rememberOfflineSession(username: string): Promise<OfflineP
     feeds: [],
     folders: [],
     deviceSettings: {
-      enabled: true,
+      enabled: false,
       recommendedTarget: DEFAULT_OFFLINE_RECOMMENDED_TARGET
     },
     lastConnectedAt: null,
@@ -877,7 +877,7 @@ export function normalizeOfflineDeviceSettings(
   value: Partial<OfflineDeviceSettings> | null | undefined
 ): OfflineDeviceSettings {
   return {
-    enabled: value?.enabled !== false,
+    enabled: value?.enabled === true,
     recommendedTarget: normalizeRecommendedTarget(
       value?.recommendedTarget ?? DEFAULT_OFFLINE_RECOMMENDED_TARGET
     )

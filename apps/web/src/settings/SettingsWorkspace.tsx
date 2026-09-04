@@ -202,7 +202,7 @@ export function SettingsWorkspace(props: {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordNotice, setPasswordNotice] = useState<string | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
-  const [offlineEnabled, setOfflineEnabled] = useState(props.offlineEnabled !== false);
+  const [offlineEnabled, setOfflineEnabled] = useState(props.offlineEnabled === true);
   const [offlineTarget, setOfflineTarget] = useState(props.offlineTarget ?? 200);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [offlineError, setOfflineError] = useState<string | null>(null);
@@ -229,7 +229,7 @@ export function SettingsWorkspace(props: {
   }, [props.settings]);
 
   useEffect(() => {
-    setOfflineEnabled(props.offlineEnabled !== false);
+    setOfflineEnabled(props.offlineEnabled === true);
   }, [props.offlineEnabled]);
 
   useEffect(() => {

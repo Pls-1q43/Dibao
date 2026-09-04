@@ -578,7 +578,7 @@ export function App() {
   const appPageRef = useRef<AppPage>(appPage);
   const appStageRef = useRef<AppStage>(appStage);
   const hasExplicitUrlPageIntent = useRef(initialRoute.hasExplicitPage);
-  const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled !== false;
+  const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled === true;
 
   const selectedFeed = useMemo(
     () =>

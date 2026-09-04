@@ -32,13 +32,77 @@ test("mobile browser exposes PWA metadata", async ({ page }) => {
   );
 });
 
+test("offline reading settings default off and stay isolated per client", async ({
+  browser,
+  page
+}) => {
+  const clientB = await browser.newContext({
+    baseURL: "http://127.0.0.1:18080",
+    locale: "zh-CN",
+    viewport: { width: 390, height: 844 }
+  });
+  const pageB = await clientB.newPage();
+  const serverSettingWrites: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "PATCH" &&
+      new URL(request.url()).pathname === "/api/settings"
+    ) {
+      serverSettingWrites.push(request.url());
+    }
+  });
+
+  try {
+    await blockExternalBrowserRequests(pageB);
+    await login(page);
+    await login(pageB);
+    await openOfflineSettings(page);
+    await openOfflineSettings(pageB);
+
+    const toggleA = page.getByRole("switch", { name: "启用离线阅读" });
+    const toggleB = pageB.getByRole("switch", { name: "启用离线阅读" });
+    await expect(toggleA).not.toBeChecked();
+    await expect(toggleB).not.toBeChecked();
+    await expect.poll(() => readOfflineDeviceSettings(page)).toEqual({
+      enabled: false,
+      recommendedTarget: 200
+    });
+    await expect.poll(() => readOfflineDeviceSettings(pageB)).toEqual({
+      enabled: false,
+      recommendedTarget: 200
+    });
+
+    const offlineManifest = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/offline/manifest"
+    );
+    await toggleA.check();
+    await expect((await offlineManifest).status()).toBe(200);
+    const targetA = page.getByLabel("自动离线文章数量");
+    await targetA.press("ArrowRight");
+    await targetA.press("ArrowRight");
+    await expect.poll(() => readOfflineDeviceSettings(page)).toEqual({
+      enabled: true,
+      recommendedTarget: 300
+    });
+
+    await page.reload();
+    await expect(page.getByRole("switch", { name: "启用离线阅读" })).toBeChecked();
+    await expect(page.getByLabel("自动离线文章数量")).toHaveValue("300");
+    await pageB.reload();
+    await expect(pageB.getByRole("switch", { name: "启用离线阅读" })).not.toBeChecked();
+    await expect.poll(() => readOfflineDeviceSettings(pageB)).toEqual({
+      enabled: false,
+      recommendedTarget: 200
+    });
+    expect(serverSettingWrites).toEqual([]);
+  } finally {
+    await clientB.close();
+  }
+});
+
 test("mobile PWA offers cached reading when the server becomes unreachable", async ({ page }) => {
-  const offlineManifest = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/offline/manifest"
-  );
   await login(page);
-  await expect((await offlineManifest).status()).toBe(200);
-  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+  await enableOfflineReading(page);
 
   await page.route("**/api/auth/session", (route) => route.abort("failed"));
   await expect
@@ -65,12 +129,8 @@ test("mobile PWA cold refreshes from the app shell while the browser is offline"
   context,
   page
 }) => {
-  const offlineManifest = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/offline/manifest"
-  );
   await login(page);
-  await expect((await offlineManifest).status()).toBe(200);
-  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+  await enableOfflineReading(page);
   await expect.poll(
     () => page.evaluate(() => navigator.serviceWorker.controller !== null),
     { timeout: 20_000 }
@@ -506,6 +566,60 @@ async function login(page: Page): Promise<void> {
 
   await expect(page.getByRole("link", { name: "最新" })).toBeVisible();
   await expect(page.getByRole("link", { name: "推荐" })).toBeVisible();
+}
+
+async function openOfflineSettings(page: Page): Promise<void> {
+  await page.goto("/?page=settings");
+  await expect(page.getByRole("region", { name: "设置" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "启用离线阅读" })).toBeVisible();
+}
+
+async function enableOfflineReading(page: Page): Promise<void> {
+  await openOfflineSettings(page);
+  const toggle = page.getByRole("switch", { name: "启用离线阅读" });
+  await expect(toggle).not.toBeChecked();
+  const offlineManifest = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/offline/manifest"
+  );
+  await toggle.check();
+  await expect((await offlineManifest).status()).toBe(200);
+  await expect(toggle).toBeChecked();
+  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+}
+
+async function readOfflineDeviceSettings(page: Page): Promise<{
+  enabled: boolean;
+  recommendedTarget: number;
+} | null> {
+  return page.evaluate(
+    () => new Promise((resolve, reject) => {
+      const request = indexedDB.open("dibao-offline-reading");
+      request.onerror = () => reject(request.error ?? new Error("Offline database unavailable"));
+      request.onsuccess = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains("profiles")) {
+          database.close();
+          resolve(null);
+          return;
+        }
+        const transaction = database.transaction("profiles", "readonly");
+        const profiles = transaction.objectStore("profiles").getAll();
+        profiles.onerror = () => reject(profiles.error ?? new Error("Offline profiles unavailable"));
+        profiles.onsuccess = () => {
+          const profile = profiles.result[0] as {
+            deviceSettings?: { enabled?: boolean; recommendedTarget?: number };
+          } | undefined;
+          database.close();
+          resolve(profile?.deviceSettings
+            ? {
+                enabled: profile.deviceSettings.enabled === true,
+                recommendedTarget: Number(profile.deviceSettings.recommendedTarget)
+              }
+            : null);
+        };
+      };
+    })
+  );
 }
 
 async function hasActiveOfflineSnapshot(page: Page): Promise<boolean> {
