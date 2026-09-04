@@ -71,6 +71,10 @@ import {
 import styles from "./design-system/AppShell/AppShell.module.css";
 import { FeedManagementWorkspace } from "./FeedManagementPanel.js";
 import {
+  assertPluginBridgeCapability,
+  hasPluginBridgeCapability
+} from "./pluginBridge.js";
+import {
   browserPreferredLocale,
   useI18n,
   type Dictionary,
@@ -2125,12 +2129,24 @@ export function App() {
   }, [appPage.type, appStage.type, isUsingOfflineData]);
 
   useEffect(() => {
-    if (appStage.type !== "reader" || appPage.type !== "search" || !hasSubmittedSearch) {
+    if (
+      appStage.type !== "reader" ||
+      isUsingOfflineData ||
+      appPage.type !== "search" ||
+      !hasSubmittedSearch
+    ) {
       return;
     }
 
     void loadSearchArticles(submittedSearchForm);
-  }, [appPage.type, appStage.type, hasSubmittedSearch, loadSearchArticles, submittedSearchForm]);
+  }, [
+    appPage.type,
+    appStage.type,
+    hasSubmittedSearch,
+    isUsingOfflineData,
+    loadSearchArticles,
+    submittedSearchForm
+  ]);
 
   useEffect(() => {
     if (
@@ -5138,6 +5154,7 @@ function PluginWorkspace(props: {
         return;
       }
       if (data.type === "dibao.openArticle" && typeof data.articleId === "string") {
+        if (!hasPluginBridgeCapability(props.plugin.capabilities, "openArticle")) return;
         props.onOpenArticle(data.articleId);
         return;
       }
@@ -5223,6 +5240,7 @@ async function handlePluginBridgeRequest(
   onArticleStateChange: (articleId: string, state: ArticleState) => void,
   onOpenArticle: (articleId: string) => void
 ): Promise<unknown> {
+  assertPluginBridgeCapability(plugin.capabilities, method);
   const input = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
   switch (method) {
     case "getAuthSession":

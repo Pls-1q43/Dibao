@@ -2,6 +2,7 @@ import {
   dibaoVersion,
   hasDibaoSentryDsn,
   normalizeDibaoSentryConfig,
+  sanitizeTelemetryEvent,
   type DibaoSentryConfig
 } from "@dibao/shared";
 
@@ -74,8 +75,9 @@ export function configureClientTelemetry(enabled: boolean): void {
         replaysSessionSampleRate: clientSentryConfig.replaysSessionSampleRate,
         replaysOnErrorSampleRate: clientSentryConfig.replaysOnErrorSampleRate,
         tracePropagationTargets: [/^\/api\//, window.location.origin],
-        beforeSend: (event) => (telemetryEnabled ? event : null),
-        beforeSendTransaction: (event) => (telemetryEnabled ? event : null)
+        beforeSend: (event) => (telemetryEnabled ? sanitizeTelemetryEvent(event) : null),
+        beforeSendTransaction: (event) =>
+          telemetryEnabled ? sanitizeTelemetryEvent(event) : null
       });
       sentryInitialized = true;
     }).catch(() => {

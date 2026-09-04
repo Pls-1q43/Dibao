@@ -1,8 +1,11 @@
-const CACHE_VERSION = "dibao-pwa-v11";
+const CACHE_VERSION = "dibao-pwa-v12";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
 const ARTICLE_IMAGE_TRIM_COUNT = 24;
+const MAX_ARTICLE_IMAGE_URLS_PER_MESSAGE = 4_000;
+const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const NAVIGATION_FETCH_TIMEOUT_MS = 8_000;
 const imageScopesByClientId = new Map();
 
 const PUBLIC_ICON_URLS = [
@@ -17,9 +20,7 @@ const PUBLIC_ICON_URLS = [
   "/favicon.ico"
 ];
 
-const APP_SHELL_URLS = [
-  "/",
-  "/index.html",
+const OPTIONAL_APP_SHELL_URLS = [
   "/site.webmanifest",
   ...PUBLIC_ICON_URLS
 ];
@@ -30,7 +31,7 @@ const STATIC_PATHS = new Set([
 ]);
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(precacheAppShell().then(() => self.skipWaiting()));
+  event.waitUntil(precacheAppShell());
 });
 
 self.addEventListener("activate", (event) => {
@@ -94,16 +95,19 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(request.url);
+  if (
+    requestUrl.origin === self.location.origin &&
+    isApiPathname(requestUrl.pathname)
+  ) {
+    return;
+  }
+
   const imageScope = imageScopesByClientId.get(event.clientId);
-  if (request.destination === "image" && imageScope) {
+  if (request.destination === "image" && imageScope && isSafeArticleImageUrl(requestUrl)) {
     event.respondWith(articleImageCacheFirst(request, imageScope));
     return;
   }
   if (requestUrl.origin !== self.location.origin) {
-    return;
-  }
-
-  if (requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")) {
     return;
   }
 
@@ -119,32 +123,38 @@ self.addEventListener("fetch", (event) => {
 
 async function precacheAppShell() {
   const cache = await caches.open(APP_SHELL_CACHE);
+  const shellResponse = await fetch(new Request("/index.html", { cache: "reload" }));
+  if (!shellResponse.ok || !isHtmlResponse(shellResponse)) {
+    throw new Error("Unable to cache the Dibao application shell");
+  }
 
-  await Promise.all(
-    APP_SHELL_URLS.map(async (url) => {
-      try {
-        const response = await fetch(new Request(url, { cache: "reload" }));
-        if (response.ok) {
-          await cache.put(url, response.clone());
-          if (isHtmlResponse(response)) {
-            const html = await response.clone().text();
-            await cacheDiscoveredStaticAssets(cache, html);
-          }
-        }
-      } catch {
-        // Missing optional public assets must not abort service worker install.
+  await cache.put("/index.html", shellResponse.clone());
+  await cache.put("/", shellResponse.clone());
+  await cacheDiscoveredStaticAssets(cache, await shellResponse.text(), true);
+
+  await Promise.all(OPTIONAL_APP_SHELL_URLS.map(async (url) => {
+    try {
+      const response = await fetch(new Request(url, { cache: "reload" }));
+      if (response.ok) {
+        await cache.put(url, response);
       }
-    })
-  );
+    } catch {
+      // Missing icons and manifest metadata must not abort an otherwise usable app shell.
+    }
+  }));
 }
 
 async function cacheArticleImages(scopeKey, urls) {
   if (urls.length === 0) return;
   const cache = await caches.open(articleImageCacheName(scopeKey));
   for (const url of urls) {
-    const request = new Request(url, { mode: "no-cors", credentials: "omit" });
+    const request = new Request(url, {
+      mode: "no-cors",
+      credentials: "omit",
+      referrerPolicy: "no-referrer"
+    });
     try {
-      const response = await fetch(request);
+      const response = await fetchWithTimeout(request, ARTICLE_IMAGE_FETCH_TIMEOUT_MS);
       if (isCacheableImageResponse(response)) {
         await putArticleImageWithTrim(cache, request, response);
       }
@@ -166,7 +176,7 @@ async function articleImageCacheFirst(request, scopeKey) {
   const cached = await cache.match(request, { ignoreVary: true });
   if (cached) return cached;
   try {
-    const response = await fetch(request);
+    const response = await fetchWithTimeout(request, ARTICLE_IMAGE_FETCH_TIMEOUT_MS);
     if (isCacheableImageResponse(response)) {
       await putArticleImageWithTrim(cache, request, response.clone());
     }
@@ -204,39 +214,65 @@ function validScopeKey(value) {
 
 function validHttpUrls(value) {
   if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.flatMap((item) => {
-    if (typeof item !== "string") return [];
+  const urls = new Set();
+  for (const item of value) {
+    if (urls.size >= MAX_ARTICLE_IMAGE_URLS_PER_MESSAGE) break;
+    if (typeof item !== "string") continue;
     try {
       const url = new URL(item);
-      return url.protocol === "http:" || url.protocol === "https:" ? [url.href] : [];
+      if (
+        isSafeArticleImageUrl(url) &&
+        !(url.origin === self.location.origin && isApiPathname(url.pathname))
+      ) {
+        url.hash = "";
+        urls.add(url.href);
+      }
     } catch {
-      return [];
+      // Ignore malformed image URLs from article content.
     }
-  })));
+  }
+  return Array.from(urls);
 }
 
 async function networkFirstNavigation(request) {
   const cache = await caches.open(APP_SHELL_CACHE);
 
   try {
-    const response = await fetch(request);
+    const response = await fetchWithTimeout(request, NAVIGATION_FETCH_TIMEOUT_MS);
     if (response.ok && isHtmlResponse(response)) {
-      await cache.put(request, response.clone());
       await cache.put("/index.html", response.clone());
+      await cache.put("/", response.clone());
       const html = await response.clone().text();
       await cacheDiscoveredStaticAssets(cache, html);
     }
     if (response.status >= 500) {
-      return (await cachedNavigationResponse(cache, request)) ?? response;
+      return (await cachedNavigationResponse(cache)) ?? response;
     }
     return response;
   } catch {
-    return (await cachedNavigationResponse(cache, request)) ?? Response.error();
+    return (await cachedNavigationResponse(cache)) ?? Response.error();
   }
 }
 
-async function cachedNavigationResponse(cache, request) {
-  return (await cache.match(request)) ?? (await cache.match("/index.html"));
+async function cachedNavigationResponse(cache) {
+  return (await cache.match("/index.html")) ?? (await cache.match("/"));
+}
+
+async function fetchWithTimeout(request, timeoutMs) {
+  const controller = new AbortController();
+  const abortFromRequest = () => controller.abort();
+  if (request.signal?.aborted) {
+    controller.abort();
+  } else {
+    request.signal?.addEventListener("abort", abortFromRequest, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(request, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+    request.signal?.removeEventListener("abort", abortFromRequest);
+  }
 }
 
 async function staleWhileRevalidate(request) {
@@ -259,11 +295,42 @@ function isStaticAsset(pathname) {
   return pathname.startsWith("/assets/") || STATIC_PATHS.has(pathname);
 }
 
+function isSafeArticleImageUrl(url) {
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username ||
+    url.password
+  ) {
+    return false;
+  }
+  const hostname = url.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+  if (!hostname || hostname.includes(":")) return false;
+  if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
+  return !(
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".lan") ||
+    hostname.endsWith(".home") ||
+    hostname.endsWith(".home.arpa")
+  );
+}
+
+function isApiPathname(pathname) {
+  try {
+    const decodedPathname = decodeURIComponent(pathname);
+    return decodedPathname === "/api" || decodedPathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
+}
+
 function isHtmlResponse(response) {
   return response.headers.get("content-type")?.includes("text/html") ?? false;
 }
 
-async function cacheDiscoveredStaticAssets(cache, html) {
+async function cacheDiscoveredStaticAssets(cache, html, required = false) {
   const urls = new Set();
   const attributePattern = /\b(?:href|src)=["']([^"']+)["']/g;
 
@@ -274,16 +341,24 @@ async function cacheDiscoveredStaticAssets(cache, html) {
     }
   }
 
-  await Promise.all(
-    Array.from(urls).map(async (url) => {
-      try {
-        const response = await fetch(new Request(url, { cache: "reload" }));
-        if (response.ok) {
-          await cache.put(url, response);
-        }
-      } catch {
-        // Runtime build asset caching is best effort; navigation fallback still works.
-      }
-    })
-  );
+  const cacheAsset = async (url) => {
+    const response = await fetch(new Request(url, { cache: "reload" }));
+    if (!response.ok) {
+      throw new Error(`Unable to cache application asset: ${url}`);
+    }
+    await cache.put(url, response);
+  };
+
+  if (required) {
+    await Promise.all(Array.from(urls).map(cacheAsset));
+    return;
+  }
+
+  await Promise.all(Array.from(urls).map(async (url) => {
+    try {
+      await cacheAsset(url);
+    } catch {
+      // Runtime refresh is best effort after a complete shell has already been installed.
+    }
+  }));
 }

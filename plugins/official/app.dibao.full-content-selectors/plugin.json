@@ -14,7 +14,7 @@
   },
   "dibao": {
     "minVersion": "0.3.0",
-    "maxVersion": "<0.4.0"
+    "maxVersion": "<0.5.0"
   },
   "entry": {
     "server": "server/index.mjs"

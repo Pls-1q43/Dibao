@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FullContentExtractionService } from "./full-content-extraction-service.js";
 import type { HostnameResolver } from "./controlled-fetch.js";
 
-const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
+const publicTestResolver: HostnameResolver = async () => ["93.184.216.34"];
 
 describe("FullContentExtractionService", () => {
   it("extracts readable safe HTML and removes chrome/scripts", async () => {

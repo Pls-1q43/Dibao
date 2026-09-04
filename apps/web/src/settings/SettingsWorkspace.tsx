@@ -7,6 +7,7 @@ import styles from "../design-system/AppShell/AppShell.module.css";
 import { NumberSettingField, RangeSettingField } from "../ui/FormFields.js";
 import { ActionIcon } from "../reader/ReaderPanels.js";
 import type { OfflineCacheSummary } from "../offline/offlineReading.js";
+import { assertPluginBridgeCapability } from "../pluginBridge.js";
 import { classNames, closestInterestClusterPresetIndex, defaultFavoriteArticleSort, defaultReadLaterArticleSort, draftForEmbeddingProvider, draftForSettings, draftWithProviderType, embeddingCoverageText, interestClusterLimitPresets, interestClusterPresetIndexFromSliderValue, newEmbeddingProviderId, parseEmbeddingProviderDraft, parseSettingsDraft, presetIndexForInterestClusterLimitDraft, presetIndexForInterestClusterLimits, retentionSettingsRequireCleanupConfirmation, shouldLetBrowserHandleLinkClick, urlForAppPage, type EmbeddingProviderDraft, type SettingsDraft } from "../app/shared.js";
 
 type CoreSettingsTabId = "basic" | "algorithm" | "plugins";
@@ -1741,6 +1742,7 @@ async function handlePluginSettingsBridgeRequest(
   method: unknown,
   payload: unknown
 ): Promise<unknown> {
+  assertPluginBridgeCapability(plugin.capabilities, method);
   const input = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
   switch (method) {
     case "getAuthSession":

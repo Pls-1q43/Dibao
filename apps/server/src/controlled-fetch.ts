@@ -263,14 +263,21 @@ async function resolveAllowedFetchTarget(
   try {
     url = new URL(urlValue);
   } catch {
-    return { hostname: "", addresses: [] };
+    throw new ControlledFetchError("FETCH_READ_FAILED", "Fetch URL is invalid");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new ControlledFetchError(
+      "FETCH_READ_FAILED",
+      `Fetch URL protocol is not allowed: ${url.protocol}`
+    );
   }
 
   const hostname = normalizeHostname(url.hostname);
   const hostnameReason = privateTargetReason(hostname);
   const directIpAllowed = isAllowedPrivateIp(hostname, policy);
   if (hostnameReason) {
-    const warning = { url: url.toString(), hostname, reason: hostnameReason };
+    const warning = { url: privacyWarningUrl(url), hostname, reason: hostnameReason };
     onWarning?.(warning);
     if (!policy.allowPrivateNetwork && !directIpAllowed) {
       const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname);
@@ -302,13 +309,17 @@ async function resolveAllowedFetchTarget(
     if (!reason) {
       continue;
     }
-    const warning = { url: url.toString(), hostname: address, reason };
+    const warning = { url: privacyWarningUrl(url), hostname: address, reason };
     onWarning?.(warning);
     if (!policy.allowPrivateNetwork && !isAllowedPrivateIp(address, policy)) {
       throw privateTargetError(warning);
     }
   }
   return { hostname, addresses };
+}
+
+function privacyWarningUrl(url: URL): string {
+  return `${url.protocol}//${url.host}/`;
 }
 
 function privateTargetError(warning: FetchPrivacyWarning): ControlledFetchError {
@@ -409,7 +420,7 @@ function privateTargetReason(hostname: string): string | null {
 
 function privateIpv4Reason(hostname: string): string | null {
   const parts = hostname.split(".").map((part) => Number(part));
-  const [a, b] = parts;
+  const [a, b, c] = parts;
   if (a === 10 || a === 127 || a === 0) {
     return "private-ipv4";
   }
@@ -425,20 +436,96 @@ function privateIpv4Reason(hostname: string): string | null {
   if (a === 100 && b >= 64 && b <= 127) {
     return "carrier-grade-nat-ipv4";
   }
+  if (a === 192 && b === 0 && c === 0) {
+    return "reserved-ipv4";
+  }
+  if (
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 192 && b === 88 && c === 99) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  ) {
+    return "non-public-ipv4";
+  }
+  if (a >= 224) {
+    return a < 240 ? "multicast-ipv4" : "reserved-ipv4";
+  }
   return null;
 }
 
 function privateIpv6Reason(hostname: string): string | null {
-  if (hostname === "::1") {
+  const address = ipv6ToBigInt(hostname);
+  if (address === null) {
+    return "invalid-ipv6";
+  }
+  if (address === 0n) {
+    return "unspecified-ipv6";
+  }
+  if (address === 1n) {
     return "loopback-ipv6";
   }
-  if (hostname.startsWith("fc") || hostname.startsWith("fd")) {
+
+  const embeddedIpv4 = embeddedIpv4Address(address, "::ffff:0:0", 96) ??
+    embeddedIpv4Address(address, "64:ff9b::", 96);
+  if (embeddedIpv4) {
+    const embeddedReason = privateIpv4Reason(embeddedIpv4);
+    if (embeddedReason) {
+      return `embedded-${embeddedReason}`;
+    }
+  }
+
+  if (isIpv6InCidr(address, "::", 96)) {
+    return "ipv4-compatible-ipv6";
+  }
+  if (isIpv6InCidr(address, "64:ff9b:1::", 48)) {
+    return "local-translation-ipv6";
+  }
+  if (isIpv6InCidr(address, "100::", 64)) {
+    return "discard-only-ipv6";
+  }
+  if (isIpv6InCidr(address, "2001::", 32)) {
+    return "teredo-ipv6";
+  }
+  if (isIpv6InCidr(address, "2001:db8::", 32)) {
+    return "documentation-ipv6";
+  }
+  if (isIpv6InCidr(address, "2002::", 16)) {
+    return "six-to-four-ipv6";
+  }
+  if (isIpv6InCidr(address, "fc00::", 7)) {
     return "unique-local-ipv6";
   }
-  if (hostname.startsWith("fe80:")) {
+  if (isIpv6InCidr(address, "fe80::", 10)) {
     return "link-local-ipv6";
   }
+  if (isIpv6InCidr(address, "fec0::", 10)) {
+    return "site-local-ipv6";
+  }
+  if (isIpv6InCidr(address, "ff00::", 8)) {
+    return "multicast-ipv6";
+  }
   return null;
+}
+
+function embeddedIpv4Address(
+  address: bigint,
+  prefix: string,
+  bits: number
+): string | null {
+  if (!isIpv6InCidr(address, prefix, bits)) {
+    return null;
+  }
+  const value = Number(address & 0xffff_ffffn);
+  return [24, 16, 8, 0]
+    .map((shift) => String((value >>> shift) & 0xff))
+    .join(".");
+}
+
+function isIpv6InCidr(address: bigint, network: string, bits: number): boolean {
+  const parsedNetwork = ipv6ToBigInt(network);
+  return parsedNetwork !== null &&
+    applyCidrMask(address, bits, 128) === applyCidrMask(parsedNetwork, bits, 128);
 }
 
 function readPositiveIntegerEnv(name: string): number | undefined {

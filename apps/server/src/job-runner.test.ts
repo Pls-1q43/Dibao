@@ -52,7 +52,7 @@ import {
 } from "./retention-cleanup-job-service.js";
 
 const tempDirs: string[] = [];
-const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
+const publicTestResolver: HostnameResolver = async () => ["93.184.216.34"];
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {

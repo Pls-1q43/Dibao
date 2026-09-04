@@ -58,6 +58,62 @@ export function hasDibaoSentrySourceMapProject(config = dibaoSentryConfig): bool
   return config.org.length > 0 && config.project.length > 0;
 }
 
+export function sanitizeTelemetryEvent<T>(event: T): T {
+  sanitizeTelemetryValue(event, new WeakSet<object>());
+  return event;
+}
+
+export function sanitizeTelemetryUrl(value: string): string {
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const cutoff = [queryIndex, fragmentIndex]
+    .filter((index) => index >= 0)
+    .reduce((lowest, index) => Math.min(lowest, index), value.length);
+  const withoutQuery = value.slice(0, cutoff);
+  try {
+    const url = new URL(withoutQuery);
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return withoutQuery;
+  }
+}
+
+const telemetryUrlKeys = new Set([
+  "url",
+  "uri",
+  "http.url",
+  "url.full",
+  "transaction",
+  "from",
+  "to"
+]);
+const telemetryQueryKeys = new Set(["query_string", "http.query", "url.query"]);
+
+function sanitizeTelemetryValue(value: unknown, seen: WeakSet<object>): void {
+  if (!value || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) sanitizeTelemetryValue(item, seen);
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, nested] of Object.entries(record)) {
+    const normalizedKey = key.toLowerCase();
+    if (telemetryQueryKeys.has(normalizedKey)) {
+      delete record[key];
+      continue;
+    }
+    if (telemetryUrlKeys.has(normalizedKey) && typeof nested === "string") {
+      record[key] = sanitizeTelemetryUrl(nested);
+      continue;
+    }
+    sanitizeTelemetryValue(nested, seen);
+  }
+}
+
 function readInjectedDibaoSentryConfig(): Partial<DibaoSentryConfig> | undefined {
   return typeof __DIBAO_SENTRY_CONFIG__ === "undefined" ? undefined : __DIBAO_SENTRY_CONFIG__;
 }

@@ -24,7 +24,7 @@ This guide is for third-party plugin developers. Dibao 0.3 is an ecosystem-platf
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.5.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -44,7 +44,7 @@ This guide is for third-party plugin developers. Dibao 0.3 is an ecosystem-platf
 }
 ```
 
-Use reverse-domain IDs and a bounded compatibility range such as `<0.4.0`.
+Use reverse-domain IDs and a bounded compatibility range such as `<0.5.0`.
 
 ### Plugin Localization
 

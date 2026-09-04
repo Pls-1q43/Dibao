@@ -44,7 +44,7 @@ import {
 
 const tempDirs: string[] = [];
 const TEST_ACTIVE_RANK_CONTEXT = `${RECOMMENDATION_ALGORITHM_VERSION}:embedding:cocoon_5:schema_${RECOMMENDATION_FEATURE_SCHEMA_VERSION}`;
-const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
+const publicTestResolver: HostnameResolver = async () => ["93.184.216.34"];
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -1551,6 +1551,22 @@ describe("server API vertical slice", () => {
         method: "GET",
         url: "/api/feeds"
       });
+      const encodedProtectedApi = await app.inject({
+        method: "GET",
+        url: "/%61pi/feeds"
+      });
+      const encodedProtectedWrite = await app.inject({
+        method: "POST",
+        url: "/%61pi/feeds/refresh"
+      });
+      const encodedCrossOriginWrite = await app.inject({
+        method: "POST",
+        url: "/%61pi/feeds/refresh",
+        headers: {
+          host: "dibao.test",
+          origin: "https://attacker.test"
+        }
+      });
       const publicLogo = await app.inject({
         method: "GET",
         url: "/logo-64.png"
@@ -1564,6 +1580,25 @@ describe("server API vertical slice", () => {
       expect(protectedApi.json()).toMatchObject({
         error: {
           code: "UNAUTHORIZED"
+        }
+      });
+      expect(encodedProtectedApi.statusCode, encodedProtectedApi.body).toBe(401);
+      expect(encodedProtectedApi.headers["cache-control"]).toBe("no-store");
+      expect(encodedProtectedApi.json()).toMatchObject({
+        error: {
+          code: "UNAUTHORIZED"
+        }
+      });
+      expect(encodedProtectedWrite.statusCode, encodedProtectedWrite.body).toBe(401);
+      expect(encodedProtectedWrite.json()).toMatchObject({
+        error: {
+          code: "UNAUTHORIZED"
+        }
+      });
+      expect(encodedCrossOriginWrite.statusCode, encodedCrossOriginWrite.body).toBe(403);
+      expect(encodedCrossOriginWrite.json()).toMatchObject({
+        error: {
+          code: "CSRF_ORIGIN_MISMATCH"
         }
       });
     } finally {
@@ -1586,6 +1621,10 @@ describe("server API vertical slice", () => {
         method: "GET",
         url: "/api/missing-route"
       });
+      const encodedResponse = await app.inject({
+        method: "GET",
+        url: "/%61pi/missing-route"
+      });
 
       expect(response.statusCode, response.body).toBe(404);
       expect(response.headers["content-type"]).toContain("application/json");
@@ -1596,6 +1635,15 @@ describe("server API vertical slice", () => {
         }
       });
       expect(response.body).not.toContain("should not serve for api");
+      expect(encodedResponse.statusCode, encodedResponse.body).toBe(404);
+      expect(encodedResponse.headers["content-type"]).toContain("application/json");
+      expect(encodedResponse.headers["cache-control"]).toBe("no-store");
+      expect(encodedResponse.json()).toMatchObject({
+        error: {
+          code: "NOT_FOUND"
+        }
+      });
+      expect(encodedResponse.body).not.toContain("should not serve for api");
     } finally {
       await app.close();
       db.close();

@@ -61,6 +61,37 @@ test("mobile PWA offers cached reading when the server becomes unreachable", asy
   await expect(page.getByRole("link", { name: /E2E Article/ }).first()).toBeVisible();
 });
 
+test("mobile PWA cold refreshes from the app shell while the browser is offline", async ({
+  context,
+  page
+}) => {
+  const offlineManifest = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/offline/manifest"
+  );
+  await login(page);
+  await expect((await offlineManifest).status()).toBe(200);
+  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+  await expect.poll(
+    () => page.evaluate(() => navigator.serviceWorker.controller !== null),
+    { timeout: 20_000 }
+  ).toBe(true);
+
+  await context.setOffline(true);
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "切换到离线模式" })).toBeVisible();
+    await page.getByRole("button", { name: "切换到离线模式" }).click();
+    await expect(
+      page.getByRole("button", { name: /查看离线阅读状态：离线 · \d+ 篇可用/ })
+    ).toBeVisible();
+    await page.getByRole("link", { name: "最新" }).click();
+    await page.getByRole("link", { name: /E2E Article/ }).first().click();
+    await expect(page.getByTestId("reader-scroll-container")).toBeVisible();
+  } finally {
+    await context.setOffline(false);
+  }
+});
+
 test("mobile MVP reader smoke has visible controls and no horizontal overflow", async ({ page }) => {
   await login(page);
 

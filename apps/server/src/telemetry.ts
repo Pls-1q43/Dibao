@@ -8,6 +8,7 @@ import {
   dibaoVersion,
   hasDibaoSentryDsn,
   normalizeDibaoSentryConfig,
+  sanitizeTelemetryEvent,
   type DibaoSentryConfig
 } from "@dibao/shared";
 
@@ -38,7 +39,9 @@ export function configureServerTelemetry(options: TelemetryOptions): void {
       release: `dibao@${dibaoVersion}`,
       sendDefaultPii: false,
       tracesSampler: () => (telemetryEnabled ? tracesSampleRate : 0),
-      beforeSend: (event) => (telemetryEnabled ? event : null),
+      beforeSend: (event) => (telemetryEnabled ? sanitizeTelemetryEvent(event) : null),
+      beforeSendTransaction: (event) =>
+        telemetryEnabled ? sanitizeTelemetryEvent(event) : null,
       integrations: [
         Sentry.fastifyIntegration({
           shouldHandleError: (_error, _request, reply) =>

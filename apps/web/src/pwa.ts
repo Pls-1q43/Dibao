@@ -30,6 +30,12 @@ export function registerServiceWorker(
       .register("/sw.js", { scope: "/" })
       .then((registration) => {
         options.onRegistered?.(registration);
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          notifyUpdateAvailable(
+            createApplyUpdate(registration, registration.waiting),
+            options
+          );
+        }
         registration.addEventListener("updatefound", () => {
           const installingWorker = registration.installing;
           if (!installingWorker) {
@@ -58,7 +64,7 @@ export function registerServiceWorker(
 
 function createApplyUpdate(
   registration: ServiceWorkerRegistration,
-  installingWorker: ServiceWorker
+  candidateWorker: ServiceWorker
 ): () => void {
   let hasReloaded = false;
 
@@ -72,7 +78,7 @@ function createApplyUpdate(
       window.location.reload();
     });
 
-    const waitingWorker = registration.waiting ?? installingWorker;
+    const waitingWorker = registration.waiting ?? candidateWorker;
     waitingWorker.postMessage({ type: "SKIP_WAITING" });
   };
 }

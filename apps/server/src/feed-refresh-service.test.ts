@@ -15,7 +15,7 @@ import {
 } from "./feed-refresh-service.js";
 import type { HostnameResolver } from "./controlled-fetch.js";
 
-const publicTestResolver: HostnameResolver = async () => ["203.0.113.10"];
+const publicTestResolver: HostnameResolver = async () => ["93.184.216.34"];
 
 describe("FeedRefreshService full content maintenance", () => {
   it("allows self-hosted private feed URLs while still recording a warning", async () => {

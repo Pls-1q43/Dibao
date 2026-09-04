@@ -25,6 +25,8 @@ const ARTICLES_STORE = "articles";
 const ACTIONS_STORE = "actions";
 const META_STORE = "meta";
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
+const MAX_OFFLINE_IMAGES_PER_ARTICLE = 24;
+const MAX_OFFLINE_IMAGE_URLS_PER_SYNC = 4_000;
 export const DEFAULT_OFFLINE_RECOMMENDED_TARGET = 200;
 export const MIN_OFFLINE_RECOMMENDED_TARGET = 50;
 export const MAX_OFFLINE_RECOMMENDED_TARGET = 1_000;
@@ -494,7 +496,9 @@ export async function refreshOfflineSnapshot(
   if (!committed) {
     return await getOfflineCacheSummary(scopeKey);
   }
-  const imageUrlsToKeep = articleRecords.flatMap((record) => imageUrls(record.detail.contentHtml));
+  const imageUrlsToKeep = offlineArticleImageUrls(
+    articleRecords.map((record) => record.detail)
+  );
   cacheArticleImages(scopeKey, articleRecords.map((record) => record.detail));
   pruneArticleImages(scopeKey, imageUrlsToKeep);
   await pruneOfflineArticles(scopeKey);
@@ -911,7 +915,7 @@ async function pruneOfflineArticles(scopeKey: string): Promise<void> {
   );
   pruneArticleImages(
     scopeKey,
-    retainedArticles.flatMap((article) => imageUrls(article.detail.contentHtml))
+    offlineArticleImageUrls(retainedArticles.map((article) => article.detail))
   );
 }
 
@@ -1500,7 +1504,7 @@ export function activateOfflineImageScope(scopeKey: string | null): void {
 }
 
 function cacheArticleImages(scopeKey: string, articles: ArticleDetail[]): void {
-  const urls = Array.from(new Set(articles.flatMap((article) => imageUrls(article.contentHtml))));
+  const urls = offlineArticleImageUrls(articles);
   if (urls.length === 0) return;
   postOfflineWorkerMessage({
     type: "CACHE_ARTICLE_IMAGES",
@@ -1544,19 +1548,71 @@ function postOfflineWorkerMessage(message: unknown): void {
     .catch(() => undefined);
 }
 
-function imageUrls(html: string | null): string[] {
+function offlineArticleImageUrls(articles: ArticleDetail[]): string[] {
+  const urlsByArticle = articles.map((article) =>
+    imageUrls(article.contentHtml, article.url).slice(0, MAX_OFFLINE_IMAGES_PER_ARTICLE)
+  );
+  const urls = new Set<string>();
+  for (let imageIndex = 0; imageIndex < MAX_OFFLINE_IMAGES_PER_ARTICLE; imageIndex += 1) {
+    for (const articleUrls of urlsByArticle) {
+      const url = articleUrls[imageIndex];
+      if (url) urls.add(url);
+      if (urls.size >= MAX_OFFLINE_IMAGE_URLS_PER_SYNC) return Array.from(urls);
+    }
+  }
+  return Array.from(urls);
+}
+
+function imageUrls(html: string | null, articleUrl: string | null): string[] {
   if (!html || typeof DOMParser === "undefined") return [];
   const document = new DOMParser().parseFromString(html, "text/html");
   return Array.from(document.querySelectorAll("img[src]")).flatMap((image) => {
     const source = image.getAttribute("src")?.trim();
     if (!source) return [];
-    try {
-      const url = new URL(source, window.location.href);
-      return url.protocol === "http:" || url.protocol === "https:" ? [url.href] : [];
-    } catch {
-      return [];
-    }
+    const url = resolveOfflineArticleImageUrl(source, articleUrl);
+    return url ? [url] : [];
   });
+}
+
+export function resolveOfflineArticleImageUrl(
+  source: string,
+  articleUrl: string | null,
+  pageUrl = window.location.href
+): string | null {
+  try {
+    const url = new URL(source, articleUrl?.trim() || pageUrl);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      !isSafeOfflineImageHostname(url.hostname)
+    ) {
+      return null;
+    }
+    url.hash = "";
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function isSafeOfflineImageHostname(value: string): boolean {
+  const hostname = value
+    .toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/\.$/, "");
+  if (!hostname || hostname.includes(":")) return false;
+  if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
+  return !(
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".lan") ||
+    hostname.endsWith(".home") ||
+    hostname.endsWith(".home.arpa")
+  );
 }
 
 async function storageEstimate(): Promise<{

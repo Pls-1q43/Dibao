@@ -24,7 +24,7 @@ Last updated: 2026-08-11
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.5.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -53,7 +53,7 @@ Last updated: 2026-08-11
 }
 ```
 
-`id` 建议使用反向域名；`dibao.maxVersion` 建议写成 `<0.4.0`，避免未来 breaking API 自动启用。
+`id` 建议使用反向域名；`dibao.maxVersion` 建议写成 `<0.5.0`，避免未来 breaking API 自动启用。
 
 ### 插件本地化
 

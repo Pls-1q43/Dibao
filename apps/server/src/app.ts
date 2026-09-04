@@ -1392,9 +1392,10 @@ export function buildServer(options: BuildServerOptions = {}) {
 
   app.addHook("preHandler", async (request, reply) => {
     const pathname = parseRequestPathname(request.url);
+    const apiRequest = isApiPath(pathname) || isApiRoutePath(request.routeOptions.url);
     recordForegroundApiActivity(request, pathname);
 
-    if (pathname && isApiPath(pathname)) {
+    if (apiRequest) {
       reply.header("Cache-Control", "no-store");
       if (isUnsafeMethod(request.method) && !isTrustedBrowserWriteRequest(request)) {
         return sendApiError(
@@ -1406,7 +1407,7 @@ export function buildServer(options: BuildServerOptions = {}) {
       }
     }
 
-    if (pathname && !isApiPath(pathname)) {
+    if (!apiRequest) {
       return;
     }
 
@@ -3774,14 +3775,18 @@ function resolveWebDistDir(webDistDirOption: string | undefined): string {
 
 function parseRequestPathname(requestUrl: string): string | null {
   try {
-    return new URL(requestUrl, "http://localhost").pathname;
+    return decodeURIComponent(new URL(requestUrl, "http://localhost").pathname);
   } catch {
     return null;
   }
 }
 
-function isApiPath(pathname: string): boolean {
-  return pathname === "/api" || pathname.startsWith("/api/");
+function isApiPath(pathname: string | null): boolean {
+  return pathname === "/api" || pathname?.startsWith("/api/") === true;
+}
+
+function isApiRoutePath(routePath: string | undefined): boolean {
+  return typeof routePath === "string" && isApiPath(routePath);
 }
 
 function resolveStaticAssetPath(webDistDir: string, pathname: string): string | null {

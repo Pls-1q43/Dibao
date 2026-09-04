@@ -13,6 +13,7 @@ import {
   normalizeOfflineDeviceSettings,
   normalizeRecommendedTarget,
   offlineScopeKey,
+  resolveOfflineArticleImageUrl,
   setOfflineModeActive
 } from "./offlineReading.js";
 
@@ -32,6 +33,61 @@ describe("offline reading helpers", () => {
     expect(offlineScopeKey("reader", "https://dibao.example")).toBe(
       "https://dibao.example::reader"
     );
+  });
+
+  it("resolves offline article images against the article instead of the Dibao page", () => {
+    expect(
+      resolveOfflineArticleImageUrl(
+        "../media/cover.jpg#preview",
+        "https://publisher.example/posts/2026/article.html",
+        "https://dibao.example/?view=recommended"
+      )
+    ).toBe("https://publisher.example/posts/media/cover.jpg");
+    expect(
+      resolveOfflineArticleImageUrl(
+        "/media/cover.jpg",
+        null,
+        "https://dibao.example/?view=recommended"
+      )
+    ).toBe("https://dibao.example/media/cover.jpg");
+  });
+
+  it("rejects non-http and credential-bearing offline image URLs", () => {
+    expect(
+      resolveOfflineArticleImageUrl(
+        "data:image/png;base64,AA==",
+        "https://publisher.example/article",
+        "https://dibao.example/"
+      )
+    ).toBeNull();
+    expect(
+      resolveOfflineArticleImageUrl(
+        "https://user:secret@publisher.example/image.jpg",
+        "https://publisher.example/article",
+        "https://dibao.example/"
+      )
+    ).toBeNull();
+    expect(
+      resolveOfflineArticleImageUrl(
+        "http://127.0.0.1/admin/action",
+        "https://publisher.example/article",
+        "https://dibao.example/"
+      )
+    ).toBeNull();
+    expect(
+      resolveOfflineArticleImageUrl(
+        "http://[::1]/admin/action",
+        "https://publisher.example/article",
+        "https://dibao.example/"
+      )
+    ).toBeNull();
+    expect(
+      resolveOfflineArticleImageUrl(
+        "http://router.local/admin/action",
+        "https://publisher.example/article",
+        "https://dibao.example/"
+      )
+    ).toBeNull();
   });
 
   it("keeps offline reading enabled for existing device settings", () => {

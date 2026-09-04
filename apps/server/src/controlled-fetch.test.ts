@@ -107,7 +107,7 @@ describe("controlledFetchText", () => {
     const warnings: FetchPrivacyWarning[] = [];
 
     await expect(
-      controlledFetchText("http://192.168.1.2/feed.xml", {
+      controlledFetchText("http://reader:secret@192.168.1.2/private/token/feed.xml?api_key=hidden", {
         fetcher: async () => new Response("ok"),
         maxBytes: 100,
         onWarning: (warning) => warnings.push(warning)
@@ -117,7 +117,11 @@ describe("controlledFetchText", () => {
     } satisfies Partial<ControlledFetchError>);
 
     expect(warnings).toMatchObject([
-      { hostname: "192.168.1.2", reason: "private-ipv4" }
+      {
+        url: "http://192.168.1.2/",
+        hostname: "192.168.1.2",
+        reason: "private-ipv4"
+      }
     ]);
   });
 
@@ -136,6 +140,25 @@ describe("controlledFetchText", () => {
         code: "FETCH_PRIVATE_TARGET"
       } satisfies Partial<ControlledFetchError>);
     }
+  });
+
+  it.each([
+    "http://[::ffff:7f00:1]/feed.xml",
+    "http://[64:ff9b::7f00:1]/feed.xml",
+    "http://[fe90::1]/feed.xml",
+    "http://[ff02::1]/feed.xml",
+    "http://[::]/feed.xml",
+    "http://198.18.0.1/feed.xml",
+    "http://224.0.0.1/feed.xml"
+  ])("blocks non-public address form %s", async (url) => {
+    await expect(
+      controlledFetchText(url, {
+        fetcher: async () => new Response("ok"),
+        maxBytes: 100
+      })
+    ).rejects.toMatchObject({
+      code: "FETCH_PRIVATE_TARGET"
+    } satisfies Partial<ControlledFetchError>);
   });
 
   it("blocks private targets reached through redirects", async () => {
@@ -158,6 +181,41 @@ describe("controlledFetchText", () => {
       code: "FETCH_PRIVATE_TARGET"
     } satisfies Partial<ControlledFetchError>);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("blocks redirects to non-HTTP protocols before issuing another request", async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "file:///etc/passwd" }
+      })
+    );
+
+    await expect(
+      controlledFetchText("https://example.com/feed.xml", {
+        fetcher,
+        maxBytes: 100,
+        resolveHostname: publicResolver
+      })
+    ).rejects.toMatchObject({
+      code: "FETCH_READ_FAILED"
+    } satisfies Partial<ControlledFetchError>);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("rejects malformed URLs before invoking a custom transport", async () => {
+    const fetcher = vi.fn(async () => new Response("unexpected"));
+
+    await expect(
+      controlledFetchText("not a valid URL", {
+        fetcher,
+        maxBytes: 100,
+        resolveHostname: publicResolver
+      })
+    ).rejects.toMatchObject({
+      code: "FETCH_READ_FAILED"
+    } satisfies Partial<ControlledFetchError>);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("strips sensitive headers and rewrites POST bodies on cross-origin redirects", async () => {

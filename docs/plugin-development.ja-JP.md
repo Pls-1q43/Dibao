@@ -24,7 +24,7 @@ Last updated: 2026-08-11
     "name": "Reader Tools",
     "version": "0.1.0",
     "publisher": "Example",
-    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.4.0" },
+    "dibao": { "minVersion": "0.3.0", "maxVersion": "<0.5.0" },
     "entry": { "server": "server/index.mjs", "web": "web/index.html" },
     "capabilities": ["settings:plugin", "files:plugin-data", "jobs:write"],
     "migrations": [
@@ -44,7 +44,7 @@ Last updated: 2026-08-11
 }
 ```
 
-`id` は reverse-domain 形式を推奨します。互換範囲は `<0.4.0` のように上限を明示してください。
+`id` は reverse-domain 形式を推奨します。互換範囲は `<0.5.0` のように上限を明示してください。
 
 ### プラグインのローカライズ
 
