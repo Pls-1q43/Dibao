@@ -79,10 +79,10 @@ jobs:
         env:
           DIBAO_SENTRY_UPLOAD_SOURCEMAPS: "0"
         run: |
+          npm run build
           npm test
           npm run typecheck
           npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
-          npm run build
           node --import tsx --test scripts/release/*.test.mjs
           node --import tsx scripts/smoke/historical-upgrade.ts
 

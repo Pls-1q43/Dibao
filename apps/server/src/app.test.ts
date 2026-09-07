@@ -26,6 +26,7 @@ import { parseOpml } from "@dibao/rss";
 import { buildServer as buildRealServer, getHealth } from "./app.js";
 import type { HostnameResolver } from "./controlled-fetch.js";
 import type { FeedFetcher } from "./feed-refresh-service.js";
+import { foregroundActivitySignalPath } from "./foreground-activity.js";
 import { JobRunner } from "./job-runner.js";
 import {
   BEHAVIOR_EVENT_PROJECT_JOB_TYPE,
@@ -89,6 +90,7 @@ describe("server API vertical slice", () => {
 
   it("records foreground activity for static app asset requests", async () => {
     const databasePath = tempDatabasePath();
+    const signalPath = foregroundActivitySignalPath(databasePath)!;
     const webDistDir = createTempDir();
     mkdirSync(join(webDistDir, "assets"), { recursive: true });
     writeFileSync(join(webDistDir, "index.html"), "<!doctype html><div id=\"root\"></div>");
@@ -109,7 +111,6 @@ describe("server API vertical slice", () => {
       });
 
       expect(response.statusCode, response.body).toBe(200);
-      const signalPath = join(dirname(databasePath), "foreground-activity.json");
       await waitForCondition(async () => {
         try {
           return readFileSync(signalPath, "utf8").length > 0;
@@ -123,12 +124,17 @@ describe("server API vertical slice", () => {
         method: "GET"
       });
     } finally {
-      await app.close();
+      try {
+        await app.close();
+      } finally {
+        rmSync(signalPath, { force: true });
+      }
     }
   });
 
   it("records foreground activity for login requests", async () => {
     const databasePath = tempDatabasePath();
+    const signalPath = foregroundActivitySignalPath(databasePath)!;
     const app = buildServer({
       databasePath,
       logger: false,
@@ -145,7 +151,6 @@ describe("server API vertical slice", () => {
       });
 
       expect(response.statusCode, response.body).toBe(409);
-      const signalPath = join(dirname(databasePath), "foreground-activity.json");
       await waitForCondition(async () => {
         try {
           return readFileSync(signalPath, "utf8").length > 0;
@@ -159,7 +164,11 @@ describe("server API vertical slice", () => {
         method: "POST"
       });
     } finally {
-      await app.close();
+      try {
+        await app.close();
+      } finally {
+        rmSync(signalPath, { force: true });
+      }
     }
   });
 

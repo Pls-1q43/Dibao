@@ -145,6 +145,8 @@ test("workflow verifies registry digest before promotion and enables opt-in sour
   assert(workflow.includes("DIBAO_SENTRY_UPLOAD_SOURCEMAPS=1"));
   assert(workflow.includes("node scripts/e2e/prepare.mjs"));
   assert(workflow.includes("npx playwright test"));
+  assert(workflow.indexOf("npm run build") < workflow.indexOf("npm test"));
+  assert.equal((workflow.match(/npm run build/g) ?? []).length, 1);
   assert(workflow.indexOf("npm run build") < workflow.indexOf("node --import tsx --test"));
   const dockerfile = readFileSync("Dockerfile", "utf8");
   assert(dockerfile.includes("ARG DIBAO_SENTRY_UPLOAD_SOURCEMAPS=0"));
