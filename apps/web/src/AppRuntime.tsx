@@ -99,6 +99,7 @@ import {
   getOfflineCacheSummary,
   hasPendingServerLogout,
   isOfflineScopeRevoked,
+  isOfflineScopeRevokedInStorage,
   isOfflineModeActive,
   listOfflineArticles,
   markOfflineScopeRevoked,
@@ -556,6 +557,7 @@ export function App() {
   const ignoredArticleFlushTimer = useRef<number | null>(null);
   const selectedArticleIdRef = useRef<string | null>(selectedArticleId);
   const articleStateById = useRef(new Map<string, ArticleState>(initialArticleStateOverlay.states));
+  const articleStateVersions = useRef(new Map<string, number>());
   const locallyUpdatedArticleIds = useRef(
     new Set<string>(initialArticleStateOverlay.locallyUpdatedIds)
   );
@@ -569,6 +571,9 @@ export function App() {
   const reconnectInFlight = useRef(false);
   const serverAvailabilityCheckInFlight = useRef(false);
   const manualOfflineMode = useRef(false);
+  const authSessionVersion = useRef(0);
+  const authSessionInvalidated = useRef(false);
+  const offlineReauthenticationScope = useRef<string | null>(null);
   const dismissedOfflinePromptReason = useRef<OfflineModePromptReason | null>(null);
   const offlinePromptRequestId = useRef(0);
   const hasScheduledOfflineRefresh = useRef<string | null>(null);
@@ -634,6 +639,7 @@ export function App() {
   currentArticleViewRef.current = currentArticleView;
 
   function applyArticleState(articleId: string, state: ArticleState) {
+    articleStateVersions.current.set(articleId, (articleStateVersions.current.get(articleId) ?? 0) + 1);
     const previousState =
       articleStateById.current.get(articleId) ??
       (articleDetail?.id === articleId ? articleDetail.state : null);
@@ -812,7 +818,7 @@ export function App() {
     );
   }
 
-  const resetReaderState = useCallback(() => {
+  const resetReaderState = useCallback((preserveOfflineSession = false) => {
     setFeedFolders([]);
     setFeeds([]);
     setArticles([]);
@@ -881,23 +887,29 @@ export function App() {
     setNextArticleCursor(null);
     setPendingArticleAction(null);
     setNotice(null);
-    setOfflineScope(null);
-    setOfflineProfile(null);
-    setOfflineSummary(emptyOfflineCacheSummary());
-    setIsUsingOfflineData(false);
-    setOfflineConnectionMode("online");
-    setOfflineModePrompt(null);
-    setIsEnteringOfflineMode(false);
-    setIsExitingOfflineMode(false);
-    setIsOfflineCacheRefreshing(false);
-    setOfflineCacheError(null);
-    setLastConnectedAt(null);
-    reconnectInFlight.current = false;
-    manualOfflineMode.current = false;
-    setOfflineModeActive(null);
-    dismissedOfflinePromptReason.current = null;
-    offlinePromptRequestId.current += 1;
-    activateOfflineImageScope(null);
+    if (!preserveOfflineSession) {
+      authSessionVersion.current += 1;
+      articleStateVersions.current.clear();
+      offlineReauthenticationScope.current = null;
+      setOfflineScope(null);
+      setOfflineProfile(null);
+      setOfflineSummary(emptyOfflineCacheSummary());
+      setIsUsingOfflineData(false);
+      setOfflineConnectionMode("online");
+      setOfflineModePrompt(null);
+      setIsEnteringOfflineMode(false);
+      setIsExitingOfflineMode(false);
+      setIsOfflineCacheRefreshing(false);
+      setOfflineCacheError(null);
+      setLastConnectedAt(null);
+      reconnectInFlight.current = false;
+      manualOfflineMode.current = false;
+      setOfflineModeActive(null);
+      dismissedOfflinePromptReason.current = null;
+      offlinePromptRequestId.current += 1;
+      activateOfflineImageScope(null);
+      hasScheduledOfflineRefresh.current = null;
+    }
     hasLoadedSettingsForSession.current = false;
     hasAppliedDefaultHomeViewForSession.current = hasExplicitUrlPageIntent.current;
     openedArticleIds.current.clear();
@@ -914,6 +926,14 @@ export function App() {
     }
     articleRequestVersion.current += 1;
   }, [setLocale]);
+
+  const invalidateOfflineSession = useCallback(() => {
+    authSessionInvalidated.current = true;
+    resetReaderState();
+    setAuthUsername(null);
+    setAuthError(null);
+    setAppStage({ type: "login" });
+  }, [resetReaderState]);
 
   const applySettings = useCallback(
     (settings: AppSettings) => {
@@ -932,6 +952,11 @@ export function App() {
   ): Promise<boolean> => {
     if (!bootstrap) return false;
     const { profile, snapshot } = bootstrap;
+    const sessionVersion = authSessionVersion.current;
+    const summary = await getOfflineCacheSummary(profile.scopeKey);
+    if (await isOfflineScopeRevoked(profile.scopeKey) || sessionVersion !== authSessionVersion.current) {
+      return false;
+    }
     setOfflineScope(profile.scopeKey);
     setOfflineProfile(profile);
     setAuthUsername(profile.username);
@@ -944,9 +969,9 @@ export function App() {
     setLastConnectedAt(profile.lastConnectedAt ?? null);
     setIsUsingOfflineData(true);
     setOfflineConnectionMode(snapshot ? mode : "empty");
-    setOfflineSummary(await getOfflineCacheSummary(profile.scopeKey));
+    setOfflineSummary(summary);
     setAppStage({ type: "reader" });
-    const shouldOpenRecommended = options.coldStart ||
+    const shouldOpenRecommended = (options.coldStart && appPageRef.current.type !== "settings") ||
       !["reader", "settings"].includes(appPageRef.current.type);
     if (shouldOpenRecommended) {
       setAppPage({ type: "reader", view: "recommended" });
@@ -1075,9 +1100,10 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const sessionVersion = authSessionVersion.current;
 
     async function loadAuthSession() {
-      if (manualOfflineMode.current) return;
+      if (authSessionInvalidated.current || manualOfflineMode.current || offlineReauthenticationScope.current) return;
       try {
         const bootstrap = await readOfflineBootstrap();
         if (bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
@@ -1105,6 +1131,13 @@ export function App() {
           const session = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getAuthSession(signal)
           );
+          if (cancelled || sessionVersion !== authSessionVersion.current) return;
+          if (session.authenticated && session.username &&
+              await isOfflineScopeRevoked(offlineScopeKey(session.username))) {
+            if (!cancelled && sessionVersion === authSessionVersion.current) invalidateOfflineSession();
+            return;
+          }
+          if (cancelled || sessionVersion !== authSessionVersion.current) return;
           if (!cancelled && !manualOfflineMode.current) {
             manualOfflineMode.current = false;
             markServerAvailable();
@@ -1113,10 +1146,11 @@ export function App() {
             if (session.authenticated && session.username) {
               try {
                 const profile = await rememberAuthenticatedOfflineSession(session.username);
-                if (cancelled) return;
+                const summary = await getOfflineCacheSummary(profile.scopeKey);
+                if (cancelled || sessionVersion !== authSessionVersion.current) return;
                 setOfflineScope(profile.scopeKey);
                 setOfflineProfile(profile);
-                setOfflineSummary(await getOfflineCacheSummary(profile.scopeKey));
+                setOfflineSummary(summary);
                 setIsUsingOfflineData(false);
                 setOfflineConnectionMode("online");
                 const connectedAt = Date.now();
@@ -1126,6 +1160,12 @@ export function App() {
                 // IndexedDB availability must not block normal online startup.
               }
             }
+            if (cancelled || sessionVersion !== authSessionVersion.current) return;
+            if (session.username && await isOfflineScopeRevoked(offlineScopeKey(session.username))) {
+              if (!cancelled && sessionVersion === authSessionVersion.current) invalidateOfflineSession();
+              return;
+            }
+            if (cancelled || sessionVersion !== authSessionVersion.current) return;
             if (nextStage.type === "welcome" || nextStage.type === "login") {
               resetReaderState();
             }
@@ -1133,7 +1173,7 @@ export function App() {
           }
           return;
         } catch (error) {
-          if (cancelled || manualOfflineMode.current) return;
+          if (cancelled || sessionVersion !== authSessionVersion.current || manualOfflineMode.current) return;
           if (await offerOfflineModeForError(error)) return;
           if (!cancelled) {
             setAuthError(
@@ -1156,6 +1196,7 @@ export function App() {
   }, [
     applyOfflineBootstrap,
     authGateRetryToken,
+    invalidateOfflineSession,
     markServerAvailable,
     offerOfflineModeForError,
     resetReaderState,
@@ -1575,31 +1616,42 @@ export function App() {
 
   const refreshOfflineCacheNow = useCallback(async (): Promise<OfflineCacheSummary> => {
     if (!offlineScope) throw new Error("Offline profile is not available");
+    const sessionVersion = authSessionVersion.current;
     setIsOfflineCacheRefreshing(true);
     setOfflineCacheError(null);
     try {
       await syncOfflineArticleActions(offlineScope, dibaoApi);
+      if (sessionVersion !== authSessionVersion.current) return emptyOfflineCacheSummary();
       const summary = await refreshOfflineSnapshot(offlineScope, dibaoApi);
-      setOfflineSummary(summary);
+      if (sessionVersion === authSessionVersion.current) setOfflineSummary(summary);
       return summary;
     } catch (error) {
       const summary = await getOfflineCacheSummary(offlineScope).catch(() => emptyOfflineCacheSummary());
-      setOfflineSummary(summary);
-      setOfflineCacheError(userMessageForError(error, t.errors.api));
+      if (sessionVersion === authSessionVersion.current) {
+        setOfflineSummary(summary);
+        setOfflineCacheError(userMessageForError(error, t.errors.api));
+      }
       throw error;
     } finally {
-      setIsOfflineCacheRefreshing(false);
+      if (sessionVersion === authSessionVersion.current) setIsOfflineCacheRefreshing(false);
     }
   }, [offlineScope, t.errors.api]);
 
   const reconnectToServer = useCallback(async (): Promise<boolean> => {
     if (!offlineScope || navigator.onLine === false) return false;
+    const sessionVersion = authSessionVersion.current;
     setOfflineConnectionMode("reconnecting");
     setOfflineCacheError(null);
     try {
       const session = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
         dibaoApi.getAuthSession(signal)
       );
+      if (sessionVersion !== authSessionVersion.current) return false;
+      if (await isOfflineScopeRevoked(offlineScope)) {
+        if (sessionVersion === authSessionVersion.current) invalidateOfflineSession();
+        return false;
+      }
+      if (sessionVersion !== authSessionVersion.current) return false;
       if (
         !session.authenticated ||
         !session.username ||
@@ -1608,10 +1660,17 @@ export function App() {
         throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
       }
       await syncOfflineArticleActions(offlineScope, dibaoApi);
+      if (sessionVersion !== authSessionVersion.current) return false;
       await withRequestTimeout(ARTICLE_LIST_REQUEST_TIMEOUT_MS, (signal) =>
         dibaoApi.listArticles({ view: "recommended", limit: 1, includeUnreadCount: false, signal })
       );
       const summary = await refreshOfflineSnapshot(offlineScope, dibaoApi);
+      if (sessionVersion !== authSessionVersion.current) return false;
+      if (await isOfflineScopeRevoked(offlineScope)) {
+        if (sessionVersion === authSessionVersion.current) invalidateOfflineSession();
+        return false;
+      }
+      if (sessionVersion !== authSessionVersion.current) return false;
       setOfflineSummary(summary);
       setOfflineConnectionMode(summary.failedActionCount > 0 ? "sync-failed" : "online");
       manualOfflineMode.current = false;
@@ -1621,12 +1680,25 @@ export function App() {
       const connectedAt = Date.now();
       setLastConnectedAt(connectedAt);
       await updateOfflineProfile(offlineScope, { lastConnectedAt: connectedAt });
+      if (sessionVersion !== authSessionVersion.current) return false;
       setArticleError(null);
       return true;
     } catch (error) {
-      setOfflineSummary(
-        await getOfflineCacheSummary(offlineScope).catch(() => emptyOfflineCacheSummary())
-      );
+      if (sessionVersion !== authSessionVersion.current) return false;
+      if (error instanceof ApiRequestError && error.status === 401) {
+        // Reauthentication hides cached content without deleting this account's action queue.
+        resetReaderState(true);
+        offlineReauthenticationScope.current = offlineScope;
+        manualOfflineMode.current = true;
+        setOfflineModePrompt(null);
+        setOfflineConnectionMode("sync-failed");
+        setAuthError(userMessageForError(error, t.errors.api));
+        setAppStage({ type: "login" });
+        return false;
+      }
+      const summary = await getOfflineCacheSummary(offlineScope).catch(() => emptyOfflineCacheSummary());
+      if (sessionVersion !== authSessionVersion.current) return false;
+      setOfflineSummary(summary);
       setOfflineConnectionMode(
         error instanceof ApiRequestError && error.status >= 500
           ? "server-unavailable"
@@ -1637,19 +1709,24 @@ export function App() {
       setOfflineCacheError(userMessageForError(error, t.errors.api));
       return false;
     }
-  }, [markServerAvailable, offlineScope, t.errors.api]);
+  }, [invalidateOfflineSession, markServerAvailable, offlineScope, resetReaderState, t.errors.api]);
 
   const retryOfflineSync = useCallback(async () => {
     if (!offlineScope || navigator.onLine === false || reconnectInFlight.current) return;
+    const sessionVersion = authSessionVersion.current;
     reconnectInFlight.current = true;
     setIsExitingOfflineMode(true);
     try {
       await retryFailedOfflineActions(offlineScope);
-      setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+      const summary = await getOfflineCacheSummary(offlineScope);
+      if (sessionVersion !== authSessionVersion.current) return;
+      setOfflineSummary(summary);
       await reconnectToServer();
     } finally {
-      reconnectInFlight.current = false;
-      setIsExitingOfflineMode(false);
+      if (sessionVersion === authSessionVersion.current) {
+        reconnectInFlight.current = false;
+        setIsExitingOfflineMode(false);
+      }
     }
   }, [offlineScope, reconnectToServer]);
 
@@ -1709,10 +1786,11 @@ export function App() {
     ) {
       return;
     }
-    hasScheduledOfflineRefresh.current = offlineScope;
+    const sessionVersion = authSessionVersion.current;
     const timer = window.setTimeout(() => {
+      hasScheduledOfflineRefresh.current = offlineScope;
       void refreshOfflineCacheNow().catch(() => {
-        hasScheduledOfflineRefresh.current = null;
+        if (sessionVersion === authSessionVersion.current) hasScheduledOfflineRefresh.current = null;
       });
     }, 750);
     return () => window.clearTimeout(timer);
@@ -1727,13 +1805,22 @@ export function App() {
 
   useEffect(() => {
     if (!offlineScope) return;
+    let cancelled = false;
+    let requestVersion = 0;
+    const sessionVersion = authSessionVersion.current;
     const updateSummary = () => {
+      const requestId = ++requestVersion;
       void Promise.all([
         getOfflineCacheSummary(offlineScope),
-        readOfflineProfile(offlineScope)
-      ]).then(([summary, profile]) => {
+        readOfflineProfile(offlineScope),
+        isOfflineScopeRevoked(offlineScope)
+      ]).then(([summary, profile, revoked]) => {
+        if (cancelled || requestId !== requestVersion || sessionVersion !== authSessionVersion.current) return;
+        if (revoked || !profile) {
+          invalidateOfflineSession();
+          return;
+        }
         setOfflineSummary(summary);
-        if (!profile) return;
         const nextEnabled = profile.deviceSettings.enabled;
         if (nextEnabled !== offlineReadingEnabled) {
           hasScheduledOfflineRefresh.current = null;
@@ -1753,11 +1840,22 @@ export function App() {
         }
       }).catch(() => undefined);
     };
+    const checkRevocation = () => {
+      if (isOfflineScopeRevokedInStorage(offlineScope)) {
+        invalidateOfflineSession();
+      } else {
+        updateSummary();
+      }
+    };
     const handleLocalStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ scopeKey?: string }>).detail;
       if (detail?.scopeKey === offlineScope) updateSummary();
     };
     window.addEventListener("dibao:offline-status-changed", handleLocalStatus);
+    window.addEventListener("storage", checkRevocation);
+    window.addEventListener("focus", checkRevocation);
+    window.addEventListener("pageshow", checkRevocation);
+    document.addEventListener("visibilitychange", checkRevocation);
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel("dibao-offline-sync");
@@ -1768,10 +1866,15 @@ export function App() {
       channel = null;
     }
     return () => {
+      cancelled = true;
       window.removeEventListener("dibao:offline-status-changed", handleLocalStatus);
+      window.removeEventListener("storage", checkRevocation);
+      window.removeEventListener("focus", checkRevocation);
+      window.removeEventListener("pageshow", checkRevocation);
+      document.removeEventListener("visibilitychange", checkRevocation);
       channel?.close();
     };
-  }, [isUsingOfflineData, offlineReadingEnabled, offlineScope]);
+  }, [invalidateOfflineSession, isUsingOfflineData, offlineReadingEnabled, offlineScope]);
 
   const loadArticles = useCallback(async (
     selection: SourceSelection,
@@ -2394,6 +2497,7 @@ export function App() {
     let cancelled = false;
 
     async function loadDetail(articleId: string) {
+      const sessionVersion = authSessionVersion.current;
       setIsDetailLoading(true);
       setDetailError(null);
       detailExplanationRequestVersion.current += 1;
@@ -2429,13 +2533,15 @@ export function App() {
         } else {
           void dibaoApi.postArticleAction(articleId, request)
             .then((result) => {
-              if (!cancelled) {
+              if (!cancelled && sessionVersion === authSessionVersion.current) {
                 markServerAvailable();
                 applyArticleState(articleId, result.state);
               }
             })
             .catch(async (error) => {
+              if (cancelled || sessionVersion !== authSessionVersion.current) return;
               await offerOfflineModeForError(error);
+              if (cancelled || sessionVersion !== authSessionVersion.current) return;
               if (knownState) applyArticleState(articleId, knownState);
               openedArticleIds.current.delete(articleId);
               if (!cancelled) setArticleActionError(t.actions.errors.open);
@@ -2533,42 +2639,56 @@ export function App() {
 
     setIsAuthSubmitting(true);
     setAuthError(null);
+    if (mode === "setup") resetReaderState();
+    const sessionVersion = authSessionVersion.current;
+    const isCurrentSession = () => sessionVersion === authSessionVersion.current;
 
     try {
+      const resumeScope = offlineReauthenticationScope.current;
+      if (resumeScope && offlineScopeKey(username.trim()) !== resumeScope) {
+        throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
+      }
       if (mode === "setup") {
         await dibaoApi.setupAuth(username, password, telemetryEnabled);
-        await clearPendingServerLogout();
-        try {
-          const profile = await rememberAuthenticatedOfflineSession(username.trim());
-          const connectedAt = Date.now();
-          await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
-          setOfflineScope(profile.scopeKey);
-          setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
-          setLastConnectedAt(connectedAt);
-        } catch {
-          // Local offline storage must not turn a successful online setup into a failure.
-        }
-        setAuthUsername(username.trim());
-        resetReaderState();
-        setAppStage({ type: "setup-sources" });
       } else {
         await dibaoApi.login(username, password);
-        await clearPendingServerLogout();
-        try {
-          const profile = await rememberAuthenticatedOfflineSession(username.trim());
-          const connectedAt = Date.now();
-          await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
-          setOfflineScope(profile.scopeKey);
-          setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
-          setLastConnectedAt(connectedAt);
-        } catch {
-          // Local offline storage must not turn a successful online login into a failure.
-        }
-        setAuthUsername(username.trim());
-        setAppStage({ type: "setup-status-loading" });
       }
+      if (!isCurrentSession()) return;
+      await clearPendingServerLogout();
+      if (!isCurrentSession()) return;
+      if (resumeScope) {
+        const connected = await reconnectToServer();
+        if (!isCurrentSession()) return;
+        if (connected) {
+          offlineReauthenticationScope.current = null;
+          authSessionInvalidated.current = false;
+          setAuthUsername(username.trim());
+          setAppStage({ type: "setup-status-loading" });
+        }
+        return;
+      }
+      try {
+        const profile = await rememberAuthenticatedOfflineSession(username.trim(), true, isCurrentSession);
+        const connectedAt = Date.now();
+        await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
+        if (!isCurrentSession()) return;
+        setOfflineScope(profile.scopeKey);
+        setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
+        setLastConnectedAt(connectedAt);
+      } catch {
+        // Local offline storage must not turn successful online authentication into a failure.
+      }
+      if (!isCurrentSession()) return;
+      if (await isOfflineScopeRevoked(offlineScopeKey(username.trim()))) {
+        if (isCurrentSession()) invalidateOfflineSession();
+        return;
+      }
+      if (!isCurrentSession()) return;
+      setAuthUsername(username.trim());
+      authSessionInvalidated.current = false;
+      setAppStage({ type: mode === "setup" ? "setup-sources" : "setup-status-loading" });
     } catch (error) {
-      setAuthError(userMessageForError(error, t.errors.api));
+      if (isCurrentSession()) setAuthError(userMessageForError(error, t.errors.api));
     } finally {
       setIsAuthSubmitting(false);
     }
@@ -2597,6 +2717,7 @@ export function App() {
           localOfflineDataRevoked = true;
         }
       }
+      invalidateOfflineSession();
 
       let pendingServerLogoutRecorded = false;
       try {
@@ -2800,7 +2921,7 @@ export function App() {
   }
 
   function handleSetupProviderContinue() {
-    resetReaderState();
+    resetReaderState(true);
     setIsFeedsLoading(true);
     setIsArticlesLoading(true);
     setAppStage({ type: "reader" });
@@ -2999,12 +3120,15 @@ export function App() {
 
   async function handleOfflineTargetChange(target: number) {
     if (!offlineScope) throw new Error("Offline profile is not available");
+    const sessionVersion = authSessionVersion.current;
     const recommendedTarget = await setOfflineRecommendedTarget(offlineScope, target);
+    const summary = await getOfflineCacheSummary(offlineScope);
+    if (sessionVersion !== authSessionVersion.current) return;
     setOfflineProfile((current) => current ? {
       ...current,
       deviceSettings: { ...current.deviceSettings, recommendedTarget }
     } : current);
-    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    setOfflineSummary(summary);
     if (offlineReadingEnabled && !isUsingOfflineData && navigator.onLine !== false) {
       if (offlineTargetRefreshTimer.current !== null) {
         window.clearTimeout(offlineTargetRefreshTimer.current);
@@ -3018,13 +3142,16 @@ export function App() {
 
   async function handleOfflineEnabledChange(enabled: boolean) {
     if (!offlineScope) throw new Error("Offline profile is not available");
+    const sessionVersion = authSessionVersion.current;
     await setOfflineReadingEnabled(offlineScope, enabled);
+    const summary = await getOfflineCacheSummary(offlineScope);
+    if (sessionVersion !== authSessionVersion.current) return;
     setOfflineProfile((current) => current ? {
       ...current,
       activeSnapshotId: enabled ? current.activeSnapshotId : null,
       deviceSettings: { ...current.deviceSettings, enabled }
     } : current);
-    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    setOfflineSummary(summary);
     hasScheduledOfflineRefresh.current = null;
     if (offlineTargetRefreshTimer.current !== null) {
       window.clearTimeout(offlineTargetRefreshTimer.current);
@@ -3043,8 +3170,11 @@ export function App() {
 
   async function handleClearOfflineCache() {
     if (!offlineScope) return;
+    const sessionVersion = authSessionVersion.current;
     await clearOfflineCache(offlineScope);
-    setOfflineSummary(await getOfflineCacheSummary(offlineScope));
+    const summary = await getOfflineCacheSummary(offlineScope);
+    if (sessionVersion !== authSessionVersion.current) return;
+    setOfflineSummary(summary);
     if (isUsingOfflineData) {
       setOfflineConnectionMode("empty");
       setArticles([]);
@@ -3753,6 +3883,7 @@ export function App() {
   }
 
   async function handleArticleAction(article: ArticleActionTarget, intent: ArticleActionIntent) {
+    const sessionVersion = authSessionVersion.current;
     setPendingArticleAction({ articleId: article.id, intent });
     setArticleActionError(null);
     const previousState =
@@ -3784,6 +3915,7 @@ export function App() {
         article.id,
         request
       );
+      if (sessionVersion !== authSessionVersion.current) return;
       markServerAvailable();
       applyArticleState(article.id, result.state);
       if (shouldLoadPersonalizedRelated) {
@@ -3793,23 +3925,27 @@ export function App() {
         void refreshArticleExplanation(article.id);
       }
     } catch (error) {
+      if (sessionVersion !== authSessionVersion.current) return;
       if (!isUsingOfflineData) await offerOfflineModeForError(error);
+      if (sessionVersion !== authSessionVersion.current) return;
       applyArticleState(article.id, previousState);
       if (shouldLoadPersonalizedRelated) {
         discardPersonalizedRelated(article.id);
       }
       setArticleActionError(actionErrorMessageFor(intent, t));
     } finally {
-      setPendingArticleAction((current) =>
-        current?.articleId === article.id && current.intent === intent ? null : current
-      );
+      if (sessionVersion === authSessionVersion.current) {
+        setPendingArticleAction((current) =>
+          current?.articleId === article.id && current.intent === intent ? null : current
+        );
+      }
     }
   }
 
   function handleIgnoreArticle(articleId: string) {
     if (isUsingOfflineData) return;
     const article = articlesRef.current.find((candidate) => candidate.id === articleId);
-    const state = article?.state ?? articleStateById.current.get(articleId);
+    const state = articleStateById.current.get(articleId) ?? article?.state;
     if (!state || articleInteractionStatusForState(state) !== "unseen") {
       return;
     }
@@ -3873,7 +4009,9 @@ export function App() {
     if (batch.length === 0) {
       return;
     }
+    const sessionVersion = authSessionVersion.current;
     void postIgnoredArticles(batch).finally(() => {
+      if (sessionVersion !== authSessionVersion.current) return;
       for (const item of batch) {
         ignoredArticleInFlightIds.current.delete(item.articleId);
       }
@@ -3882,6 +4020,10 @@ export function App() {
   }
 
   async function postIgnoredArticles(batch: IgnoredArticleQueueItem[]) {
+    const sessionVersion = authSessionVersion.current;
+    const sentVersions = new Map(batch.map(({ articleId }) =>
+      [articleId, articleStateVersions.current.get(articleId) ?? 0]
+    ));
     const abortController =
       typeof AbortController === "undefined" ? null : new AbortController();
     const timeout =
@@ -3903,8 +4045,11 @@ export function App() {
         },
         abortController ? { signal: abortController.signal } : undefined
       );
+      if (sessionVersion !== authSessionVersion.current) return;
       for (const item of result.data) {
+        // Passive exposure may not overwrite any action made while this request was in flight.
         if (
+          sentVersions.get(item.articleId) === (articleStateVersions.current.get(item.articleId) ?? 0) &&
           selectedArticleIdRef.current !== item.articleId &&
           !openedArticleIds.current.has(item.articleId)
         ) {
@@ -3912,6 +4057,7 @@ export function App() {
         }
       }
     } catch {
+      if (sessionVersion !== authSessionVersion.current) return;
       for (const item of batch) {
         ignoredArticleIds.current.delete(item.articleId);
       }
@@ -3929,6 +4075,7 @@ export function App() {
     metadata: ReadProgressMetadata,
     options: ReadProgressPostOptions = {}
   ) {
+    const sessionVersion = authSessionVersion.current;
     const request: ArticleActionRequest = {
       type: "read_progress",
       progress,
@@ -3975,6 +4122,7 @@ export function App() {
         return;
       }
       const result = await dibaoApi.postArticleAction(articleId, request);
+      if (sessionVersion !== authSessionVersion.current) return;
       markServerAvailable();
       applyArticleState(articleId, result.state);
     } catch (error) {
@@ -5387,13 +5535,18 @@ function isRelatedSearchResponse(response: unknown): response is RelatedSearchRe
 }
 
 async function rememberAuthenticatedOfflineSession(
-  username: string
+  username: string,
+  explicitLogin = false,
+  isCurrentSession = () => true
 ): Promise<OfflineProfileRecord> {
   const scopeKey = offlineScopeKey(username);
   if (await isOfflineScopeRevoked(scopeKey)) {
+    if (!explicitLogin || !isCurrentSession()) throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
     await clearOfflineScope(scopeKey);
+    if (!isCurrentSession()) throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
     await clearOfflineScopeRevocation(scopeKey);
   }
+  if (!isCurrentSession()) throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
   return await rememberOfflineSession(username);
 }
 

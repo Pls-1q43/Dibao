@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import Database from "better-sqlite3";
+import { SqliteArticleRepository, SqliteFeedRepository } from "@dibao/db";
 import { resolve } from "node:path";
 import { startFixtureServer } from "./fixtures.js";
 
@@ -47,6 +48,12 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
 
     await expect(page.getByRole("link", { name: /E2E Article Beta/ })).toBeVisible();
 
+    // First setup must retain its offline scope without a reload or a second login.
+    await page.getByRole("link", { name: "设置", exact: true }).click();
+    const firstSetupToggle = page.getByRole("switch", { name: "启用离线阅读" });
+    await firstSetupToggle.check();
+    await expect(firstSetupToggle).toBeChecked();
+    await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
     await page.getByRole("button", { name: "退出" }).click();
     await expect(page.getByRole("heading", { name: "登录邸报" })).toBeVisible();
     await page.getByRole("textbox", { name: "用户名" }).fill("e2e");
@@ -293,6 +300,136 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
   }
 });
 
+test("desktop offline session logout revokes other tabs and rejects a stale auth response", async ({ page, context }) => {
+  await loginDesktop(page);
+  await page.getByRole("link", { name: "设置", exact: true }).click();
+  await page.getByRole("switch", { name: "启用离线阅读" }).check();
+  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+
+  const reader = await context.newPage();
+  const staleStartup = await context.newPage();
+  let releaseSession!: () => void;
+  let sessionCaptured!: () => void;
+  const sessionGate = new Promise<void>((resolve) => { releaseSession = resolve; });
+  const captured = new Promise<void>((resolve) => { sessionCaptured = resolve; });
+  try {
+    await blockExternalBrowserRequests(reader);
+    await reader.goto("/");
+    await expect(reader.getByRole("link", { name: "最新", exact: true })).toBeVisible();
+    await reader.route("**/api/auth/session", (route) => route.abort("failed"));
+    await reader.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await reader.getByRole("button", { name: "切换到离线模式" }).click();
+    await reader.getByRole("link", { name: "最新", exact: true }).click();
+    await reader.getByRole("link", { name: /E2E Article/ }).first().click();
+    await expect(reader.getByTestId("reader-scroll-container")).toBeVisible();
+
+    // A pending authenticated response from before logout must never lift revocation.
+    await blockExternalBrowserRequests(staleStartup);
+    await staleStartup.route("**/api/auth/session", async (route) => {
+      const response = await route.fetch();
+      sessionCaptured();
+      await sessionGate;
+      await route.fulfill({ response });
+    });
+    // The offline-mode preference is shared; clear only that preference before this startup.
+    await reader.evaluate(() => localStorage.removeItem("dibao:offline-reading:active-mode:v1"));
+    await staleStartup.goto("/", { waitUntil: "domcontentloaded" });
+    await captured;
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "退出", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "登录邸报" })).toBeVisible();
+    await expect(reader.getByRole("heading", { name: "登录邸报" })).toBeVisible();
+    await expect(reader.getByTestId("reader-scroll-container")).toHaveCount(0);
+    releaseSession();
+    await expect(staleStartup.getByRole("heading", { name: "登录邸报" })).toBeVisible();
+    await expect.poll(() => offlineProfileCount(staleStartup)).toBe(0);
+    await staleStartup.unroute("**/api/auth/session");
+    await staleStartup.reload();
+    await expect(staleStartup.getByRole("heading", { name: "登录邸报" })).toBeVisible();
+    await expect.poll(() => offlineProfileCount(staleStartup)).toBe(0);
+
+    await loginDesktop(page);
+    await page.getByRole("link", { name: "设置", exact: true }).click();
+    await expect(page.getByRole("switch", { name: "启用离线阅读" })).not.toBeChecked();
+    await expect.poll(() => hasActiveOfflineSnapshot(page)).toBe(false);
+  } finally {
+    releaseSession();
+    await reader.close();
+    await staleStartup.close();
+  }
+});
+
+for (const action of [
+  { name: "favorite", label: "收藏这篇文章", attribute: "data-favorited" },
+  { name: "like", label: "点赞这篇文章", attribute: "data-liked" },
+  { name: "read-later", label: "稍后读这篇文章", attribute: "data-read-later" }
+]) {
+  test(`desktop stale impression cannot overwrite ${action.name} or its persisted overlay`, async ({ page }) => {
+    const feedId = `e2e-delayed-impression-${action.name}`;
+    const articleId = `${feedId}-0`;
+    const db = new Database(e2eDatabasePath);
+    db.pragma("foreign_keys = ON");
+    const now = Date.now();
+    new SqliteFeedRepository(db).upsert({ id: feedId, title: feedId, feedUrl: `https://example.test/${feedId}`, now });
+    const articles = new SqliteArticleRepository(db);
+    for (let index = 0; index < 12; index += 1) {
+      articles.upsert({
+        id: `${feedId}-${index}`, feedId, title: `Delayed impression ${index}`,
+        url: `https://example.test/${feedId}/${index}`, dedupeKey: `${feedId}-${index}`,
+        summary: "An untouched article for the passive-exposure response race.",
+        publishedAt: now - index * 1000, now
+      });
+    }
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let captured!: () => void;
+    const hasResponse = new Promise<void>((resolve) => { captured = resolve; });
+    let delivered!: () => void;
+    const didDeliver = new Promise<void>((resolve) => { delivered = resolve; });
+    try {
+      await loginDesktop(page);
+      await page.getByRole("link", { name: "最新", exact: true }).click();
+      const row = page.locator(`article[data-article-id="${articleId}"]`);
+      await expect(row).toHaveAttribute("data-interaction-status", "unseen");
+      await page.route("**/api/articles/actions/bulk", async (route) => {
+        const input = route.request().postDataJSON() as { actions: { articleId: string }[] };
+        if (!input.actions.some((item) => item.articleId === articleId)) return route.continue();
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        captured();
+        await gate;
+        await route.fulfill({ response });
+        delivered();
+      });
+      // Let IntersectionObserver see the row before scrolling it fully past the viewport.
+      await row.scrollIntoViewIfNeeded();
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      await page.getByTestId("article-list-scroll-container").evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event("scroll"));
+      });
+      await hasResponse;
+      await row.scrollIntoViewIfNeeded();
+      const actionResponse = page.waitForResponse(`**/api/articles/${articleId}/actions`);
+      await row.getByRole("button", { name: action.label, exact: true }).click();
+      expect((await actionResponse).ok()).toBe(true);
+      await expect(row).toHaveAttribute(action.attribute, "true");
+      release();
+      await didDeliver;
+      await expect(row).toHaveAttribute(action.attribute, "true");
+      await expect(row).toHaveAttribute("data-interaction-status", "saved");
+      await page.reload();
+      await expect(row).toHaveAttribute(action.attribute, "true");
+      await expect(row).toHaveAttribute("data-interaction-status", "saved");
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      db.prepare("delete from feeds where id = ?").run(feedId);
+      db.close();
+    }
+  });
+}
+
 test("desktop full content extraction can preview and backfill current feed items", async ({
   page
 }) => {
@@ -436,6 +573,19 @@ async function hasActiveOfflineSnapshot(
       };
     })
   );
+}
+
+async function offlineProfileCount(page: import("@playwright/test").Page): Promise<number> {
+  return page.evaluate(() => new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open("dibao-offline-reading");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const count = database.transaction("profiles", "readonly").objectStore("profiles").count();
+      count.onerror = () => reject(count.error);
+      count.onsuccess = () => { database.close(); resolve(count.result); };
+    };
+  }));
 }
 
 async function saveFeedAndWait(page: import("@playwright/test").Page): Promise<void> {

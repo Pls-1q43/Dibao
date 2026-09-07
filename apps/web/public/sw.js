@@ -1,4 +1,4 @@
-const CACHE_VERSION = "dibao-pwa-v13";
+const CACHE_VERSION = "dibao-pwa-v14";
 const APP_SHELL_CACHE = `${CACHE_VERSION}:app-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const ARTICLE_IMAGE_CACHE_PREFIX = "dibao:article-images:v1:";
@@ -7,6 +7,11 @@ const MAX_ARTICLE_IMAGE_URLS_PER_MESSAGE = 4_000;
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 10_000;
 const NAVIGATION_FETCH_TIMEOUT_MS = 8_000;
 const imageScopesByClientId = new Map();
+const imageScopeAssignments = new Map();
+const imageCacheGenerations = new Map();
+const imageScopeOperations = new Map();
+const OFFLINE_DATABASE_NAME = "dibao-offline-reading";
+const OFFLINE_REVOKED_SCOPE_PREFIX = "offline-reading:revoked-scope:v1:";
 
 const PUBLIC_ICON_URLS = [
   "/logo.svg",
@@ -62,27 +67,24 @@ self.addEventListener("message", (event) => {
   if (message && message.type === "SET_OFFLINE_SCOPE") {
     const clientId = event.source?.id;
     if (clientId) {
-      if (validScopeKey(message.scopeKey)) {
-        imageScopesByClientId.set(clientId, message.scopeKey);
-      } else {
-        imageScopesByClientId.delete(clientId);
-      }
+      event.waitUntil(setOfflineImageScope(clientId, message.scopeKey, message.cacheGeneration));
     }
     return;
   }
   if (message && message.type === "CACHE_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
-    event.waitUntil(cacheArticleImages(message.scopeKey, validHttpUrls(message.urls)));
+    event.waitUntil(cacheArticleImages(message.scopeKey, validHttpUrls(message.urls), message.cacheGeneration));
     return;
   }
   if (message && message.type === "PRUNE_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
-    event.waitUntil(pruneArticleImages(message.scopeKey, validHttpUrls(message.urls)));
+    event.waitUntil(pruneArticleImages(message.scopeKey, validHttpUrls(message.urls), message.cacheGeneration));
     return;
   }
   if (message && message.type === "CLEAR_ARTICLE_IMAGES" && validScopeKey(message.scopeKey)) {
     event.waitUntil(
-      caches.delete(articleImageCacheName(message.scopeKey)).finally(() => {
-        event.ports[0]?.postMessage({ ok: true });
-      })
+      clearArticleImageScope(message.scopeKey).then(
+        () => event.ports?.[0]?.postMessage({ ok: true }),
+        () => event.ports?.[0]?.postMessage({ ok: false })
+      )
     );
   }
 });
@@ -123,18 +125,25 @@ self.addEventListener("fetch", (event) => {
 
 async function precacheAppShell() {
   const cache = await caches.open(APP_SHELL_CACHE);
-  const shellResponse = await fetch(new Request("/index.html", { cache: "reload" }));
+  const shellResponse = await fetchWithTimeout(
+    new Request("/index.html", { cache: "reload" }),
+    NAVIGATION_FETCH_TIMEOUT_MS
+  );
   if (!shellResponse.ok || !isHtmlResponse(shellResponse)) {
     throw new Error("Unable to cache the Dibao application shell");
   }
 
+  await cacheDiscoveredStaticAssets(cache, await shellResponse.clone().text(), true);
+  // Publish shell pointers only after their build assets are durable.
   await cache.put("/index.html", shellResponse.clone());
   await cache.put("/", shellResponse.clone());
-  await cacheDiscoveredStaticAssets(cache, await shellResponse.text(), true);
 
   await Promise.all(OPTIONAL_APP_SHELL_URLS.map(async (url) => {
     try {
-      const response = await fetch(new Request(url, { cache: "reload" }));
+      const response = await fetchWithTimeout(
+        new Request(url, { cache: "reload" }),
+        NAVIGATION_FETCH_TIMEOUT_MS
+      );
       if (response.ok) {
         await cache.put(url, response);
       }
@@ -144,10 +153,11 @@ async function precacheAppShell() {
   }));
 }
 
-async function cacheArticleImages(scopeKey, urls) {
+async function cacheArticleImages(scopeKey, urls, cacheGeneration) {
   if (urls.length === 0) return;
-  const cache = await caches.open(articleImageCacheName(scopeKey));
+  const access = imageScopeAccess(scopeKey, cacheGeneration);
   for (const url of urls) {
+    if (!await isImageScopeAuthorized(access)) return;
     const request = new Request(url, {
       mode: "no-cors",
       credentials: "omit",
@@ -155,8 +165,9 @@ async function cacheArticleImages(scopeKey, urls) {
     });
     try {
       const response = await fetchWithTimeout(request, ARTICLE_IMAGE_FETCH_TIMEOUT_MS);
+      if (!await isImageScopeAuthorized(access)) return;
       if (isCacheableImageResponse(response)) {
-        await putArticleImageWithTrim(cache, request, response);
+        await withAuthorizedImageCache(access, (cache) => putArticleImageWithTrim(cache, request, response));
       }
     } catch {
       // Article images are best effort and never block the text snapshot.
@@ -164,25 +175,135 @@ async function cacheArticleImages(scopeKey, urls) {
   }
 }
 
-async function pruneArticleImages(scopeKey, urls) {
-  const cache = await caches.open(articleImageCacheName(scopeKey));
-  const retained = new Set(urls);
-  const keys = await cache.keys();
-  await Promise.all(keys.filter((request) => !retained.has(request.url)).map((request) => cache.delete(request)));
+async function clearArticleImageScope(scopeKey) {
+  imageCacheGenerations.set(scopeKey, (imageCacheGenerations.get(scopeKey) ?? 0) + 1);
+  for (const [clientId, scope] of imageScopesByClientId) {
+    if (scope.scopeKey === scopeKey) imageScopesByClientId.delete(clientId);
+  }
+  for (const [clientId, scope] of imageScopeAssignments) {
+    if (scope.scopeKey === scopeKey) imageScopeAssignments.delete(clientId);
+  }
+  // Wait for earlier cache writes, not downloads, before acknowledging deletion.
+  await withImageScopeOperation(scopeKey, () => caches.delete(articleImageCacheName(scopeKey)));
 }
 
-async function articleImageCacheFirst(request, scopeKey) {
-  const cache = await caches.open(articleImageCacheName(scopeKey));
-  const cached = await cache.match(request, { ignoreVary: true });
-  if (cached) return cached;
+async function pruneArticleImages(scopeKey, urls, cacheGeneration) {
+  await withAuthorizedImageCache(imageScopeAccess(scopeKey, cacheGeneration), async (cache) => {
+    const retained = new Set(urls);
+    const keys = await cache.keys();
+    await Promise.all(keys.filter((request) => !retained.has(request.url)).map((request) => cache.delete(request)));
+  });
+}
+
+async function articleImageCacheFirst(request, access) {
   try {
-    const response = await fetchWithTimeout(request, ARTICLE_IMAGE_FETCH_TIMEOUT_MS);
-    if (isCacheableImageResponse(response)) {
-      await putArticleImageWithTrim(cache, request, response.clone());
+    // An already-bound client can follow ordinary snapshot/action generations;
+    // CLEAR invalidates the binding itself before any acknowledgement.
+    const state = await readOfflineImageAuthorization(access.scopeKey);
+    if (!state || state.revoked || state.profile?.deviceSettings?.enabled !== true ||
+        (imageCacheGenerations.get(access.scopeKey) ?? 0) !== access.generation) {
+      return new Response(null, { status: 204 });
     }
+    access = { ...access, cacheGeneration: state.profile.cacheGeneration ?? null };
+    const cached = await withAuthorizedImageCache(access, (cache) => cache.match(request, { ignoreVary: true }));
+    if (!await isImageScopeAuthorized(access)) return new Response(null, { status: 204 });
+    if (cached) return cached;
+    const response = await fetchWithTimeout(request, ARTICLE_IMAGE_FETCH_TIMEOUT_MS);
+    if (!await isImageScopeAuthorized(access)) return new Response(null, { status: 204 });
+    if (isCacheableImageResponse(response)) {
+      await withAuthorizedImageCache(access, (cache) => putArticleImageWithTrim(cache, request, response.clone()));
+    }
+    if (!await isImageScopeAuthorized(access)) return new Response(null, { status: 204 });
     return response;
   } catch {
     return new Response(null, { status: 204, statusText: "Offline image unavailable" });
+  }
+}
+
+function imageScopeAccess(scopeKey, cacheGeneration) {
+  return { scopeKey, cacheGeneration, generation: imageCacheGenerations.get(scopeKey) ?? 0 };
+}
+
+async function setOfflineImageScope(clientId, scopeKey, cacheGeneration) {
+  imageScopesByClientId.delete(clientId);
+  if (!validScopeKey(scopeKey)) {
+    imageScopeAssignments.delete(clientId);
+    return;
+  }
+  const access = imageScopeAccess(scopeKey, cacheGeneration);
+  imageScopeAssignments.set(clientId, access);
+  const authorized = await isImageScopeAuthorized(access);
+  if (imageScopeAssignments.get(clientId) !== access) return;
+  imageScopeAssignments.delete(clientId);
+  if (authorized && (imageCacheGenerations.get(scopeKey) ?? 0) === access.generation) {
+    imageScopesByClientId.set(clientId, access);
+  }
+}
+
+async function isImageScopeAuthorized(access) {
+  if (!access || !validScopeKey(access.scopeKey) ||
+      !(access.cacheGeneration === null || typeof access.cacheGeneration === "string") ||
+      (imageCacheGenerations.get(access.scopeKey) ?? 0) !== access.generation) return false;
+  const state = await readOfflineImageAuthorization(access.scopeKey);
+  return Boolean(state && !state.revoked && state.profile?.deviceSettings?.enabled === true &&
+    (state.profile.cacheGeneration ?? null) === access.cacheGeneration &&
+    (imageCacheGenerations.get(access.scopeKey) ?? 0) === access.generation);
+}
+
+async function withImageScopeOperation(scopeKey, work) {
+  const previous = imageScopeOperations.get(scopeKey) ?? Promise.resolve();
+  const operation = previous.catch(() => undefined).then(work);
+  imageScopeOperations.set(scopeKey, operation);
+  try {
+    return await operation;
+  } finally {
+    if (imageScopeOperations.get(scopeKey) === operation) imageScopeOperations.delete(scopeKey);
+  }
+}
+
+async function withAuthorizedImageCache(access, work) {
+  return withImageScopeOperation(access.scopeKey, async () => {
+    if (!await isImageScopeAuthorized(access)) return undefined;
+    const cache = await caches.open(articleImageCacheName(access.scopeKey));
+    if (!await isImageScopeAuthorized(access)) return undefined;
+    const result = await work(cache);
+    return await isImageScopeAuthorized(access) ? result : undefined;
+  });
+}
+
+async function readOfflineImageAuthorization(scopeKey) {
+  if (typeof indexedDB === "undefined") return null;
+  try {
+    if (typeof indexedDB.databases === "function" &&
+        !(await indexedDB.databases()).some((database) => database.name === OFFLINE_DATABASE_NAME)) return null;
+    return await new Promise((resolve) => {
+      const request = indexedDB.open(OFFLINE_DATABASE_NAME);
+      // An absent database (including a deletion race) must never create a blank schema.
+      request.onupgradeneeded = () => request.transaction.abort();
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+      request.onsuccess = () => {
+        const database = request.result;
+        try {
+          const transaction = database.transaction(["profiles", "meta"], "readonly");
+          const profile = transaction.objectStore("profiles").get(scopeKey);
+          const revoked = transaction.objectStore("meta").get(`${OFFLINE_REVOKED_SCOPE_PREFIX}${scopeKey}`);
+          transaction.oncomplete = () => {
+            database.close();
+            resolve({ profile: profile.result, revoked: Boolean(revoked.result) });
+          };
+          transaction.onerror = transaction.onabort = () => {
+            database.close();
+            resolve(null);
+          };
+        } catch {
+          database.close();
+          resolve(null);
+        }
+      };
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -240,10 +361,10 @@ async function networkFirstNavigation(request) {
   try {
     const response = await fetchWithTimeout(request, NAVIGATION_FETCH_TIMEOUT_MS);
     if (response.ok && isHtmlResponse(response)) {
+      const html = await response.clone().text();
+      await cacheDiscoveredStaticAssets(cache, html, true);
       await cache.put("/index.html", response.clone());
       await cache.put("/", response.clone());
-      const html = await response.clone().text();
-      await cacheDiscoveredStaticAssets(cache, html);
     }
     if (response.status >= 500) {
       return (await cachedNavigationResponse(cache)) ?? response;
@@ -342,8 +463,15 @@ async function cacheDiscoveredStaticAssets(cache, html, required = false) {
   }
 
   const cacheAsset = async (url) => {
-    const response = await fetch(new Request(url, { cache: "reload" }));
-    if (!response.ok) {
+    if (url.startsWith("/assets/")) {
+      const cached = await cache.match(url);
+      if (cached?.ok && !isHtmlResponse(cached)) return;
+    }
+    const response = await fetchWithTimeout(
+      new Request(new URL(url, self.location.origin), { cache: "reload" }),
+      NAVIGATION_FETCH_TIMEOUT_MS
+    );
+    if (!response.ok || (url.startsWith("/assets/") && isHtmlResponse(response))) {
       throw new Error(`Unable to cache application asset: ${url}`);
     }
     await cache.put(url, response);

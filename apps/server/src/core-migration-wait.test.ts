@@ -23,6 +23,36 @@ afterEach(() => {
 });
 
 describe("worker core migration wait", () => {
+  it("keeps waiting across diagnostic deadlines without interrupting the migration", async () => {
+    const dbPath = tempDatabasePath();
+    const db = openDatabase(dbPath);
+    const migrations = loadDefaultMigrations();
+    let now = 0;
+    let timeouts = 0;
+    try {
+      runMigrations(db, migrations.slice(0, -1));
+      const result = await waitForCoreMigrationsReady({
+        databasePath: dbPath, timeoutMs: 200, pollIntervalMs: 100,
+        continueOnTimeout: true, now: () => now,
+        onTimeout: () => { timeouts++; },
+        sleep: async (ms) => {
+          now += ms;
+          if (now >= 700) runMigrations(db);
+        }
+      });
+      expect(timeouts).toBe(3);
+      expect(result.ready).toBe(true);
+    } finally { db.close(); }
+  });
+
+  it("allows graceful shutdown while waiting indefinitely", async () => {
+    const controller = new AbortController();
+    await expect(waitForCoreMigrationsReady({
+      databasePath: tempDatabasePath(), timeoutMs: 0, continueOnTimeout: true,
+      signal: controller.signal, sleep: async () => { controller.abort(); }
+    })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("returns immediately when the latest core migration has been applied", async () => {
     const dbPath = tempDatabasePath();
     const db = openDatabase(dbPath, { migrate: false });

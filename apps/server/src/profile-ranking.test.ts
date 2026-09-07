@@ -301,7 +301,11 @@ describe("profile algorithm and recommendation ranking", () => {
         settings,
         profileRebuild: new ProfileRebuildService({
           db,
-          profile
+          profile,
+          ranking: new RecommendationRankingService({
+            db, embeddings: fixture.embeddings, profiles: fixture.profiles,
+            rankings: fixture.rankings, now: () => 5000
+          })
         }),
         now: () => 5000
       });

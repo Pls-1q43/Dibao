@@ -386,6 +386,78 @@ describe("server API vertical slice", () => {
     }
   });
 
+  it("sandboxes authenticated plugin assets and refuses installed or disabled plugin resources", async () => {
+    const db = createEmptyDatabase();
+    new SqliteAppSettingsRepository(db).setJson("telemetry.enabled", false);
+    const files = {
+      "web/index.html": "<script>window.pluginProbe = true</script>",
+      "web/probe.svg": '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/feeds")</script></svg>',
+      "web/probe.xml": '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/feeds")</script></svg>',
+      "web/probe.xhtml": '<html xmlns="http://www.w3.org/1999/xhtml"><script>fetch("/api/feeds")</script></html>',
+      "web/panel.css": "body { color: black; }"
+    };
+    const signedPackage = signedPluginPackageFixture({
+      manifest: {
+        manifestVersion: 1, id: "com.example.asset-security", name: "Asset security test",
+        version: "1.0.0", publisher: "Example",
+        dibao: { minVersion: "0.1.0", maxVersion: "<1.0.0" }, capabilities: []
+      },
+      files
+    });
+    const app = buildRealServer({
+      db, logger: false, cookieSecure: false, backgroundJobs: false,
+      recordForegroundActivity: false, upgradeAutoStart: false,
+      officialPluginsDir: createTempDir(), pluginDataDir: createTempDir(),
+      enableUserPluginInstall: true, pluginTrustedPublicKeys: signedPackage.trustedPublicKeys
+    });
+    const basePath = "/api/plugins/com.example.asset-security";
+    try {
+      const setup = await postJson(app, "/api/auth/setup", {
+        username: "asset-review", password: "synthetic-review-password"
+      });
+      expect(setup.statusCode, setup.body).toBe(200);
+      const cookie = cookieHeaderFromSetCookie(setup.headers["set-cookie"]);
+      const installed = await injectJsonWithCookie(app, "POST", "/api/plugins/install", cookie, {
+        package: signedPackage.packageContent
+      });
+      expect(installed.statusCode, installed.body).toBe(200);
+      for (const method of ["GET", "HEAD"] as const) {
+        const anonymous = await app.inject({ method, url: `${basePath}/assets/web/probe.svg` });
+        expect(anonymous.statusCode).toBe(401);
+        const inactive = await app.inject({ method, url: `${basePath}/assets/web/probe.svg`, headers: { cookie } });
+        expect(inactive.statusCode).toBe(404);
+      }
+      const enabled = await app.inject({ method: "POST", url: `${basePath}/enable`, headers: { cookie } });
+      expect(enabled.statusCode, enabled.body).toBe(200);
+      for (const [path, content] of Object.entries(files)) {
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await app.inject({ method, url: `${basePath}/assets/${path}`, headers: { cookie } });
+          expect(response.statusCode, response.body).toBe(200);
+          const csp = String(response.headers["content-security-policy"]);
+          expect(csp).toContain("sandbox allow-scripts");
+          expect(csp).not.toContain("allow-same-origin");
+          expect(csp).toContain("connect-src 'none'");
+          expect(response.headers["cache-control"]).toBe("no-store");
+          expect(response.headers["x-content-type-options"]).toBe("nosniff");
+          expect(response.headers["referrer-policy"]).toBe("no-referrer");
+          expect(response.body).toBe(method === "GET" ? content : "");
+        }
+      }
+      const disabled = await app.inject({ method: "POST", url: `${basePath}/disable`, headers: { cookie } });
+      expect(disabled.statusCode, disabled.body).toBe(200);
+      for (const path of Object.keys(files)) {
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await app.inject({ method, url: `${basePath}/assets/${path}`, headers: { cookie } });
+          expect(response.statusCode).toBe(404);
+          expect(response.headers["cache-control"]).toBe("no-store");
+        }
+      }
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("resolves localized plugin manifest strings and exposes locale to plugin servers", async () => {
     const db = createEmptyDatabase();
     const pluginDataDir = createTempDir();

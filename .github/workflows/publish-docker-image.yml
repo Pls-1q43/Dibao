@@ -47,6 +47,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install browser for offline storage regression tests
+        run: npx playwright install --with-deps chromium
+
       - name: Run release source gates
         shell: bash
         run: |

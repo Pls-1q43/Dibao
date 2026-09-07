@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
+      "@dibao/ranking": fileURLToPath(new URL("../../packages/ranking/src/index.ts", import.meta.url)),
       "@dibao/db": fileURLToPath(new URL("../../packages/db/src/index.ts", import.meta.url)),
       "@dibao/rss": fileURLToPath(new URL("../../packages/rss/src/index.ts", import.meta.url)),
       "@dibao/plugin-sdk": fileURLToPath(

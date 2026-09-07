@@ -96,6 +96,12 @@ export class JobRunner {
     return this.options.jobs.resetStaleRunning(this.now());
   }
 
+  async waitForIdle(): Promise<void> {
+    while (this.isDraining) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
   async drainDue(): Promise<number> {
     if (this.isDraining) {
       return 0;

@@ -17,7 +17,7 @@ const http = startProcess("http", "apps/server/dist/index.js", {
     : process.env.DIBAO_BACKGROUND_JOBS === "false"
       ? "false"
       : "true",
-  DIBAO_PROCESS_ROLE: "http"
+  DIBAO_PROCESS_ROLE: useWorkerProcess ? "http" : "standalone"
 });
 managed.push(http);
 watchProcess(http);
@@ -111,7 +111,7 @@ async function shutdown(code: number): Promise<void> {
   await Promise.all(managed.map((proc) => waitForExit(proc.child, 8_000)));
 
   for (const proc of managed) {
-    if (!proc.child.killed && proc.child.exitCode === null) {
+    if (proc.child.exitCode === null && proc.child.signalCode === null) {
       proc.child.kill("SIGKILL");
     }
   }

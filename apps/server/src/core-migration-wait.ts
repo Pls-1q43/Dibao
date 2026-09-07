@@ -30,6 +30,9 @@ export type WaitForCoreMigrationsReadyOptions = {
   sleep?: (ms: number) => Promise<void>;
   onWait?: (readiness: CoreMigrationReadiness) => void;
   onReady?: (readiness: CoreMigrationReadiness) => void;
+  continueOnTimeout?: boolean;
+  onTimeout?: (readiness: CoreMigrationReadiness) => void;
+  signal?: AbortSignal;
 };
 
 export class WorkerCoreMigrationWaitTimeoutError extends Error {
@@ -57,11 +60,17 @@ export async function waitForCoreMigrationsReady(
   const pollIntervalMs = Math.max(100, Math.floor(options.pollIntervalMs ?? DEFAULT_WORKER_CORE_MIGRATION_POLL_MS));
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? delay;
-  const deadline = now() + timeoutMs;
+  let deadline = now() + timeoutMs;
   let waitLogged = false;
   let readiness = readCoreMigrationReadiness(options.databasePath, expectedVersion);
 
-  while (!readiness.ready && now() < deadline) {
+  while (!readiness.ready) {
+    options.signal?.throwIfAborted();
+    if (now() >= deadline) {
+      if (!options.continueOnTimeout) break;
+      options.onTimeout?.(readiness);
+      deadline = now() + Math.max(pollIntervalMs, timeoutMs);
+    }
     if (!waitLogged) {
       waitLogged = true;
       options.onWait?.(readiness);

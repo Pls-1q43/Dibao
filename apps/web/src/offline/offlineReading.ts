@@ -16,6 +16,12 @@ import {
   type ReadLaterArticleSort
 } from "../api.js";
 import { articleInteractionStatusForState } from "../articleListState.js";
+import {
+  optimisticOpenedState,
+  optimisticReadProgressState,
+  optimisticStateForArticleAction,
+  savedOptimisticState
+} from "../app/shared.js";
 
 const DATABASE_NAME = "dibao-offline-reading";
 const DATABASE_VERSION = 1;
@@ -56,6 +62,7 @@ export type OfflineProfileRecord = {
   deviceSettings: OfflineDeviceSettings;
   lastConnectedAt: number | null;
   updatedAt: number;
+  cacheGeneration?: string;
 };
 
 export type OfflineSnapshotRecord = {
@@ -144,7 +151,6 @@ type MetaRecord = {
 
 let openDatabasePromise: Promise<IDBDatabase> | null = null;
 let inMemorySync: Promise<void> = Promise.resolve();
-let profileUpdateQueue: Promise<void> = Promise.resolve();
 
 export function offlineScopeKey(username: string, origin = window.location.origin): string {
   return `${origin}::${username}`;
@@ -189,9 +195,7 @@ export function isOfflineScopeRevokedInStorage(
 
 export async function isOfflineScopeRevoked(scopeKey: string): Promise<boolean> {
   const localMarker = readStorageMarker(revokedScopeStorageKey(scopeKey));
-  if (localMarker !== null) {
-    return localMarker === "1";
-  }
+  if (localMarker === "1") return true;
   if (!isOfflineStorageSupported()) {
     return false;
   }
@@ -209,10 +213,12 @@ export async function markOfflineScopeRevoked(scopeKey: string): Promise<void> {
   let storedInDatabase = false;
   if (isOfflineStorageSupported()) {
     try {
-      await putRecord(META_STORE, {
-        key: revokedScopeMetaKey(scopeKey),
-        value: "1"
-      } satisfies MetaRecord);
+      await offlineTransaction([META_STORE, PROFILES_STORE], async (transaction) => {
+        transaction.objectStore(META_STORE).put({ key: revokedScopeMetaKey(scopeKey), value: "1" } satisfies MetaRecord);
+        const store = transaction.objectStore(PROFILES_STORE);
+        const profile = await requestResult<OfflineProfileRecord | undefined>(store.get(scopeKey));
+        if (profile) store.put({ ...profile, cacheGeneration: createClientActionId() });
+      });
       storedInDatabase = true;
     } catch {
       // The localStorage marker still prevents a cold offline bootstrap.
@@ -223,17 +229,14 @@ export async function markOfflineScopeRevoked(scopeKey: string): Promise<void> {
   }
   setOfflineModeActive(null);
   activateOfflineImageScope(null);
+  notifyOfflineStatusChanged(scopeKey);
 }
 
 export async function clearOfflineScopeRevocation(scopeKey: string): Promise<void> {
-  setStorageMarker(revokedScopeStorageKey(scopeKey), "0");
   if (isOfflineStorageSupported()) {
-    try {
-      await deleteRecord(META_STORE, revokedScopeMetaKey(scopeKey));
-    } catch {
-      // The local tombstone takes precedence over a stale durable marker.
-    }
+    await deleteRecord(META_STORE, revokedScopeMetaKey(scopeKey));
   }
+  setStorageMarker(revokedScopeStorageKey(scopeKey), "0");
 }
 
 export function hasPendingServerLogoutInStorage(
@@ -303,30 +306,30 @@ export async function clearPendingServerLogout(
 export async function rememberOfflineSession(username: string): Promise<OfflineProfileRecord> {
   const origin = window.location.origin;
   const scopeKey = offlineScopeKey(username, origin);
-  const existing = await getRecord<OfflineProfileRecord>(PROFILES_STORE, scopeKey);
-  const profile: OfflineProfileRecord = existing ? normalizeOfflineProfile(existing) : {
-    scopeKey,
-    origin,
-    username,
-    activeSnapshotId: null,
-    settings: null,
-    feeds: [],
-    folders: [],
-    deviceSettings: {
-      enabled: false,
-      recommendedTarget: DEFAULT_OFFLINE_RECOMMENDED_TARGET
-    },
-    lastConnectedAt: null,
-    updatedAt: Date.now()
-  };
-  profile.updatedAt = Date.now();
-  await putRecords([
-    { store: PROFILES_STORE, value: profile },
-    {
-      store: META_STORE,
-      value: { key: lastScopeKey(origin), value: scopeKey } satisfies MetaRecord
-    }
-  ]);
+  const profile = await offlineTransaction([PROFILES_STORE, META_STORE], async (transaction) => {
+    if (await scopeRevokedInTransaction(transaction, scopeKey)) throw new Error("Offline session is revoked");
+    const existing = await requestResult<OfflineProfileRecord | undefined>(transaction.objectStore(PROFILES_STORE).get(scopeKey));
+    const profile: OfflineProfileRecord = existing ? normalizeOfflineProfile(existing) : {
+      scopeKey,
+      origin,
+      username,
+      activeSnapshotId: null,
+      settings: null,
+      feeds: [],
+      folders: [],
+      deviceSettings: {
+        enabled: false,
+        recommendedTarget: DEFAULT_OFFLINE_RECOMMENDED_TARGET
+      },
+      lastConnectedAt: null,
+      updatedAt: Date.now(),
+      cacheGeneration: createClientActionId()
+    };
+    profile.updatedAt = Date.now();
+    transaction.objectStore(PROFILES_STORE).put(profile);
+    transaction.objectStore(META_STORE).put({ key: lastScopeKey(origin), value: scopeKey } satisfies MetaRecord);
+    return profile;
+  });
   activateOfflineImageScope(profile.deviceSettings.enabled ? scopeKey : null);
   return profile;
 }
@@ -347,8 +350,7 @@ export async function readOfflineBootstrap(): Promise<{
     activateOfflineImageScope(null);
     return null;
   }
-  const storedProfile = await getRecord<OfflineProfileRecord>(PROFILES_STORE, meta.value);
-  const profile = storedProfile ? normalizeOfflineProfile(storedProfile) : null;
+  const profile = await readOfflineProfile(meta.value);
   if (!profile || profile.origin !== origin) {
     return null;
   }
@@ -369,8 +371,13 @@ export async function readOfflineBootstrap(): Promise<{
 export async function readOfflineProfile(
   scopeKey: string
 ): Promise<OfflineProfileRecord | null> {
-  const profile = await getRecord<OfflineProfileRecord>(PROFILES_STORE, scopeKey);
-  return profile ? normalizeOfflineProfile(profile) : null;
+  return await offlineTransaction([PROFILES_STORE, META_STORE], async (transaction) => {
+    if (await scopeRevokedInTransaction(transaction, scopeKey)) return null;
+    const profile = await requestResult<OfflineProfileRecord | undefined>(
+      transaction.objectStore(PROFILES_STORE).get(scopeKey)
+    );
+    return profile ? normalizeOfflineProfile(profile) : null;
+  });
 }
 
 export async function updateOfflineProfile(
@@ -380,17 +387,18 @@ export async function updateOfflineProfile(
     "settings" | "feeds" | "folders" | "lastConnectedAt"
   >>
 ): Promise<void> {
-  profileUpdateQueue = profileUpdateQueue.catch(() => undefined).then(async () => {
-    const storedProfile = await getRecord<OfflineProfileRecord>(PROFILES_STORE, scopeKey);
+  await offlineTransaction([PROFILES_STORE, META_STORE], async (transaction) => {
+    if (await scopeRevokedInTransaction(transaction, scopeKey)) return;
+    const store = transaction.objectStore(PROFILES_STORE);
+    const storedProfile = await requestResult<OfflineProfileRecord | undefined>(store.get(scopeKey));
     if (!storedProfile) return;
     const profile = normalizeOfflineProfile(storedProfile);
-    await putRecord(PROFILES_STORE, {
+    store.put({
       ...profile,
       ...patch,
       updatedAt: Date.now()
     });
   });
-  await profileUpdateQueue;
 }
 
 export async function setOfflineRecommendedTarget(
@@ -403,6 +411,7 @@ export async function setOfflineRecommendedTarget(
     scopeKey,
     recommendedTarget
   );
+  activateOfflineImageScope(scopeKey);
   if (didTrimSnapshot) await pruneOfflineArticles(scopeKey);
   notifyOfflineStatusChanged(scopeKey);
   return recommendedTarget;
@@ -485,7 +494,7 @@ export async function refreshOfflineSnapshot(
     recent: manifest.recent.filter((ref) => availableIds.has(ref.article.id)),
     status: "active"
   };
-  let committed = false;
+  let committed: { cacheGeneration: string | null } | null = null;
   try {
     committed = await commitSnapshot(profile, snapshot, articleRecords);
   } catch (error) {
@@ -496,11 +505,12 @@ export async function refreshOfflineSnapshot(
   if (!committed) {
     return await getOfflineCacheSummary(scopeKey);
   }
+  activateOfflineImageScope(scopeKey);
   const imageUrlsToKeep = offlineArticleImageUrls(
     articleRecords.map((record) => record.detail)
   );
-  cacheArticleImages(scopeKey, articleRecords.map((record) => record.detail));
-  pruneArticleImages(scopeKey, imageUrlsToKeep);
+  cacheArticleImages(scopeKey, articleRecords.map((record) => record.detail), committed.cacheGeneration);
+  pruneArticleImages(scopeKey, imageUrlsToKeep, committed.cacheGeneration);
   await pruneOfflineArticles(scopeKey);
   void requestPersistentOfflineStorage();
   notifyOfflineStatusChanged(scopeKey);
@@ -522,27 +532,37 @@ export async function listOfflineArticles(
           .map((feed) => feed.id)
       )
     : null;
-  const visible = candidates.flatMap((ref) => {
+  const ordered = candidates.flatMap((ref) => {
     const detail = detailsById.get(ref.article.id);
     if (!detail) {
       return [];
     }
     const article = { ...ref.article, state: detail.state };
-    if (!isVisibleOfflineArticle(article, input, feedIdsForFolder)) {
-      return [];
-    }
     return [{ article, ref }];
   });
-  visible.sort((left, right) => compareOfflineArticles(left, right, input));
+  ordered.sort((left, right) => compareOfflineArticles(left, right, input));
+  const visible = ordered.filter(({ article }) => isVisibleOfflineArticle(article, input, feedIdsForFolder));
   const unreadCount = visible.filter(
     ({ article }) => articleInteractionStatusForState(article.state) === "unseen"
   ).length;
-  const offset = offlineCursorOffset(input.cursor);
+  const visibleById = new Map(visible.map(({ article }) => [article.id, article]));
+  // Freeze the remaining snapshot candidates, not their mutable filtered offset.
+  // IDs also keep read-later/recent paging stable when actions remove or reorder refs.
+  const remainingIds = offlineCursorArticleIds(input.cursor, snapshot.id)
+    ?? ordered.map(({ article }) => article.id);
+  const remaining = remainingIds.flatMap((id) => {
+    const article = visibleById.get(id);
+    return article ? [article] : [];
+  });
   const limit = Math.min(Math.max(Math.trunc(input.limit ?? OFFLINE_PAGE_SIZE), 1), 100);
-  const page = visible.slice(offset, offset + limit).map(({ article }) => article);
+  const page = remaining.slice(0, limit);
+  const lastId = page.at(-1)?.id;
   return {
     data: page,
-    nextCursor: offset + limit < visible.length ? `offline:${offset + limit}` : null,
+    nextCursor: remaining.length > limit && lastId
+      ? `offline:v2:${encodeURIComponent(JSON.stringify({ snapshotId: snapshot.id,
+          ids: remainingIds.slice(remainingIds.indexOf(lastId) + 1) }))}`
+      : null,
     unreadCount
   };
 }
@@ -551,6 +571,7 @@ export async function getOfflineArticleDetail(
   scopeKey: string,
   articleId: string
 ): Promise<ArticleDetail | null> {
+  if (!(await readOfflineProfile(scopeKey))?.deviceSettings.enabled) return null;
   const record = await getRecord<OfflineArticleRecord>(ARTICLES_STORE, articleKey(scopeKey, articleId));
   if (!record) {
     return null;
@@ -566,22 +587,20 @@ export async function cacheOnlineArticleDetail(
   if (!hasReadableArticle(detail)) {
     return;
   }
-  const existing = await getRecord<OfflineArticleRecord>(
-    ARTICLES_STORE,
-    articleKey(scopeKey, detail.id)
-  );
+  const profile = await readOfflineProfile(scopeKey);
+  if (!profile?.deviceSettings.enabled) return;
   const committed = await commitOnlineArticleDetail({
     key: articleKey(scopeKey, detail.id),
     scopeKey,
     articleId: detail.id,
-    contentRevision: existing?.contentRevision ?? `opportunistic:${Date.now()}`,
+    contentRevision: `opportunistic:${Date.now()}`,
     detail,
     cachedAt: Date.now(),
     lastAccessedAt: Date.now(),
     mediaStatus: "partial"
-  } satisfies OfflineArticleRecord);
+  } satisfies OfflineArticleRecord, profile.cacheGeneration);
   if (!committed) return;
-  cacheArticleImages(scopeKey, [detail]);
+  cacheArticleImages(scopeKey, [detail], committed.cacheGeneration);
   notifyOfflineStatusChanged(scopeKey);
 }
 
@@ -591,61 +610,43 @@ export async function queueOfflineArticleAction(input: {
   request: ArticleActionRequest;
   state: ArticleState;
 }): Promise<OfflineActionRecord> {
-  const actions = await listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, input.scopeKey);
-  const now = Date.now();
-  if (input.request.type === "read_progress") {
-    const existing = actions
-      .filter((action) =>
-        action.articleId === input.articleId &&
-        action.status === "pending" &&
-        action.request.type === "read_progress"
-      )
-      .sort((left, right) => right.sequence - left.sequence)[0];
-    if (existing && existing.request.type === "read_progress") {
-      const action: OfflineActionRecord = {
-        ...existing,
-        request: {
-          ...existing.request,
-          progress: Math.max(existing.request.progress, input.request.progress),
-          metadata: { ...(existing.request.metadata ?? {}), ...(input.request.metadata ?? {}), origin: "offline" }
+  const action = await offlineTransaction(
+    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const profile = await writableProfile(transaction, input.scopeKey);
+      if (!profile?.deviceSettings.enabled) throw new Error("Offline reading is not available");
+      const actions = await actionsInTransaction(transaction, input.scopeKey);
+      const previous = actions.filter((item) => item.articleId === input.articleId).at(-1);
+      const store = transaction.objectStore(ACTIONS_STORE);
+      let request = input.request;
+      // Only adjacent, never-attempted actions can be replaced. An attempted ID
+      // may already have been accepted by the server, even after a network error.
+      if (previous?.status === "pending" && previous.attemptCount === 0 &&
+        previous.request.type === request.type && compressibleActionField(request.type)) {
+        if (request.type === "read_progress" && previous.request.type === "read_progress") {
+          request = { ...request, progress: Math.max(previous.request.progress, request.progress),
+            metadata: { ...previous.request.metadata, ...request.metadata } };
         }
+        store.delete(previous.clientActionId);
+      }
+      const meta = transaction.objectStore(META_STORE);
+      const key = `action-sequence::${input.scopeKey}`;
+      const counter = await requestResult<MetaRecord | undefined>(meta.get(key));
+      const sequence = actions.reduce((max, item) => Math.max(max, item.sequence), Number(counter?.value) || 0) + 1;
+      const clientActionId = createClientActionId();
+      const action: OfflineActionRecord = {
+        clientActionId, scopeKey: input.scopeKey, articleId: input.articleId,
+        sequence, createdAt: Date.now(),
+        request: { ...request, clientActionId, metadata: { ...request.metadata, origin: "offline" } },
+        status: "pending", attemptCount: 0, lastErrorCode: null
       };
-      await putRecord(ACTIONS_STORE, action);
-      await updateCachedArticleState(input.scopeKey, input.articleId, input.state);
-      notifyOfflineStatusChanged(input.scopeKey);
+      meta.put({ key, value: String(sequence) } satisfies MetaRecord);
+      store.put(action);
+      await updateCachedArticleState(transaction, input.scopeKey, input.articleId,
+        (state) => applyOfflineAction(state ?? input.state, action));
       return action;
     }
-  }
-  const field = compressibleActionField(input.request.type);
-  if (field) {
-    await Promise.all(
-      actions
-        .filter((action) =>
-          action.articleId === input.articleId &&
-          action.status === "pending" &&
-          compressibleActionField(action.request.type) === field
-        )
-        .map((action) => deleteRecord(ACTIONS_STORE, action.clientActionId))
-    );
-  }
-  const clientActionId = createClientActionId();
-  const action: OfflineActionRecord = {
-    clientActionId,
-    scopeKey: input.scopeKey,
-    articleId: input.articleId,
-    sequence: actions.reduce((max, item) => Math.max(max, item.sequence), 0) + 1,
-    createdAt: now,
-    request: {
-      ...input.request,
-      clientActionId,
-      metadata: { ...(input.request.metadata ?? {}), origin: "offline" }
-    },
-    status: "pending",
-    attemptCount: 0,
-    lastErrorCode: null
-  };
-  await putRecord(ACTIONS_STORE, action);
-  await updateCachedArticleState(input.scopeKey, input.articleId, input.state);
+  );
   notifyOfflineStatusChanged(input.scopeKey);
   return action;
 }
@@ -655,35 +656,35 @@ export async function syncOfflineArticleActions(
   api: Pick<OfflineApi, "postArticleAction">
 ): Promise<void> {
   await runWithOfflineSyncLock(scopeKey, async () => {
-    const actions = (await listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, scopeKey))
-      .filter((action) => action.status !== "failed")
-      .sort((left, right) => left.sequence - right.sequence);
+    const actions = await listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, scopeKey);
+    const throughSequence = actions.reduce((max, action) => Math.max(max, action.sequence), 0);
     let completedAny = false;
-    for (const action of actions) {
-      await putRecord(ACTIONS_STORE, {
-        ...action,
-        status: "syncing",
-        attemptCount: action.attemptCount + 1
-      } satisfies OfflineActionRecord);
+    while (true) {
+      const action = await offlineTransaction([PROFILES_STORE, ACTIONS_STORE, META_STORE], async (transaction) => {
+        const profile = await writableProfile(transaction, scopeKey);
+        if (!profile?.deviceSettings.enabled) return null;
+        const next = (await actionsInTransaction(transaction, scopeKey))
+          .find((item) => item.status !== "failed" && item.sequence <= throughSequence);
+        if (!next) return null;
+        const claimed: OfflineActionRecord = { ...next, status: "syncing", attemptCount: next.attemptCount + 1 };
+        transaction.objectStore(ACTIONS_STORE).put(claimed);
+        return claimed;
+      });
+      if (!action) break;
       try {
         const result = await api.postArticleAction(action.articleId, action.request);
-        await updateCachedArticleState(scopeKey, action.articleId, result.state);
-        await deleteRecord(ACTIONS_STORE, action.clientActionId);
+        await settleOfflineAction(action, { state: result.state });
         completedAny = true;
       } catch (error) {
         if (error instanceof ApiRequestError && error.status === 404) {
-          await deleteRecord(ACTIONS_STORE, action.clientActionId);
-          await deleteRecord(ARTICLES_STORE, articleKey(scopeKey, action.articleId));
+          await settleOfflineAction(action, { missing: true });
           completedAny = true;
           continue;
         }
         const permanent = isPermanentActionFailure(error);
-        await putRecord(ACTIONS_STORE, {
-          ...action,
-          status: permanent ? "failed" : "pending",
-          attemptCount: action.attemptCount + 1,
-          lastErrorCode: error instanceof ApiRequestError ? error.code : "NETWORK_ERROR"
-        } satisfies OfflineActionRecord);
+        await settleOfflineAction(action, {
+          errorCode: error instanceof ApiRequestError ? error.code : "NETWORK_ERROR", permanent
+        });
         if (!permanent) {
           notifyOfflineStatusChanged(scopeKey);
           throw error;
@@ -692,23 +693,21 @@ export async function syncOfflineArticleActions(
     }
     if (completedAny) {
       await pruneOfflineArticles(scopeKey);
+      activateOfflineImageScope(scopeKey);
     }
     notifyOfflineStatusChanged(scopeKey);
   });
 }
 
 export async function retryFailedOfflineActions(scopeKey: string): Promise<void> {
-  const failed = (await listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, scopeKey))
-    .filter((action) => action.status === "failed")
-    .map((action) => ({
-      store: ACTIONS_STORE,
-      value: {
-        ...action,
-        status: "pending",
-        lastErrorCode: null
-      } satisfies OfflineActionRecord
-    }));
-  await putRecords(failed);
+  await offlineTransaction([PROFILES_STORE, ACTIONS_STORE, META_STORE], async (transaction) => {
+    if (!(await writableProfile(transaction, scopeKey))?.deviceSettings.enabled) return;
+    for (const action of await actionsInTransaction(transaction, scopeKey)) {
+      if (action.status === "failed") transaction.objectStore(ACTIONS_STORE).put({
+        ...action, status: "pending", lastErrorCode: null
+      } satisfies OfflineActionRecord);
+    }
+  });
   notifyOfflineStatusChanged(scopeKey);
 }
 
@@ -725,17 +724,21 @@ export async function getOfflineCacheSummary(scopeKey: string): Promise<OfflineC
     listScopeRecords<OfflineArticleRecord>(ARTICLES_STORE, scopeKey),
     estimateArticleImageBytes(scopeKey)
   ]);
+  const cachedIds = new Set(articles.filter((article) => hasReadableArticle(article.detail))
+    .map((article) => article.articleId));
+  const availableRefs = (refs: OfflineManifestArticle[] | undefined) =>
+    (refs ?? []).filter((ref) => cachedIds.has(ref.article.id));
   const availableIds = snapshot
-    ? new Set(uniqueManifestArticles(snapshot).map((ref) => ref.article.id))
+    ? new Set(availableRefs(uniqueManifestArticles(snapshot)).map((ref) => ref.article.id))
     : new Set<string>();
   const estimate = await storageEstimate();
   const bodyBytes = estimateJsonBytes({ profile, snapshot, articles, actions });
   return {
     targetCount: profile?.deviceSettings.recommendedTarget ?? DEFAULT_OFFLINE_RECOMMENDED_TARGET,
     availableCount: availableIds.size,
-    recommendedCount: snapshot?.recommended.length ?? 0,
-    readLaterCount: snapshot?.readLater.length ?? 0,
-    recentCount: snapshot?.recent.length ?? 0,
+    recommendedCount: availableRefs(snapshot?.recommended).length,
+    readLaterCount: availableRefs(snapshot?.readLater).length,
+    recentCount: availableRefs(snapshot?.recent).length,
     pendingActionCount: actions.filter((action) => action.status !== "failed").length,
     failedActionCount: actions.filter((action) => action.status === "failed").length,
     generatedAt: snapshot?.generatedAt ?? null,
@@ -749,25 +752,18 @@ export async function getOfflineCacheSummary(scopeKey: string): Promise<OfflineC
 
 export async function clearOfflineScope(scopeKey: string): Promise<void> {
   const origin = scopeKey.slice(0, scopeKey.lastIndexOf("::"));
-  const [snapshots, articles, actions, lastScope] = await Promise.all([
-    listScopeRecords<OfflineSnapshotRecord>(SNAPSHOTS_STORE, scopeKey),
-    listScopeRecords<OfflineArticleRecord>(ARTICLES_STORE, scopeKey),
-    listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, scopeKey),
-    getRecord<MetaRecord>(META_STORE, lastScopeKey(origin))
-  ]);
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
+  await offlineTransaction(
     [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
-    "readwrite"
-  );
-  transaction.objectStore(PROFILES_STORE).delete(scopeKey);
-  for (const snapshot of snapshots) transaction.objectStore(SNAPSHOTS_STORE).delete(snapshot.key);
-  for (const article of articles) transaction.objectStore(ARTICLES_STORE).delete(article.key);
-  for (const action of actions) transaction.objectStore(ACTIONS_STORE).delete(action.clientActionId);
-  if (lastScope?.value === scopeKey) {
-    transaction.objectStore(META_STORE).delete(lastScopeKey(origin));
-  }
-  await transactionDone(transaction);
+    async (transaction) => {
+      transaction.objectStore(PROFILES_STORE).delete(scopeKey);
+      deleteScopeRecordsInTransaction<OfflineSnapshotRecord>(transaction, SNAPSHOTS_STORE, scopeKey, (item) => item.key);
+      deleteScopeRecordsInTransaction<OfflineArticleRecord>(transaction, ARTICLES_STORE, scopeKey, (item) => item.key);
+      deleteScopeRecordsInTransaction<OfflineActionRecord>(transaction, ACTIONS_STORE, scopeKey, (item) => item.clientActionId);
+      const lastScope = await requestResult<MetaRecord | undefined>(transaction.objectStore(META_STORE).get(lastScopeKey(origin)));
+      if (lastScope?.value === scopeKey) {
+        transaction.objectStore(META_STORE).delete(lastScopeKey(origin));
+      }
+    });
   await clearArticleImages(scopeKey);
 }
 
@@ -781,46 +777,41 @@ async function clearOfflineCacheRecords(
   scopeKey: string,
   enabled?: boolean
 ): Promise<void> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
-    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE],
-    "readwrite"
-  );
-  const done = transactionDone(transaction);
-  const profilesStore = transaction.objectStore(PROFILES_STORE);
-  const profileRequest = profilesStore.get(scopeKey);
-  profileRequest.onsuccess = () => {
-    const storedProfile = profileRequest.result as OfflineProfileRecord | undefined;
-    if (!storedProfile) return;
-    const profile = normalizeOfflineProfile(storedProfile);
-    profilesStore.put({
-      ...profile,
-      activeSnapshotId: null,
-      deviceSettings: enabled === undefined
-        ? profile.deviceSettings
-        : { ...profile.deviceSettings, enabled },
-      updatedAt: Date.now()
-    } satisfies OfflineProfileRecord);
-  };
-  deleteScopeRecordsInTransaction<OfflineSnapshotRecord>(
-    transaction,
-    SNAPSHOTS_STORE,
-    scopeKey,
-    (record) => record.key
-  );
-  deleteScopeRecordsInTransaction<OfflineArticleRecord>(
-    transaction,
-    ARTICLES_STORE,
-    scopeKey,
-    (record) => record.key
-  );
-  deleteScopeRecordsInTransaction<OfflineActionRecord>(
-    transaction,
-    ACTIONS_STORE,
-    scopeKey,
-    (record) => record.clientActionId
-  );
-  await done;
+  await offlineTransaction(
+    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const profilesStore = transaction.objectStore(PROFILES_STORE);
+      const profile = await writableProfile(transaction, scopeKey);
+      if (profile) {
+        profilesStore.put({
+          ...profile,
+          cacheGeneration: createClientActionId(),
+          activeSnapshotId: null,
+          deviceSettings: enabled === undefined
+            ? profile.deviceSettings
+            : { ...profile.deviceSettings, enabled },
+          updatedAt: Date.now()
+        } satisfies OfflineProfileRecord);
+      }
+      deleteScopeRecordsInTransaction<OfflineSnapshotRecord>(
+        transaction,
+        SNAPSHOTS_STORE,
+        scopeKey,
+        (record) => record.key
+      );
+      deleteScopeRecordsInTransaction<OfflineArticleRecord>(
+        transaction,
+        ARTICLES_STORE,
+        scopeKey,
+        (record) => record.key
+      );
+      deleteScopeRecordsInTransaction<OfflineActionRecord>(
+        transaction,
+        ACTIONS_STORE,
+        scopeKey,
+        (record) => record.clientActionId
+      );
+    });
   await clearArticleImages(scopeKey);
 }
 
@@ -894,28 +885,32 @@ function normalizeOfflineProfile(profile: OfflineProfileRecord): OfflineProfileR
 }
 
 async function pruneOfflineArticles(scopeKey: string): Promise<void> {
-  const profile = await readOfflineProfile(scopeKey);
-  if (!profile?.activeSnapshotId) return;
-  const [snapshot, articles, actions] = await Promise.all([
-    getRecord<OfflineSnapshotRecord>(
-      SNAPSHOTS_STORE,
-      snapshotKey(scopeKey, profile.activeSnapshotId)
-    ),
-    listScopeRecords<OfflineArticleRecord>(ARTICLES_STORE, scopeKey),
-    listScopeRecords<OfflineActionRecord>(ACTIONS_STORE, scopeKey)
-  ]);
-  if (!snapshot) return;
-  const retainedIds = new Set(uniqueManifestArticles(snapshot).map((ref) => ref.article.id));
-  for (const action of actions) retainedIds.add(action.articleId);
-  const retainedArticles = articles.filter((article) => retainedIds.has(article.articleId));
-  await Promise.all(
-    articles
-      .filter((article) => !retainedIds.has(article.articleId))
-      .map((article) => deleteRecord(ARTICLES_STORE, article.key))
-  );
+  const retainedArticles = await offlineTransaction(
+    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const profile = await writableProfile(transaction, scopeKey);
+      if (!profile?.deviceSettings.enabled || !profile.activeSnapshotId) return null;
+      const [snapshot, allArticles, actions] = await Promise.all([
+        requestResult<OfflineSnapshotRecord | undefined>(transaction.objectStore(SNAPSHOTS_STORE).get(
+          snapshotKey(scopeKey, profile.activeSnapshotId))),
+        requestResult<OfflineArticleRecord[]>(transaction.objectStore(ARTICLES_STORE).getAll()),
+        actionsInTransaction(transaction, scopeKey)
+      ]);
+      if (!snapshot) return null;
+      const articles = allArticles.filter((article) => article.scopeKey === scopeKey);
+      const retainedIds = new Set(uniqueManifestArticles(snapshot).map((ref) => ref.article.id));
+      for (const action of actions) retainedIds.add(action.articleId);
+      for (const article of articles) {
+        if (!retainedIds.has(article.articleId)) transaction.objectStore(ARTICLES_STORE).delete(article.key);
+      }
+      return { articles: articles.filter((article) => retainedIds.has(article.articleId)),
+        cacheGeneration: profile.cacheGeneration ?? null };
+    });
+  if (!retainedArticles) return;
   pruneArticleImages(
     scopeKey,
-    offlineArticleImageUrls(retainedArticles.map((article) => article.detail))
+    offlineArticleImageUrls(retainedArticles.articles.map((article) => article.detail)),
+    retainedArticles.cacheGeneration
   );
 }
 
@@ -935,8 +930,7 @@ function compressibleActionField(type: ArticleActionRequest["type"]): string | n
   if (type === "favorite") return "favorite";
   if (type === "like") return "like";
   if (type === "read_later") return "read_later";
-  if (type === "mark_read") return "read";
-  if (type === "open") return "open";
+  if (type === "read_progress") return "progress";
   return null;
 }
 
@@ -1023,181 +1017,142 @@ async function commitSnapshot(
   profile: OfflineProfileRecord,
   snapshot: OfflineSnapshotRecord,
   articles: OfflineArticleRecord[]
-): Promise<boolean> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
-    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE],
-    "readwrite"
-  );
-  let committed = false;
-  const profilesStore = transaction.objectStore(PROFILES_STORE);
-  const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
-  const currentProfileRequest = profilesStore.get(profile.scopeKey);
-  currentProfileRequest.onsuccess = () => {
-    const storedProfile = currentProfileRequest.result as OfflineProfileRecord | undefined;
-    if (!storedProfile) return;
-    const currentProfile = normalizeOfflineProfile(storedProfile);
-    if (!currentProfile.deviceSettings.enabled) return;
-    committed = true;
-    if (
-      currentProfile.activeSnapshotId &&
-      currentProfile.activeSnapshotId !== snapshot.id
-    ) {
-      const previousRequest = snapshotsStore.get(
-        snapshotKey(profile.scopeKey, currentProfile.activeSnapshotId)
-      );
-      previousRequest.onsuccess = () => {
-        const previous = previousRequest.result as OfflineSnapshotRecord | undefined;
+): Promise<{ cacheGeneration: string | null } | null> {
+  return await offlineTransaction(
+    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const currentProfile = await writableProfile(transaction, profile.scopeKey);
+      if (!currentProfile?.deviceSettings.enabled ||
+        currentProfile.cacheGeneration !== profile.cacheGeneration ||
+        currentProfile.deviceSettings.recommendedTarget !== profile.deviceSettings.recommendedTarget) return null;
+      const profilesStore = transaction.objectStore(PROFILES_STORE);
+      const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
+      const actions = await actionsInTransaction(transaction, profile.scopeKey);
+      if (
+        currentProfile.activeSnapshotId &&
+        currentProfile.activeSnapshotId !== snapshot.id
+      ) {
+        const previous = await requestResult<OfflineSnapshotRecord | undefined>(snapshotsStore.get(
+          snapshotKey(profile.scopeKey, currentProfile.activeSnapshotId)));
         if (previous) snapshotsStore.put({ ...previous, status: "superseded" });
-      };
-    }
-    for (const article of articles) transaction.objectStore(ARTICLES_STORE).put(article);
-    snapshotsStore.put(snapshot);
-    profilesStore.put({
-      ...currentProfile,
-      activeSnapshotId: snapshot.id,
-      updatedAt: Date.now()
-    } satisfies OfflineProfileRecord);
-  };
-  await transactionDone(transaction);
-  return committed;
+      }
+      for (const article of articles) {
+        const pending = actions.filter((action) => action.articleId === article.articleId);
+        const state = pending.reduce(applyOfflineAction, article.detail.state);
+        transaction.objectStore(ARTICLES_STORE).put({ ...article, detail: { ...article.detail, state } });
+        if (pending.length) snapshot = snapshotWithArticleState(snapshot, article.articleId, state);
+      }
+      snapshotsStore.put(snapshot);
+      const cacheGeneration = createClientActionId();
+      profilesStore.put({
+        ...currentProfile,
+        cacheGeneration,
+        activeSnapshotId: snapshot.id,
+        updatedAt: Date.now()
+      } satisfies OfflineProfileRecord);
+      return { cacheGeneration };
+    });
 }
 
 async function updateOfflineRecommendedTarget(
   scopeKey: string,
   recommendedTarget: number
 ): Promise<boolean> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
-    [PROFILES_STORE, SNAPSHOTS_STORE],
-    "readwrite"
-  );
-  const done = transactionDone(transaction);
-  const profilesStore = transaction.objectStore(PROFILES_STORE);
-  const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
-  let didTrimSnapshot = false;
-  const profileRequest = profilesStore.get(scopeKey);
-  profileRequest.onsuccess = () => {
-    const storedProfile = profileRequest.result as OfflineProfileRecord | undefined;
-    if (!storedProfile) return;
-    const profile = normalizeOfflineProfile(storedProfile);
+  return await offlineTransaction([PROFILES_STORE, SNAPSHOTS_STORE, META_STORE], async (transaction) => {
+    const profilesStore = transaction.objectStore(PROFILES_STORE);
+    const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
+    const profile = await writableProfile(transaction, scopeKey);
+    if (!profile) return false;
     profilesStore.put({
       ...profile,
+      cacheGeneration: createClientActionId(),
       deviceSettings: { ...profile.deviceSettings, recommendedTarget },
       updatedAt: Date.now()
     } satisfies OfflineProfileRecord);
-    if (!profile.activeSnapshotId) return;
-    const snapshotRequest = snapshotsStore.get(
-      snapshotKey(scopeKey, profile.activeSnapshotId)
-    );
-    snapshotRequest.onsuccess = () => {
-      const snapshot = snapshotRequest.result as OfflineSnapshotRecord | undefined;
-      if (!snapshot || snapshot.recommended.length <= recommendedTarget) return;
-      didTrimSnapshot = true;
-      snapshotsStore.put({
-        ...snapshot,
-        recommendedTarget,
-        recommended: snapshot.recommended.slice(0, recommendedTarget)
-      } satisfies OfflineSnapshotRecord);
-    };
-  };
-  await done;
-  return didTrimSnapshot;
+    if (!profile.activeSnapshotId) return false;
+    const snapshot = await requestResult<OfflineSnapshotRecord | undefined>(snapshotsStore.get(
+      snapshotKey(scopeKey, profile.activeSnapshotId)));
+    if (!snapshot || snapshot.recommended.length <= recommendedTarget) return false;
+    snapshotsStore.put({
+      ...snapshot,
+      recommendedTarget,
+      recommended: snapshot.recommended.slice(0, recommendedTarget)
+    } satisfies OfflineSnapshotRecord);
+    return true;
+  });
 }
 
 async function updateOfflineEnabled(scopeKey: string, enabled: boolean): Promise<void> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(PROFILES_STORE, "readwrite");
-  const done = transactionDone(transaction);
-  const store = transaction.objectStore(PROFILES_STORE);
-  const request = store.get(scopeKey);
-  request.onsuccess = () => {
-    const storedProfile = request.result as OfflineProfileRecord | undefined;
-    if (!storedProfile) return;
-    const profile = normalizeOfflineProfile(storedProfile);
+  await offlineTransaction([PROFILES_STORE, META_STORE], async (transaction) => {
+    const store = transaction.objectStore(PROFILES_STORE);
+    const profile = await writableProfile(transaction, scopeKey);
+    if (!profile) return;
     store.put({
       ...profile,
+      cacheGeneration: createClientActionId(),
       deviceSettings: { ...profile.deviceSettings, enabled },
       updatedAt: Date.now()
     } satisfies OfflineProfileRecord);
-  };
-  await done;
+  });
 }
 
 async function commitOnlineArticleDetail(
-  article: OfflineArticleRecord
-): Promise<boolean> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
-    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE],
-    "readwrite"
-  );
-  const done = transactionDone(transaction);
-  const profilesStore = transaction.objectStore(PROFILES_STORE);
-  const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
-  let committed = false;
-  const profileRequest = profilesStore.get(article.scopeKey);
-  profileRequest.onsuccess = () => {
-    const storedProfile = profileRequest.result as OfflineProfileRecord | undefined;
-    if (!storedProfile) return;
-    const profile = normalizeOfflineProfile(storedProfile);
-    if (!profile.deviceSettings.enabled) return;
-    committed = true;
-    transaction.objectStore(ARTICLES_STORE).put(article);
-    if (!profile.activeSnapshotId) return;
-    const snapshotRequest = snapshotsStore.get(
-      snapshotKey(article.scopeKey, profile.activeSnapshotId)
-    );
-    snapshotRequest.onsuccess = () => {
-      const snapshot = snapshotRequest.result as OfflineSnapshotRecord | undefined;
-      if (!snapshot) return;
+  article: OfflineArticleRecord,
+  cacheGeneration: string | undefined
+): Promise<{ cacheGeneration: string | null } | null> {
+  return await offlineTransaction(
+    [PROFILES_STORE, SNAPSHOTS_STORE, ARTICLES_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
+      const profile = await writableProfile(transaction, article.scopeKey);
+      if (!profile?.deviceSettings.enabled || profile.cacheGeneration !== cacheGeneration) return null;
+      const committed = { cacheGeneration: profile.cacheGeneration ?? null };
+      const existingArticle = await requestResult<OfflineArticleRecord | undefined>(
+        transaction.objectStore(ARTICLES_STORE).get(article.key));
+      const pending = (await actionsInTransaction(transaction, article.scopeKey))
+        .filter((action) => action.articleId === article.articleId);
+      article = {
+        ...article, contentRevision: existingArticle?.contentRevision ?? article.contentRevision,
+        detail: { ...article.detail, state: pending.reduce(applyOfflineAction, article.detail.state) }
+      };
+      transaction.objectStore(ARTICLES_STORE).put(article);
+      if (!profile.activeSnapshotId) return committed;
+      const snapshot = await requestResult<OfflineSnapshotRecord | undefined>(snapshotsStore.get(
+        snapshotKey(article.scopeKey, profile.activeSnapshotId)));
+      if (!snapshot) return committed;
       const now = new Date().toISOString();
       const existing = uniqueManifestArticles(snapshot)
         .find((ref) => ref.article.id === article.articleId);
       const recentRef: OfflineManifestArticle = existing
         ? {
-            ...existing,
-            article: { ...existing.article, state: article.detail.state },
-            openedAt: now
-          }
+          ...existing,
+          article: { ...existing.article, state: article.detail.state },
+          openedAt: now
+        }
         : {
-            article: articleListItemForDetail(article.detail),
-            contentRevision: article.contentRevision,
-            position: 0,
-            favoritedAt: article.detail.state.favorited ? now : null,
-            readLaterAt: article.detail.state.readLater ? now : null,
-            openedAt: now
-          };
+          article: articleListItemForDetail(article.detail),
+          contentRevision: article.contentRevision,
+          position: 0,
+          favoritedAt: article.detail.state.favorited ? now : null,
+          readLaterAt: article.detail.state.readLater ? now : null,
+          openedAt: now
+        };
       const recent = [
         recentRef,
         ...snapshot.recent.filter((ref) => ref.article.id !== article.articleId)
       ].slice(0, 20).map((ref, position) => ({ ...ref, position }));
-      snapshotsStore.put({ ...snapshot, recent } satisfies OfflineSnapshotRecord);
-    };
-  };
-  await done;
-  return committed;
+      snapshotsStore.put(snapshotWithArticleState({ ...snapshot, recent }, article.articleId, article.detail.state));
+      return committed;
+    });
 }
 
 async function touchOfflineArticle(scopeKey: string, articleId: string): Promise<void> {
-  const database = await openOfflineDatabase();
-  const transaction = database.transaction(
-    [PROFILES_STORE, ARTICLES_STORE],
-    "readwrite"
-  );
-  const done = transactionDone(transaction);
-  const profileRequest = transaction.objectStore(PROFILES_STORE).get(scopeKey);
-  profileRequest.onsuccess = () => {
-    const storedProfile = profileRequest.result as OfflineProfileRecord | undefined;
-    if (!storedProfile || !normalizeOfflineProfile(storedProfile).deviceSettings.enabled) return;
+  await offlineTransaction([PROFILES_STORE, ARTICLES_STORE, META_STORE], async (transaction) => {
+    if (!(await writableProfile(transaction, scopeKey))?.deviceSettings.enabled) return;
     const articlesStore = transaction.objectStore(ARTICLES_STORE);
-    const articleRequest = articlesStore.get(articleKey(scopeKey, articleId));
-    articleRequest.onsuccess = () => {
-      const article = articleRequest.result as OfflineArticleRecord | undefined;
-      if (article) articlesStore.put({ ...article, lastAccessedAt: Date.now() });
-    };
-  };
-  await done;
+    const article = await requestResult<OfflineArticleRecord | undefined>(articlesStore.get(articleKey(scopeKey, articleId)));
+    if (article) articlesStore.put({ ...article, lastAccessedAt: Date.now() });
+  });
 }
 
 function deleteScopeRecordsInTransaction<T extends { scopeKey: string }>(
@@ -1216,63 +1171,179 @@ function deleteScopeRecordsInTransaction<T extends { scopeKey: string }>(
 }
 
 async function updateCachedArticleState(
+  transaction: IDBTransaction,
   scopeKey: string,
   articleId: string,
-  state: ArticleState
+  update: (state: ArticleState | undefined) => ArticleState
 ): Promise<void> {
-  const profile = await readOfflineProfile(scopeKey);
+  const profile = await writableProfile(transaction, scopeKey);
+  if (!profile?.deviceSettings.enabled) return;
   const [article, snapshot] = await Promise.all([
-    getRecord<OfflineArticleRecord>(ARTICLES_STORE, articleKey(scopeKey, articleId)),
+    requestResult<OfflineArticleRecord | undefined>(transaction.objectStore(ARTICLES_STORE).get(articleKey(scopeKey, articleId))),
     profile?.activeSnapshotId
-      ? getRecord<OfflineSnapshotRecord>(
-          SNAPSHOTS_STORE,
-          snapshotKey(scopeKey, profile.activeSnapshotId)
-        )
+      ? requestResult<OfflineSnapshotRecord | undefined>(transaction.objectStore(SNAPSHOTS_STORE).get(
+          snapshotKey(scopeKey, profile.activeSnapshotId)))
       : Promise.resolve(undefined)
   ]);
-  const writes: Array<{ store: string; value: unknown }> = [];
+  const state = update(article?.detail.state ?? (snapshot && uniqueManifestArticles(snapshot)
+    .find((ref) => ref.article.id === articleId)?.article.state));
   if (article) {
-    writes.push({
-      store: ARTICLES_STORE,
-      value: { ...article, detail: { ...article.detail, state } } satisfies OfflineArticleRecord
-    });
+    transaction.objectStore(ARTICLES_STORE).put({
+      ...article, detail: { ...article.detail, state }
+    } satisfies OfflineArticleRecord);
   }
   if (snapshot) {
-    const updateRefs = (refs: OfflineManifestArticle[]) =>
-      refs.map((ref) =>
-        ref.article.id === articleId
-          ? { ...ref, article: { ...ref.article, state } }
-          : ref
-      );
-    const allRefs = uniqueManifestArticles(snapshot);
-    const sourceRef = allRefs.find((ref) => ref.article.id === articleId);
-    const now = new Date().toISOString();
-    const updatedRef = sourceRef
-      ? { ...sourceRef, article: { ...sourceRef.article, state } }
-      : null;
-    const readLater = state.readLater && updatedRef
-      ? [
-          { ...updatedRef, readLaterAt: updatedRef.readLaterAt ?? now },
-          ...updateRefs(snapshot.readLater).filter((ref) => ref.article.id !== articleId)
-        ].slice(0, 200).map((ref, position) => ({ ...ref, position }))
-      : updateRefs(snapshot.readLater).filter((ref) => ref.article.id !== articleId);
-    const recent = state.openedAt && updatedRef
-      ? [
-          { ...updatedRef, openedAt: new Date(state.openedAt).toISOString() },
-          ...updateRefs(snapshot.recent).filter((ref) => ref.article.id !== articleId)
-        ].slice(0, 20).map((ref, position) => ({ ...ref, position }))
-      : updateRefs(snapshot.recent);
-    writes.push({
-      store: SNAPSHOTS_STORE,
-      value: {
-        ...snapshot,
-        recommended: updateRefs(snapshot.recommended),
-        readLater,
-        recent
-      } satisfies OfflineSnapshotRecord
-    });
+    transaction.objectStore(SNAPSHOTS_STORE).put(snapshotWithArticleState(snapshot, articleId, state));
   }
-  if (writes.length > 0) await putRecords(writes);
+}
+
+function snapshotWithArticleState(
+  snapshot: OfflineSnapshotRecord, articleId: string, state: ArticleState
+): OfflineSnapshotRecord {
+  const updateRefs = (refs: OfflineManifestArticle[]) =>
+    refs.map((ref) =>
+      ref.article.id === articleId
+        ? { ...ref, article: { ...ref.article, state } }
+        : ref
+    );
+  const allRefs = uniqueManifestArticles(snapshot);
+  const sourceRef = allRefs.find((ref) => ref.article.id === articleId);
+  const now = new Date().toISOString();
+  const updatedRef = sourceRef
+    ? { ...sourceRef, article: { ...sourceRef.article, state } }
+    : null;
+  const readLater = state.readLater && updatedRef
+    ? [
+      { ...updatedRef, readLaterAt: updatedRef.readLaterAt ?? now },
+      ...updateRefs(snapshot.readLater).filter((ref) => ref.article.id !== articleId)
+    ].slice(0, 200).map((ref, position) => ({ ...ref, position }))
+    : updateRefs(snapshot.readLater).filter((ref) => ref.article.id !== articleId);
+  const recent = state.openedAt && updatedRef
+    ? [
+      { ...updatedRef, openedAt: new Date(state.openedAt).toISOString() },
+      ...updateRefs(snapshot.recent).filter((ref) => ref.article.id !== articleId)
+    ].slice(0, 20).map((ref, position) => ({ ...ref, position }))
+    : updateRefs(snapshot.recent);
+  return {
+    ...snapshot,
+    recommended: updateRefs(snapshot.recommended),
+    readLater,
+    recent
+  };
+}
+
+function applyOfflineAction(state: ArticleState, action: OfflineActionRecord): ArticleState {
+  let next = { ...state };
+  const request = action.request;
+  switch (request.type) {
+    case "favorite": next.favorited = request.value; break;
+    case "like": next.liked = request.value; break;
+    case "read_later": next.readLater = request.value; break;
+    case "open":
+      next = { ...optimisticOpenedState(next), openedAt: action.createdAt };
+      break;
+    case "read_progress":
+      next = { ...optimisticReadProgressState(next, request.progress),
+        openedAt: next.openedAt ?? action.createdAt };
+      break;
+    case "mark_read":
+      next.read = request.value;
+      next.readingProgress = request.value ? 1 : 0;
+      // Explicit unread is a reset, not progress merged with earlier reading.
+      break;
+    case "hide": next.hidden = true; break;
+    case "not_interested":
+      return { ...optimisticStateForArticleAction("notInterested", next), ignoredAt: action.createdAt };
+    case "impression":
+      if (next.interactionStatus === "unseen" && !next.openedAt && !next.read &&
+        !next.favorited && !next.liked && !next.readLater && next.readingProgress === 0) {
+        next.interactionStatus = "ignored";
+        next.ignoredAt = action.createdAt;
+      }
+      return next;
+  }
+  // Saving/opening does not undo explicit not-interested; hide is one-way in the API.
+  if (next.notInterested) return { ...next, interactionStatus: "ignored", ignoredAt: state.ignoredAt };
+  return savedOptimisticState(next);
+}
+
+async function settleOfflineAction(
+  action: OfflineActionRecord,
+  result: { state: ArticleState } | { missing: true } | { errorCode: string; permanent: boolean }
+): Promise<void> {
+  await offlineTransaction(
+    [PROFILES_STORE, ARTICLES_STORE, SNAPSHOTS_STORE, ACTIONS_STORE, META_STORE],
+    async (transaction) => {
+      const profile = await writableProfile(transaction, action.scopeKey);
+      if (!profile?.deviceSettings.enabled) return;
+      const store = transaction.objectStore(ACTIONS_STORE);
+      const current = await requestResult<OfflineActionRecord | undefined>(store.get(action.clientActionId));
+      if (!current || current.status !== "syncing" || current.attemptCount !== action.attemptCount) return;
+      if ("errorCode" in result) {
+        store.put({ ...current, status: result.permanent ? "failed" : "pending",
+          lastErrorCode: result.errorCode } satisfies OfflineActionRecord);
+        return;
+      }
+      store.delete(action.clientActionId);
+      // A manifest fetched before this acknowledgement contains stale server state.
+      transaction.objectStore(PROFILES_STORE).put({ ...profile, cacheGeneration: createClientActionId() });
+      if ("missing" in result) {
+        transaction.objectStore(ARTICLES_STORE).delete(articleKey(action.scopeKey, action.articleId));
+        const snapshotsStore = transaction.objectStore(SNAPSHOTS_STORE);
+        const snapshots = await requestResult<OfflineSnapshotRecord[]>(snapshotsStore.getAll());
+        for (const snapshot of snapshots) {
+          if (snapshot.scopeKey !== action.scopeKey) continue;
+          const withoutArticle = (refs: OfflineManifestArticle[]) =>
+            refs.filter((ref) => ref.article.id !== action.articleId);
+          snapshotsStore.put({ ...snapshot,
+            recommended: withoutArticle(snapshot.recommended),
+            readLater: withoutArticle(snapshot.readLater),
+            recent: withoutArticle(snapshot.recent)
+          } satisfies OfflineSnapshotRecord);
+        }
+        return;
+      }
+      const remaining = (await actionsInTransaction(transaction, action.scopeKey))
+        .filter((item) => item.articleId === action.articleId && item.sequence > action.sequence);
+      await updateCachedArticleState(transaction, action.scopeKey, action.articleId,
+        () => remaining.reduce(applyOfflineAction, result.state));
+    }
+  );
+}
+
+async function actionsInTransaction(transaction: IDBTransaction, scopeKey: string): Promise<OfflineActionRecord[]> {
+  const actions = await requestResult<OfflineActionRecord[]>(transaction.objectStore(ACTIONS_STORE).getAll());
+  return actions.filter((action) => action.scopeKey === scopeKey).sort((a, b) => a.sequence - b.sequence);
+}
+
+async function scopeRevokedInTransaction(transaction: IDBTransaction, scopeKey: string): Promise<boolean> {
+  const marker = await requestResult<MetaRecord | undefined>(
+    transaction.objectStore(META_STORE).get(revokedScopeMetaKey(scopeKey))
+  );
+  return Boolean(marker) || isOfflineScopeRevokedInStorage(scopeKey);
+}
+
+async function writableProfile(transaction: IDBTransaction, scopeKey: string): Promise<OfflineProfileRecord | null> {
+  if (await scopeRevokedInTransaction(transaction, scopeKey)) return null;
+  const profile = await requestResult<OfflineProfileRecord | undefined>(transaction.objectStore(PROFILES_STORE).get(scopeKey));
+  return profile ? normalizeOfflineProfile(profile) : null;
+}
+
+// Await only IndexedDB requests inside work; external work would close the transaction.
+async function offlineTransaction<T>(stores: string[], work: (transaction: IDBTransaction) => Promise<T>): Promise<T> {
+  const database = await openOfflineDatabase();
+  const transaction = database.transaction(stores, "readwrite");
+  const done = transactionDone(transaction);
+  void done.catch(() => undefined);
+  try {
+    const result = await work(transaction);
+    await done;
+    return result;
+  } catch (error) {
+    try { transaction.abort(); } catch { /* Already completed or aborted. */ }
+    await done.catch(() => undefined);
+    throw error;
+  }
 }
 
 async function requireProfile(scopeKey: string): Promise<OfflineProfileRecord> {
@@ -1496,44 +1567,70 @@ function notifyOfflineStatusChanged(scopeKey: string): void {
 }
 
 export function activateOfflineImageScope(scopeKey: string | null): void {
-  const message = { type: "SET_OFFLINE_SCOPE", scopeKey };
-  navigator.serviceWorker?.controller?.postMessage(message);
-  void navigator.serviceWorker?.ready
-    .then((registration) => registration.active?.postMessage(message))
-    .catch(() => undefined);
+  if (!scopeKey) {
+    postOfflineWorkerMessage({ type: "SET_OFFLINE_SCOPE", scopeKey: null, cacheGeneration: null });
+    return;
+  }
+  void readOfflineProfile(scopeKey).then((profile) => {
+    if (!profile?.deviceSettings.enabled) return;
+    postOfflineWorkerMessage({ type: "SET_OFFLINE_SCOPE", scopeKey,
+      cacheGeneration: profile.cacheGeneration ?? null });
+  }).catch(() => undefined);
 }
 
-function cacheArticleImages(scopeKey: string, articles: ArticleDetail[]): void {
+function cacheArticleImages(scopeKey: string, articles: ArticleDetail[], cacheGeneration: string | null): void {
   const urls = offlineArticleImageUrls(articles);
   if (urls.length === 0) return;
   postOfflineWorkerMessage({
     type: "CACHE_ARTICLE_IMAGES",
     scopeKey,
+    cacheGeneration,
     urls
   });
 }
 
-function pruneArticleImages(scopeKey: string, urls: string[]): void {
+function pruneArticleImages(scopeKey: string, urls: string[], cacheGeneration: string | null): void {
   postOfflineWorkerMessage({
     type: "PRUNE_ARTICLE_IMAGES",
     scopeKey,
+    cacheGeneration,
     urls: Array.from(new Set(urls))
   });
 }
 
 async function clearArticleImages(scopeKey: string): Promise<void> {
   if (!navigator.serviceWorker || typeof MessageChannel === "undefined") return;
-  const worker = navigator.serviceWorker.controller ??
-    (await navigator.serviceWorker.ready.catch(() => null))?.active;
-  if (!worker) return;
+  const profile = await getRecord<OfflineProfileRecord>(PROFILES_STORE, scopeKey).catch(() => undefined);
   await new Promise<void>((resolve) => {
-    const channel = new MessageChannel();
-    const timer = window.setTimeout(resolve, 2_000);
-    channel.port1.onmessage = () => {
+    let finished = false;
+    let channel: MessageChannel | undefined;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       window.clearTimeout(timer);
+      channel?.port1.close();
+      channel?.port2.close();
       resolve();
     };
-    worker.postMessage({ type: "CLEAR_ARTICLE_IMAGES", scopeKey }, [channel.port2]);
+    // Bound worker lookup as well as acknowledgement. ready never resolves if
+    // the browser supports Service Workers but this page has no registration.
+    const timer = window.setTimeout(finish, 2_000);
+    void (async () => {
+      const worker = navigator.serviceWorker.controller ??
+        (await navigator.serviceWorker.getRegistration().catch(() => undefined))?.active;
+      if (finished) return;
+      if (!worker) {
+        if (typeof caches !== "undefined") {
+          await caches.delete(`${ARTICLE_IMAGE_CACHE_PREFIX}${encodeURIComponent(scopeKey)}`);
+        }
+        finish();
+        return;
+      }
+      channel = new MessageChannel();
+      channel.port1.onmessage = finish;
+      worker.postMessage({ type: "CLEAR_ARTICLE_IMAGES", scopeKey,
+        cacheGeneration: profile?.cacheGeneration ?? null }, [channel.port2]);
+    })().catch(finish);
   });
 }
 
@@ -1711,9 +1808,15 @@ function timeWindowCutoff(timeWindow: ArticleTimeWindow): number | null {
   return duration === null ? null : Date.now() - duration;
 }
 
-function offlineCursorOffset(cursor: string | null | undefined): number {
-  const match = cursor?.match(/^offline:(\d+)$/);
-  return match ? Number(match[1]) : 0;
+function offlineCursorArticleIds(cursor: string | null | undefined, snapshotId: string): string[] | null {
+  if (!cursor?.startsWith("offline:v2:")) return null;
+  try {
+    const value = JSON.parse(decodeURIComponent(cursor.slice("offline:v2:".length))) as {
+      snapshotId?: unknown; ids?: unknown;
+    };
+    return value.snapshotId === snapshotId && Array.isArray(value.ids) &&
+      value.ids.every((id) => typeof id === "string") ? value.ids : null;
+  } catch { return null; }
 }
 
 function chunks<T>(values: T[], size: number): T[][] {

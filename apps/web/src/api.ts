@@ -1345,6 +1345,33 @@ function recommendationInventoryQuery(input: RecommendationInventoryInput): stri
   return query ? `?${query}` : "";
 }
 
+function pluginApiRequestPath(pluginId: string, path: string): string {
+  const invalidPath = () => new Error("Invalid plugin API path");
+  if (/[\\\u0000-\u0020\u007f#]/u.test(path) || path.startsWith("//")) {
+    throw invalidPath();
+  }
+  const relativePath = path.startsWith("/") ? path.slice(1) : path;
+  const pathname = relativePath.split("?", 1)[0];
+  for (const segment of pathname.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw invalidPath();
+    }
+    // Reject nested escapes as well as separators that a server/proxy could decode.
+    if (decoded === "." || decoded === ".." || /[%/\\\u0000-\u0020\u007f]/u.test(decoded)) {
+      throw invalidPath();
+    }
+  }
+  const prefix = `/api/plugins/${encodeURIComponent(pluginId)}/api/`;
+  const requestPath = `${prefix}${relativePath}`;
+  if (!new URL(requestPath, "https://dibao.invalid").pathname.startsWith(prefix)) {
+    throw invalidPath();
+  }
+  return requestPath;
+}
+
 export function createDibaoApi(fetcher: ApiFetch = fetch) {
   async function request<T>(path: string, init: RequestInit = {}): Promise<ApiSuccess<T>> {
     const headers = new Headers(init.headers);
@@ -1744,10 +1771,9 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       body: unknown = {},
       method: "GET" | "POST" = "POST"
     ): Promise<T> {
-      const normalizedPath = path.startsWith("/") ? path.slice(1) : path;
       return (
         await request<T>(
-          `/api/plugins/${encodeURIComponent(pluginId)}/api/${normalizedPath}`,
+          pluginApiRequestPath(pluginId, path),
           {
             method,
             ...(method === "POST" ? { body: JSON.stringify(body) } : {})

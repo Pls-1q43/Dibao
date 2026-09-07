@@ -141,6 +141,23 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    {
+      name: "dibao-offline-build-assets",
+      apply: "build",
+      transformIndexHtml: {
+        order: "post",
+        handler(_html, { bundle }) {
+          // The worker also needs lazy settings and shared chunks on a cold start.
+          return Object.values(bundle ?? {})
+            .filter((asset) => /\.(?:js|css|woff2?)$/.test(asset.fileName))
+            .map((asset) => ({
+              tag: "link",
+              attrs: { rel: "dibao-offline", href: `/${asset.fileName}` },
+              injectTo: "head" as const
+            }));
+        }
+      }
+    },
     ...(sentrySourceMapsEnabled
       ? [
           sentryVitePlugin({

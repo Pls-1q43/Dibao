@@ -556,6 +556,7 @@ type BuildServerOptions = {
   webDistDir?: string | false;
   coreMigrationDeferMs?: number;
   upgradeAutoStart?: boolean;
+  derivedUpgradeRunner?: boolean;
   recordForegroundActivity?: boolean;
   foregroundActivityWriteThrottleMs?: number;
   foregroundQuietWindowMs?: number;
@@ -1703,36 +1704,89 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
   }
 
+  let upgradePipelineRunning = false;
+  // The process entry point selects ownership independently of ordinary jobs.
+  const derivedUpgradeRunner = options.derivedUpgradeRunner ?? backgroundJobs;
+  let upgradePipelineTimer: ReturnType<typeof setInterval> | null = null;
+  let upgradePipelineClosing = false;
+  let upgradePluginsReconciled = !hasBlockingCoreMigration;
+
   async function startUpgradePipeline(): Promise<void> {
+    if (upgradePipelineRunning || upgradePipelineClosing) {
+      return;
+    }
+    upgradePipelineRunning = true;
+    try {
     const coreStatus = coreDatabaseMigrationService.getStatus();
     if (coreStatus.blocking) {
       const result = await coreDatabaseMigrationService.startIfRequired();
       if (result.blocking) {
         return;
       }
+    }
+    if (!upgradePluginsReconciled) {
       pluginService.reconcileOfficialPlugins();
+      upgradePluginsReconciled = true;
     }
 
-    if (backgroundJobs) {
+    if (derivedUpgradeRunner) {
       const derivedStatus = derivedDataUpgradeService.getStatus();
       if (derivedStatus.blocking) {
+        // Context changes and retries must quiesce background writers before
+        // rebuilding. The worker, not an HTTP status read, owns this pipeline.
+        if (backgroundStartupTimer) {
+          clearTimeout(backgroundStartupTimer);
+          backgroundStartupTimer = null;
+        }
+        if (backgroundServicesStarted) {
+          feedRefreshScheduler.stop();
+          retentionCleanupScheduler.stop();
+          jobHistoryCleanupScheduler.stop();
+          profileDecayScheduler.stop();
+          recommendationMaintenanceScheduler.stop();
+          jobRunner.stop();
+          stopJobWakeWatcher?.();
+          stopJobWakeWatcher = null;
+          if (maintenanceTickTimer) clearInterval(maintenanceTickTimer);
+          if (maintenanceInitialTickTimer) clearTimeout(maintenanceInitialTickTimer);
+          maintenanceTickTimer = null;
+          maintenanceInitialTickTimer = null;
+          backgroundServicesStarted = false;
+          await jobRunner.waitForIdle();
+        }
         const result = await derivedDataUpgradeService.startIfRequired();
         if (result.blocking) {
           return;
         }
       }
+      if (!derivedStatus.blocking) {
+        // Persist an empty installation's contract once, before ingestion.
+        await derivedDataUpgradeService.startIfRequired();
+      }
     }
 
-    startBackgroundServices();
+    if (!upgradePipelineClosing) startBackgroundServices();
+    } finally {
+      upgradePipelineRunning = false;
+    }
   }
 
   if (options.upgradeAutoStart !== false) {
     app.addHook("onReady", async () => {
       void startUpgradePipeline().catch((error) => app.log.error(error));
+      if (derivedUpgradeRunner) {
+        upgradePipelineTimer = setInterval(() => {
+          void startUpgradePipeline().catch((error) => app.log.error(error));
+        }, 1000);
+        upgradePipelineTimer.unref?.();
+      }
     });
   }
 
   app.addHook("onClose", async () => {
+    upgradePipelineClosing = true;
+    if (upgradePipelineTimer) clearInterval(upgradePipelineTimer);
+    await derivedDataUpgradeService.stop();
     coreDatabaseMigrationService.stop();
     recommendationMaintenanceScheduler.stop();
     profileDecayScheduler.stop();
@@ -1963,9 +2017,6 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const status = derivedDataUpgradeService.getStatus();
-    if (status.blocking) {
-      void derivedDataUpgradeService.startIfRequired().catch((error) => app.log.error(error));
-    }
     return {
       data: status
     };
@@ -1974,13 +2025,13 @@ export function buildServer(options: BuildServerOptions = {}) {
   app.post("/api/system/upgrade/retry", async () => {
     const coreMigrationStatus = coreDatabaseMigrationService.getStatus();
     if (coreMigrationStatus.blocking) {
-      return {
-        data: await coreDatabaseMigrationService.retry()
-      };
+      const data = await coreDatabaseMigrationService.retry();
+      void startUpgradePipeline().catch((error) => app.log.error(error));
+      return { data };
     }
-    return {
-      data: await derivedDataUpgradeService.retry()
-    };
+    const data = derivedDataUpgradeService.requestRetry();
+    void startUpgradePipeline().catch((error) => app.log.error(error));
+    return { data };
   });
 
   app.get<{ Querystring: JobQuery }>("/api/jobs", async (request, reply) => {
@@ -3656,6 +3707,9 @@ export function buildServer(options: BuildServerOptions = {}) {
 
   app.get<{ Params: PluginAssetParams }>("/api/plugins/:id/assets/*", async (request, reply) => {
     try {
+      if (plugins.findInstall(request.params.id)?.status !== "enabled") {
+        return sendApiError(reply, 404, "NOT_FOUND", "Plugin asset not found");
+      }
       const assetPath = pluginService.resolveAssetPath(
         request.params.id,
         request.params["*"] || "web/index.html"
@@ -3663,8 +3717,8 @@ export function buildServer(options: BuildServerOptions = {}) {
       if (!assetPath) {
         return sendApiError(reply, 404, "NOT_FOUND", "Plugin asset not found");
       }
-      applyPluginAssetSecurityHeaders(reply, assetPath);
-      return sendStaticFile(reply, request.method, assetPath);
+      applyPluginAssetSecurityHeaders(reply);
+      return sendStaticFile(reply, request.method, assetPath, "no-store");
     } catch (error) {
       return sendPluginError(reply, error);
     }
@@ -3825,9 +3879,13 @@ function decodeStaticPathname(pathname: string): string | null {
   }
 }
 
-function sendStaticFile(reply: FastifyReply, method: string, filePath: string) {
+function sendStaticFile(reply: FastifyReply, method: string, filePath: string, cacheControl?: string) {
   reply.type(contentTypeForStaticFile(filePath));
-  applyStaticCacheHeaders(reply, filePath);
+  if (cacheControl) {
+    reply.header("Cache-Control", cacheControl);
+  } else {
+    applyStaticCacheHeaders(reply, filePath);
+  }
   if (method.toUpperCase() === "HEAD") {
     return reply.send();
   }
@@ -3870,14 +3928,13 @@ function applyMainAppSecurityHeaders(reply: FastifyReply, filePath: string): voi
   );
 }
 
-function applyPluginAssetSecurityHeaders(reply: FastifyReply, filePath: string): void {
+function applyPluginAssetSecurityHeaders(reply: FastifyReply): void {
   reply.header("X-Content-Type-Options", "nosniff");
-  if (extname(filePath).toLowerCase() !== ".html") {
-    return;
-  }
+  reply.header("Referrer-Policy", "no-referrer");
   reply.header(
     "Content-Security-Policy",
     [
+      "sandbox allow-scripts",
       "default-src 'none'",
       "base-uri 'none'",
       "form-action 'none'",

@@ -1,4 +1,7 @@
 const PLUGIN_BRIDGE_CAPABILITIES: Record<string, readonly string[]> = {
+  getAuthSession: [],
+  getLocale: [],
+  pluginApi: [],
   getSettings: ["settings:plugin"],
   updatePluginSettings: ["settings:plugin"],
   listPluginSecrets: ["secrets:plugin"],
@@ -19,8 +22,8 @@ export function hasPluginBridgeCapability(
   capabilities: readonly string[],
   method: unknown
 ): boolean {
-  if (typeof method !== "string") return false;
-  return (PLUGIN_BRIDGE_CAPABILITIES[method] ?? []).every((capability) =>
+  if (typeof method !== "string" || !Object.hasOwn(PLUGIN_BRIDGE_CAPABILITIES, method)) return false;
+  return PLUGIN_BRIDGE_CAPABILITIES[method].every((capability) =>
     capabilities.includes(capability)
   );
 }
@@ -29,8 +32,10 @@ export function assertPluginBridgeCapability(
   capabilities: readonly string[],
   method: unknown
 ): void {
-  if (typeof method !== "string") return;
-  const missing = (PLUGIN_BRIDGE_CAPABILITIES[method] ?? []).find(
+  if (typeof method !== "string" || !Object.hasOwn(PLUGIN_BRIDGE_CAPABILITIES, method)) {
+    throw new Error("Unsupported plugin bridge method");
+  }
+  const missing = PLUGIN_BRIDGE_CAPABILITIES[method].find(
     (capability) => !capabilities.includes(capability)
   );
   if (missing) {

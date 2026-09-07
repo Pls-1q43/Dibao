@@ -6,9 +6,15 @@ import {
 } from "./core-migration-wait.js";
 import { DEFAULT_FOREGROUND_QUIET_WINDOW_MS } from "./foreground-activity.js";
 
+const migrationWaitAbort = new AbortController();
+const abortMigrationWait = () => migrationWaitAbort.abort();
+process.once("SIGTERM", abortMigrationWait);
+process.once("SIGINT", abortMigrationWait);
+
 try {
   await waitForWorkerCoreMigrationsReady();
 } catch (error) {
+  if (migrationWaitAbort.signal.aborted) process.exit(0);
   if (error instanceof WorkerCoreMigrationWaitTimeoutError) {
     console.error(
       "[dibao] worker failed waiting for core migrations",
@@ -31,6 +37,8 @@ try {
   }
   process.exit(1);
 }
+process.removeListener("SIGTERM", abortMigrationWait);
+process.removeListener("SIGINT", abortMigrationWait);
 
 const server = buildServer({
   backgroundJobs: true,
@@ -130,6 +138,11 @@ async function waitForWorkerCoreMigrationsReady(): Promise<void> {
 
   await waitForCoreMigrationsReady({
     databasePath,
+    continueOnTimeout: true,
+    signal: migrationWaitAbort.signal,
+    onTimeout: (readiness) => {
+      console.warn("[dibao] core migration still pending; worker remains paused", JSON.stringify(readiness));
+    },
     timeoutMs:
       parseOptionalPositiveInteger(process.env.DIBAO_WORKER_CORE_MIGRATION_WAIT_MS) ??
       DEFAULT_WORKER_CORE_MIGRATION_WAIT_MS,

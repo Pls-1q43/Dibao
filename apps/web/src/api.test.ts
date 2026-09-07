@@ -3,6 +3,41 @@ import { ApiRequestError, createDibaoApi, userMessageForError } from "./api.js";
 import { dictionaries } from "./i18n.js";
 
 describe("web API client", () => {
+  it.each([
+    "../../../feeds", "/../../../auth/logout-all", "x/../../../../feeds",
+    "%2e%2e/%2e%2e/%2e%2e/feeds", ".%2e/feeds", "%2e./feeds",
+    "%252e%252e/feeds", "..%2ffeeds", "..%2Ffeeds", "..%5Cfeeds",
+    "..\\..\\feeds", "x/./state", "x/../state", "//other.test/api/feeds",
+    "state\n/../../../feeds", "state%00", "state%09", "bad%", "state#fragment"
+  ])("rejects unsafe plugin API paths before issuing a request: %s", async (path) => {
+    const calls: string[] = [];
+    const api = createDibaoApi(async (input) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ data: {} }));
+    });
+    await expect(api.callPluginApi("com.example.plugin", path)).rejects.toThrow(
+      "Invalid plugin API path"
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps valid plugin API calls inside their namespace, including query values", async () => {
+    const calls: Array<{ pathname: string; search: string; credentials?: RequestCredentials }> = [];
+    const api = createDibaoApi(async (input, init) => {
+      const url = new URL(String(input), "https://dibao.test");
+      calls.push({ pathname: url.pathname, search: url.search, credentials: init?.credentials });
+      return new Response(JSON.stringify({ data: { ok: true } }));
+    });
+    await api.callPluginApi("com.example.plugin", "/rules/rule-1/test", { test: true });
+    await api.callPluginApi("com.example.plugin", "state?next=../../../feeds", {}, "GET");
+    expect(calls).toEqual([
+      { pathname: "/api/plugins/com.example.plugin/api/rules/rule-1/test", search: "", credentials: "same-origin" },
+      { pathname: "/api/plugins/com.example.plugin/api/state", search: "?next=../../../feeds", credentials: "same-origin" }
+    ]);
+    await expect(api.callPluginApi("..", "state")).rejects.toThrow("Invalid plugin API path");
+    expect(calls).toHaveLength(2);
+  });
+
   it("calls auth endpoints with same-origin credentials", async () => {
     const calls: Array<{
       body: unknown;

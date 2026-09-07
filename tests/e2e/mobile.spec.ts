@@ -118,10 +118,10 @@ test("mobile PWA offers cached reading when the server becomes unreachable", asy
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: "切换到离线模式" })).toBeVisible();
   await page.getByRole("button", { name: "切换到离线模式" }).click();
+  await page.getByRole("link", { name: "最新" }).click();
   await expect(
     page.getByRole("button", { name: /查看离线阅读状态：服务器不可用/ })
   ).toBeVisible();
-  await page.getByRole("link", { name: "最新" }).click();
   await expect(page.getByRole("link", { name: /E2E Article/ }).first()).toBeVisible();
 });
 
@@ -141,12 +141,134 @@ test("mobile PWA cold refreshes from the app shell while the browser is offline"
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByRole("button", { name: "切换到离线模式" })).toBeVisible();
     await page.getByRole("button", { name: "切换到离线模式" }).click();
+    await page.getByRole("link", { name: "最新" }).click();
     await expect(
       page.getByRole("button", { name: /查看离线阅读状态：离线 · \d+ 篇可用/ })
     ).toBeVisible();
-    await page.getByRole("link", { name: "最新" }).click();
     await page.getByRole("link", { name: /E2E Article/ }).first().click();
     await expect(page.getByTestId("reader-scroll-container")).toBeVisible();
+  } finally {
+    await context.setOffline(false);
+  }
+});
+
+for (const failure of ["expired", "account-changed", "sync-401"] as const) {
+  test(`mobile offline session reauth preserves the queue after ${failure}`, async ({ page, context }) => {
+    await login(page);
+    await enableOfflineReading(page);
+    await page.getByRole("link", { name: "最新", exact: true }).click();
+    await context.setOffline(true);
+    try {
+      await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+      await page.getByRole("button", { name: "切换到离线模式" }).click();
+      await page.getByRole("link", { name: /E2E Article/ }).first().click();
+      await expect(page.getByTestId("reader-scroll-container")).toBeVisible();
+      await expect.poll(async () => (await readOfflineActionIds(page)).length).toBeGreaterThan(0);
+      await page.goBack();
+      const queuedIds = await readOfflineActionIds(page);
+
+      if (failure === "expired") await context.clearCookies();
+      if (failure === "account-changed") {
+        await page.route("**/api/auth/session", (route) => route.fulfill({
+          json: { data: { setupCompleted: true, authenticated: true, username: "another-account" } }
+        }));
+      }
+      if (failure === "sync-401") {
+        await page.route("**/api/articles/*/actions", (route) => route.fulfill({
+          status: 401,
+          json: { error: { code: "AUTH_REQUIRED", message: "Authentication required" } }
+        }));
+      }
+      await context.setOffline(false);
+      await page.getByRole("button", { name: /查看离线阅读状态/ }).click();
+      await page.getByRole("button", { name: "退出离线模式" }).click();
+      await expect(page.getByRole("heading", { name: "登录邸报" })).toBeVisible();
+      await expect(page.getByTestId("reader-scroll-container")).toHaveCount(0);
+      expect(await readOfflineActionIds(page)).toEqual(queuedIds);
+      await page.unroute("**/api/auth/session");
+      await page.unroute("**/api/articles/*/actions");
+
+      const loginRequests: string[] = [];
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === "/api/auth/login") loginRequests.push(request.url());
+      });
+      await page.getByRole("textbox", { name: "用户名" }).fill("another-account");
+      await page.getByRole("textbox", { name: "访问密码" }).fill(accessPassword);
+      await page.getByRole("button", { name: "登录", exact: true }).click();
+      await expect(page.getByRole("button", { name: "登录", exact: true })).toBeEnabled();
+      expect(loginRequests).toEqual([]);
+      expect(await readOfflineActionIds(page)).toEqual(queuedIds);
+
+      await page.getByRole("textbox", { name: "用户名" }).fill("e2e");
+      await page.getByRole("textbox", { name: "访问密码" }).fill("incorrect password");
+      const failedLogin = page.waitForResponse("**/api/auth/login");
+      await page.getByRole("button", { name: "登录", exact: true }).click();
+      expect((await failedLogin).status()).toBe(401);
+      await expect(page.getByRole("button", { name: "登录", exact: true })).toBeEnabled();
+      expect(await readOfflineActionIds(page)).toEqual(queuedIds);
+
+      const syncedActions: string[] = [];
+      page.on("response", (response) => {
+        if (/\/api\/articles\/[^/]+\/actions$/.test(new URL(response.url()).pathname) && response.ok()) {
+          syncedActions.push(response.url());
+        }
+      });
+      await page.getByRole("textbox", { name: "访问密码" }).fill(accessPassword);
+      await page.getByRole("button", { name: "登录", exact: true }).click();
+      await expect(page.getByRole("link", { name: "最新", exact: true })).toBeVisible();
+      await expect.poll(() => readOfflineActionIds(page)).toEqual([]);
+      expect(syncedActions.length).toBeGreaterThanOrEqual(queuedIds.length);
+      await expect(page.getByRole("button", { name: /查看离线阅读状态/ })).toHaveCount(0);
+    } finally {
+      await context.setOffline(false);
+    }
+  });
+}
+
+test("mobile offline cold start opens settings without ever loading settings online", async ({ page, context }) => {
+  await login(page);
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  // Seed only the device preference so no SettingsWorkspace chunk has been requested online.
+  const manifest = page.waitForResponse("**/api/offline/manifest*");
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open("dibao-offline-reading");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const transaction = database.transaction("profiles", "readwrite");
+      const store = transaction.objectStore("profiles");
+      const profiles = store.getAll();
+      let scopeKey: string;
+      profiles.onsuccess = () => {
+        const profile = profiles.result[0];
+        scopeKey = profile.scopeKey;
+        store.put({ ...profile, deviceSettings: { ...profile.deviceSettings, enabled: true } });
+      };
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => {
+        database.close();
+        window.dispatchEvent(new CustomEvent("dibao:offline-status-changed", { detail: { scopeKey } }));
+        resolve();
+      };
+    };
+  }));
+  expect((await manifest).status()).toBe(200);
+  await expect.poll(() => hasActiveOfflineSnapshot(page), { timeout: 20_000 }).toBe(true);
+  await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
+  expect(await page.evaluate(() => performance.getEntriesByType("resource")
+    .some((entry) => /SettingsWorkspace.*\.js/.test(entry.name)))).toBe(false);
+  await context.setOffline(true);
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "切换到离线模式" }).click();
+    await expect(page.getByRole("button", { name: /查看离线阅读状态/ })).toBeVisible();
+    await page.goto("/?page=settings", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("switch", { name: "启用离线阅读" })).toBeChecked();
+    await expect(page.getByLabel("自动离线文章数量")).toBeVisible();
+    await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+    await page.screenshot({ path: "/tmp/dibao-offline-cold-settings.png" });
   } finally {
     await context.setOffline(false);
   }
@@ -647,6 +769,22 @@ async function hasActiveOfflineSnapshot(page: Page): Promise<boolean> {
       };
     })
   );
+}
+
+async function readOfflineActionIds(page: Page): Promise<string[]> {
+  return page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+    const request = indexedDB.open("dibao-offline-reading");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const actions = database.transaction("actions", "readonly").objectStore("actions").getAll();
+      actions.onerror = () => reject(actions.error);
+      actions.onsuccess = () => {
+        database.close();
+        resolve(actions.result.map((action) => String(action.clientActionId)).sort());
+      };
+    };
+  }));
 }
 
 async function blockExternalBrowserRequests(page: Page): Promise<void> {

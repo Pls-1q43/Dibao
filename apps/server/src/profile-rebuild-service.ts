@@ -1,5 +1,5 @@
 import { setImmediate as delayImmediate } from "node:timers/promises";
-import type { DibaoDatabase } from "@dibao/db";
+import { SqliteRankingRepository, type DibaoDatabase } from "@dibao/db";
 import type {
   ClusterLabelRebuildProgress,
   InterestClusterLabelService
@@ -7,7 +7,11 @@ import type {
 import type { InterestClusterCalibrationService } from "./interest-cluster-calibration-service.js";
 import type { InterestFamilyService } from "./interest-family-service.js";
 import type { ProfileService } from "./profile-service.js";
-import type { RecommendationRankingService } from "./ranking-service.js";
+import {
+  RECOMMENDATION_ALGORITHM_VERSION,
+  RECOMMENDATION_FEATURE_SCHEMA_VERSION,
+  type RecommendationRankingService
+} from "./ranking-service.js";
 
 export type ProfileRebuildInput = {
   chunkSize?: number;
@@ -69,7 +73,8 @@ export type ProfileRebuildServiceOptions = {
     Partial<Pick<InterestClusterLabelService, "rebuildIndexLabelsAsync">>;
   calibration?: Pick<InterestClusterCalibrationService, "getOrCreateCalibration" | "refreshCalibration">;
   interestFamilies?: Pick<InterestFamilyService, "rebuildFamiliesForIndex">;
-  ranking?: Pick<RecommendationRankingService, "recalculateAll">;
+  ranking?: Pick<RecommendationRankingService, "recalculateAll"> &
+    Partial<Pick<RecommendationRankingService, "getActiveRankContext" | "recalculateArticles">>;
 };
 
 type TopicSnapshot = {
@@ -83,6 +88,66 @@ type SnapshotRow = {
 
 export class ProfileRebuildService {
   constructor(private readonly options: ProfileRebuildServiceOptions) {}
+
+  getRankContract() {
+    return {
+      rankContext: this.options.ranking?.getActiveRankContext?.() ?? "base",
+      algorithmVersion: RECOMMENDATION_ALGORITHM_VERSION,
+      featureSchemaVersion: RECOMMENDATION_FEATURE_SCHEMA_VERSION
+    };
+  }
+
+  async rebuildAllRankingsAsync(onProgress: (progress: ProfileRebuildProgress) => void): Promise<number> {
+    const ranking = this.options.ranking;
+    if (!ranking?.recalculateArticles) {
+      throw new Error("Full ranking upgrade requires a ranking service");
+    }
+    const repository = new SqliteRankingRepository(this.options.db);
+    const contract = this.getRankContract();
+    let cursor: string | null = null;
+    let processed = 0;
+    let chunks = 0;
+    const total = (this.options.db.prepare(`
+      select count(*) as count from articles a join feeds f on f.id = a.feed_id
+      where a.deleted_at is null and a.status != 'deleted' and f.deleted_at is null and f.enabled = 1
+    `).get() as { count: number }).count;
+    const score = this.options.db.prepare(`
+      select algorithm_version as algorithmVersion, feature_schema_version as featureSchemaVersion
+      from article_rank_scores where article_id = ? and rank_context = ?
+    `);
+
+    // recalculateAll uses a bounded discovery window. Upgrade must visit every
+    // eligible article, including those outside that ordinary ranking window.
+    while (true) {
+      onProgress({ step: "ranking", articleCount: total, articleIdsProcessed: processed, chunksProcessed: chunks });
+      const candidates = repository.listCandidates({ afterArticleId: cursor, limit: 50 });
+      if (candidates.length === 0) {
+        break;
+      }
+      const ids = candidates.map((candidate) => candidate.articleId);
+      const written = ranking.recalculateArticles(ids);
+      if (written !== ids.length) {
+        throw new Error(`Incomplete ranking upgrade: expected ${ids.length}, wrote ${written}`);
+      }
+      for (const candidate of candidates) {
+        const id = candidate.articleId;
+        // The ranking contract intentionally gives interacted articles only
+        // baseline scores; embedding-context scores are for unseen articles.
+        const expectedContext = candidate.stateRowExists ? "base" : contract.rankContext;
+        const row = score.get(id, expectedContext) as typeof contract | undefined;
+        if (!row || (expectedContext !== "base" &&
+          (row.algorithmVersion !== contract.algorithmVersion || row.featureSchemaVersion !== contract.featureSchemaVersion))) {
+          throw new Error(`Missing current-contract ranking for ${id} (${expectedContext})`);
+        }
+      }
+      processed += ids.length;
+      chunks += 1;
+      cursor = ids.at(-1)!;
+      await delayImmediate();
+    }
+    onProgress({ step: "ranking", articleCount: processed, articleIdsProcessed: processed, chunksProcessed: chunks });
+    return processed;
+  }
 
   rebuildActiveIndexProfile(input: ProfileRebuildInput = {}): ProfileRebuildResult {
     const embeddingIndexId = this.activeEmbeddingIndexId();
