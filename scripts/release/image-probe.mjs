@@ -18,7 +18,7 @@ export function embeddingSnapshot(db) {
 
 export function seedFixture(db) {
   db.exec(`
-    insert or replace into app_settings(key,value_json,updated_at) values('telemetry','{"enabled":false}',1000);
+    insert or replace into app_settings(key,value_json,updated_at) values('telemetry.settings','{"enabled":false}',1000);
     insert into feeds(id,title,feed_url,created_at,updated_at) values('release-feed','Release fixture','https://example.invalid/rss',1000,1000);
     insert into embedding_providers(id,type,name,base_url,model,dimension,enabled,created_at,updated_at)
       values('release-provider','openai_compatible','Fixture','https://example.invalid','fixture',2,1,1000,1000);
@@ -59,6 +59,39 @@ export function assertUpgradeStatus(status, seeded) {
   assert(status && status.blocking === false, "Derived upgrade is still blocking or absent");
   assert.equal(status.state, seeded ? "completed" : "not_required", "Unexpected derived upgrade terminal state");
   assert.equal(status.error, null, "Derived upgrade reported an error");
+}
+
+export async function verifyHttpRelease({ expectedVersion, seeded, request = fetch }) {
+  const origin = "http://127.0.0.1:8080";
+  probeStage = "http_health";
+  const healthResponse = await request(`${origin}/api/system/health`);
+  assert.equal(healthResponse.status, 200);
+  const health = (await healthResponse.json()).data;
+  assert.equal(health.ok, true);
+  assert.equal(health.version, expectedVersion);
+
+  probeStage = "http_upgrade_anonymous_auth_guard";
+  const anonymous = await request(`${origin}/api/system/upgrade/status`);
+  assert.equal(anonymous.status, 401, "Upgrade status must require authentication");
+
+  probeStage = "http_auth_setup";
+  const setup = await request(`${origin}/api/auth/setup`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ username: "ReleaseProbe", password: "isolated-release-probe-password", telemetryEnabled: false })
+  });
+  assert.equal(setup.status, 200, "Isolated fixture account setup failed");
+  assert.equal((await setup.json()).data.ok, true);
+  const cookies = setup.headers.getSetCookie().map((value) => value.split(";", 1)[0]);
+  const sessionCookies = cookies.filter((value) => /^dibao_session=.+$/.test(value));
+  assert.equal(sessionCookies.length, 1, "Setup must return exactly one session cookie");
+
+  probeStage = "http_authenticated_upgrade_status";
+  const upgrade = await request(`${origin}/api/system/upgrade/status`, {
+    headers: { cookie: sessionCookies[0] }
+  });
+  assert.equal(upgrade.status, 200);
+  assertUpgradeStatus((await upgrade.json()).data, seeded);
 }
 
 export function assertImageArchitecture(expectedArch, runtimeArch = process.arch) {
@@ -155,15 +188,7 @@ async function main(mode) {
       assert.equal(db.prepare("select count(*) n from article_vector_rows").get().n, 65);
       assert(vectors.searchSimilarArticles({ embeddingIndexId: "release-index", vector: [1, 0], limit: 1 }).length > 0);
     }
-    const healthResponse = await fetch("http://127.0.0.1:8080/api/system/health");
-    probeStage = "http_health_and_upgrade_status";
-    assert.equal(healthResponse.status, 200);
-    const health = (await healthResponse.json()).data;
-    assert.equal(health.ok, true);
-    assert.equal(health.version, expected);
-    const upgradeResponse = await fetch("http://127.0.0.1:8080/api/system/upgrade/status");
-    assert.equal(upgradeResponse.status, 200);
-    assertUpgradeStatus((await upgradeResponse.json()).data, seeded);
+    await verifyHttpRelease({ expectedVersion: expected, seeded });
     return { state: status.state, ranked, migrations: applied.length, embeddings: embeddingSnapshot(db), providerCalls: 0 };
   } finally { db.close(); }
 }

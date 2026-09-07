@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { checkVersion } from "./check-version.mjs";
-import { assertImageArchitecture, assertUpgradeStatus, embeddingSnapshot, seedFixture, sentryReport } from "./image-probe.mjs";
+import { assertImageArchitecture, assertUpgradeStatus, embeddingSnapshot, seedFixture, sentryReport, verifyHttpRelease } from "./image-probe.mjs";
 import { platformImages, safeProbeFailure } from "./verify-docker-release.mjs";
 import { assertImmutableTags, isMissingManifest } from "./promote-image.mjs";
 import { openDatabase, runMigrations, SqliteVecVectorStore, SqliteAppSettingsRepository,
@@ -18,6 +18,25 @@ import { SettingsService } from "../../apps/server/src/settings-service.ts";
 import { InterestClusterLabelService } from "../../apps/server/src/interest-cluster-label-service.ts";
 import { InterestClusterCalibrationService } from "../../apps/server/src/interest-cluster-calibration-service.ts";
 import { InterestFamilyService } from "../../apps/server/src/interest-family-service.ts";
+import { buildServer } from "../../apps/server/src/app.ts";
+
+async function verifyRealHttpRoutes(db, seeded) {
+  const app = buildServer({ db, logger: false, backgroundJobs: false, webDistDir: false, recordForegroundActivity: false });
+  try {
+    await verifyHttpRelease({ expectedVersion: "0.4.0", seeded, request: async (url, options = {}) => {
+      const response = await app.inject({ method: options.method ?? "GET", url: new URL(url).pathname,
+        headers: { host: new URL(url).host, ...options.headers }, payload: options.body });
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(response.headers)) {
+        for (const item of Array.isArray(value) ? value : [value]) {
+          if (item !== undefined) headers.append(key, String(item));
+        }
+      }
+      return new Response(response.body, { status: response.statusCode, headers });
+    } });
+    assert.equal(new SettingsService({ settings: new SqliteAppSettingsRepository(db) }).getSettings().telemetry.enabled, false);
+  } finally { await app.close(); }
+}
 
 test("release versions cover root, workspaces, internal refs, lock and runtime constant", () => {
   const root = mkdtempSync(resolve(tmpdir(), "dibao-version-gate-"));
@@ -52,6 +71,11 @@ test("image gate rejects health-only, pending/failed and vacuous upgrade accepta
     { state: "failed", blocking: false }, { state: "not_required", blocking: false, error: null }]) {
     assert.throws(() => assertUpgradeStatus(value, true));
   }
+});
+
+test("HTTP release gate uses real account setup and authenticated fresh upgrade status", async () => {
+  const db = openDatabase(":memory:", { migrate: true });
+  try { await verifyRealHttpRoutes(db, false); } finally { db.close(); }
 });
 
 test("Sentry gate requires both bundles and never returns private values", () => {
@@ -104,6 +128,7 @@ for (const tag of ["v0.3.1", "v0.1.0", "v0.1.3"]) {
       runMigrations(db, migrations);
       const before = seedFixture(db);
       assert.equal(before.count, 65);
+      assert.equal(new SettingsService({ settings: new SqliteAppSettingsRepository(db) }).getSettings().telemetry.enabled, false);
       runMigrations(db);
       const vectors = new SqliteVecVectorStore(db);
       assert.equal(vectors.listCosineUpgradePlans().length, 1);
@@ -130,6 +155,8 @@ for (const tag of ["v0.3.1", "v0.1.0", "v0.1.3"]) {
       assertUpgradeStatus(completed, true);
       assert.equal(completed.result.rebuilt.rankingRows, 63);
       assert.equal(db.prepare("select count(*) n from article_rank_scores where rank_context='obsolete-release-context'").get().n, 0);
+      assert.deepEqual(embeddingSnapshot(db), before);
+      await verifyRealHttpRoutes(db, true);
       assert.deepEqual(embeddingSnapshot(db), before);
       db.prepare("update article_embeddings set updated_at=updated_at+1 where article_id='release-article-000'").run();
       assert.notDeepEqual(embeddingSnapshot(db), before, "Gate must detect metadata-only embedding rewrites");
