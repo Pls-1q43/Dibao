@@ -78,7 +78,7 @@ describe("server API vertical slice", () => {
           database: "ok",
           fts: "ok",
           vectorStore: "ok",
-          version: "0.3.1"
+          version: "0.4.0"
         }
       });
     } finally {
@@ -468,7 +468,7 @@ describe("server API vertical slice", () => {
         name: { "zh-CN": "本地化插件", "en-US": "Localized Plugin", "ja-JP": "ローカライズ済みプラグイン" },
         version: "1.0.0",
         publisher: { "zh-CN": "示例", "en-US": "Example", "ja-JP": "サンプル" },
-        dibao: { minVersion: "0.3.0", maxVersion: "<0.4.0" },
+        dibao: { minVersion: "0.3.0", maxVersion: "<0.5.0" },
         entry: { server: "server/index.mjs", web: "web/index.html" },
         capabilities: [],
         contributes: {
@@ -2615,7 +2615,7 @@ describe("server API vertical slice", () => {
         name: "Timeout Test",
         version: "1.0.0",
         publisher: "Dibao",
-        dibao: { minVersion: "0.1.0", maxVersion: "<0.4.0" },
+        dibao: { minVersion: "0.1.0", maxVersion: "<0.5.0" },
         entry: { server: "server/index.mjs" },
         capabilities: [],
         contributes: { hooks: ["settings.afterUpdated"] }
@@ -5763,7 +5763,7 @@ describe("server API vertical slice", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toMatchObject({
         data: {
-          currentVersion: "0.3.1",
+          currentVersion: "0.4.0",
           latestVersion: "v0.2.0",
           releaseUrl: "https://github.com/Pls-1q43/Dibao/releases/tag/v0.2.0",
           updateAvailable: false,

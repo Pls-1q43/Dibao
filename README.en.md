@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.3.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.3.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.0.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.0-2f6f5e" /></a>
 </p>
 
 ---
@@ -38,7 +38,7 @@ Quick links:
 - [Backup And Upgrade](#backup-and-upgrade)
 - [License](#license)
 - [FAQ](#faq)
-- [Release notes](./docs/release-notes-v0.3.1.md)
+- [Release notes](./docs/release-notes-v0.4.0.md#english)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [Chinese home page](./README.md)
 
@@ -61,9 +61,11 @@ Chronological RSS is honest, but it can become impossible to scan. Platform feed
 | Understand recommendations | Article-level explanation for topic, source, freshness, and feedback signals. |
 | Avoid platform lock-in | Self-hosted Docker deployment with local SQLite storage. |
 | Use low-cost AI | Works with SiliconFlow, Gemini, Ollama, and OpenAI-compatible embedding providers. |
-| Read on mobile | Installable PWA with app-shell caching. |
+| Read on mobile | Installable PWA with optional offline reading of prepared article copies. |
 
-Dibao does not provide multi-user teams, hosted sync, social following, comments, platform-wide recommendations, or offline full-article storage.
+Offline reading is off by default, with settings stored only in the current browser or PWA. The recommendation target defaults to 200 articles and can be set from 50 to 1,000; up to 200 read-later copies are stored separately without limiting your server-side list. You choose when to switch offline. A banner identifies the mode, and the status light opens sync details and the exit control. Mobile background execution and storage are limited by the OS, so check the actual cache before leaving. See the [v0.4.0 release notes](./docs/release-notes-v0.4.0.md#english).
+
+Dibao does not provide multi-user teams, official hosting, social following, comments, platform-wide recommendations, cross-device cloud sync, or an unlimited offline mirror of your entire library.
 
 ### Support Dibao
 
@@ -80,7 +82,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.3.1
+    image: ghcr.io/pls-1q43/dibao:v0.4.0
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -153,15 +155,14 @@ Default data path:
 ./data/dibao.sqlite
 ```
 
-Back up before upgrading:
+Sync offline actions on each client, then stop the service and back up the whole data directory before upgrading (this example assumes `./data:/data`):
 
 ```bash
 docker compose stop
-tar czf dibao-data-backup.tgz -C data .
-docker compose up -d
+tar czf "dibao-data-backup-$(date +%Y%m%d-%H%M%S).tgz" -C data .
 ```
 
-Upgrade:
+Set the Compose image to `ghcr.io/pls-1q43/dibao:v0.4.0`, then upgrade:
 
 ```bash
 docker compose pull
@@ -169,7 +170,11 @@ docker compose up -d
 docker compose ps
 ```
 
-Health check: `http://localhost:8080/api/system/health`.
+v0.4.0 automatically applies `027_recommendation_sessions.sql` and any earlier pending migrations. When needed, a blocking recommendation-data upgrade screen appears; normal features resume after completion. Existing vectors are reused without embedding recomputation.
+
+Check `/api/system/health` for `data.ok: true` and `data.version: "0.4.0"`. While signed in, also check `/api/system/upgrade/status`: an existing-data upgrade must reach `data.id: "recommendation-contract"`, `data.state: "completed"`, and `data.blocking: false`. A fresh empty database may report `not_required` without blocking. HTTP 200 or a healthy container alone does not prove upgrade completion.
+
+To roll back, stop the new container, restore the complete pre-upgrade `/data` backup into a clean directory or new volume, and start the previous image. Do not run an older image against the migrated database or overlay a backup onto newer WAL files. See the [v0.4.0 installation and rollback notes](./docs/release-notes-v0.4.0.md#docker-installation-backup-and-rollback).
 
 ### License
 
@@ -195,4 +200,4 @@ In the SQLite database under the local `./data` folder mounted at `/data`.
 
 **Can I install it on my phone?**
 
-Yes, as a PWA from Safari, Chrome, or Edge. HTTPS is recommended outside localhost. The default `DIBAO_COOKIE_SECURE=auto` follows the direct protocol or the reverse proxy's `X-Forwarded-Proto` header.
+Yes, as a PWA from Safari, Chrome, or Edge. Outside localhost/loopback, reliable offline startup requires an HTTPS secure context; a plain HTTP LAN address is not a substitute. Enable offline reading and prepare the cache while connected first. Mobile systems may suspend downloads or reclaim storage, and not every image or external resource will be available offline. The default `DIBAO_COOKIE_SECURE=auto` follows the direct protocol or the reverse proxy's `X-Forwarded-Proto` header.

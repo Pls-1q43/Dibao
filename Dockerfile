@@ -23,7 +23,9 @@ RUN npm ci
 
 COPY . .
 
-RUN --mount=type=secret,id=dibao_sentry_config,target=/app/config/sentry.json,required=false npm run build
+ARG DIBAO_SENTRY_UPLOAD_SOURCEMAPS=0
+RUN --mount=type=secret,id=dibao_sentry_config,target=/app/config/sentry.json,required=false \
+  DIBAO_SENTRY_UPLOAD_SOURCEMAPS=$DIBAO_SENTRY_UPLOAD_SOURCEMAPS npm run build
 
 FROM --platform=$TARGETPLATFORM node:22-bookworm-slim AS production-dependencies
 
@@ -49,7 +51,7 @@ FROM --platform=$TARGETPLATFORM node:22-bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.licenses="BUSL-1.1" \
   com.dibao.license.change-license="Apache-2.0" \
-  com.dibao.license.change-date="2030-08-08"
+  com.dibao.license.change-date="2030-09-07"
 
 ENV NODE_ENV=production \
   DIBAO_HOST=0.0.0.0 \

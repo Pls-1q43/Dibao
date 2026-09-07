@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.3.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.3.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.0.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.0-2f6f5e" /></a>
 </p>
 
 ---
@@ -40,7 +40,7 @@ Dibao は、**セルフホスト RSS リーダー、AI RSS reader、個人向け
 - [バックアップとアップグレード](#バックアップとアップグレード)
 - [ライセンス](#ライセンス)
 - [FAQ](#faq)
-- [リリースノート](./docs/release-notes-v0.3.1.md)
+- [リリースノート](./docs/release-notes-v0.4.0.md#日本語)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [中文主页](./README.md)
 - [English README](./README.en.md)
@@ -64,9 +64,11 @@ Dibao は、**セルフホスト RSS リーダー、AI RSS reader、個人向け
 | 推薦理由を知りたい | 記事ごとに、トピック、ソース、鮮度、フィードバックなどの理由を表示します。 |
 | プラットフォームに閉じ込められたくない | Docker でセルフホストし、SQLite をローカルに保存します。 |
 | 低コストで AI を使いたい | [SiliconFlow](https://cloud.siliconflow.cn/i/4wjbYmMH)、Gemini、Ollama、OpenAI-compatible embedding provider に対応します。 |
-| スマートフォンで読みたい | PWA としてホーム画面に追加できます。 |
+| スマートフォンで読みたい | PWA としてホーム画面に追加し、保存済みの記事をオフラインで読めます。 |
 
-現在は、複数ユーザーのチーム利用、公式ホスティング、クラウド同期、SNS フォロー、コメント、購読外コンテンツの推薦、全文記事のオフライン保存は提供していません。
+オフライン閲覧は初期設定では無効で、スイッチと保存目標数は現在のブラウザまたは PWA だけに保存されます。おすすめ記事は初期目標 200 件、50〜1,000 件に変更できます。「あとで読む」は別途最大 200 件を保存し、サーバー側の一覧の件数は制限しません。オフラインへの切り替えは確認してから行い、バナーで状態を示します。ステータス表示から同期状況の確認とオフラインモードの終了ができます。スマートフォンではバックグラウンド動作や保存容量に制限があるため、外出前に保存済みの件数を確認してください。詳しくは [v0.4.0 リリースノート](./docs/release-notes-v0.4.0.md#日本語)をご覧ください。
+
+現在は、複数ユーザーのチーム利用、公式ホスティング、端末間クラウド同期、SNS フォロー、コメント、購読外コンテンツの推薦、全記事の無制限なオフライン複製は提供していません。
 
 ### Dibao を支援する
 
@@ -83,7 +85,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.3.1
+    image: ghcr.io/pls-1q43/dibao:v0.4.0
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -165,7 +167,7 @@ ollama pull bge-m3
 - iOS Safari：共有メニューから「ホーム画面に追加」。
 - Desktop Chrome / Edge：アドレスバーのインストールボタン、またはブラウザメニューからインストール。
 
-`localhost` / `127.0.0.1` では通常そのままインストールできます。LAN IP や公開ドメインで使う場合は HTTPS を推奨します。`DIBAO_COOKIE_SECURE=auto` は直接接続のプロトコルまたはリバースプロキシの `X-Forwarded-Proto` に応じて Cookie を自動設定します。
+`localhost` / `127.0.0.1` では通常そのままインストールできます。それ以外のアドレスで PWA を確実にオフライン起動するには HTTPS の安全なコンテキストが必要で、HTTP の LAN IP では代用できません。`DIBAO_COOKIE_SECURE=auto` は直接接続のプロトコルまたはリバースプロキシの `X-Forwarded-Proto` に応じて Cookie を自動設定します。最初にオンラインでキャッシュを準備してください。スマートフォンではバックグラウンドの停止や保存領域の回収があり、すべての画像・外部リンクのオフライン利用は保証されません。
 
 ### バックアップとアップグレード
 
@@ -176,12 +178,11 @@ ollama pull bge-m3
 ./data/dibao.sqlite
 ```
 
-アップグレード前にバックアップすることを推奨します。
+更新前に各端末の未同期操作を同期し、サービスを停止してデータディレクトリ全体をバックアップしてください（以下は `./data:/data` の例です）。
 
 ```bash
 docker compose stop
-tar czf dibao-data-backup.tgz -C data .
-docker compose up -d
+tar czf "dibao-data-backup-$(date +%Y%m%d-%H%M%S).tgz" -C data .
 ```
 
 リリースイメージをアップグレードする場合は、`compose.yaml` の image tag を変更してから実行します。
@@ -192,7 +193,11 @@ docker compose up -d
 docker compose ps
 ```
 
-データベース migration は起動時に自動実行されます。アップグレード後は `http://localhost:8080/api/system/health` を開き、`ok: true` が返ることを確認してください。
+v0.4.0 は `027_recommendation_sessions.sql` と以前の未適用の移行を自動実行します。必要な場合は推薦データの更新画面が開き、完了まで通常機能を一時停止します。既存のベクトルを再利用し、埋め込みの再計算は行いません。
+
+更新後は `/api/system/health` の `data.ok: true`、`data.version: "0.4.0"` を確認します。さらにログイン後に `/api/system/upgrade/status` を確認し、既存データの更新が `data.id: "recommendation-contract"`、`data.state: "completed"`、`data.blocking: false` になったことを確かめてください。新規の空データベースでは `not_required` かつ非ブロックでも正常です。HTTP 200 やコンテナの healthy 表示だけでは更新完了を判断できません。
+
+ロールバックでは新しいコンテナを停止し、空のディレクトリまたは新しい volume に更新前の完全な `/data` バックアップを復元してから旧イメージを起動します。移行済みデータベースを旧バージョンで開いたり、新しい WAL ファイルが残る場所にバックアップを上書きしたりしないでください。[v0.4.0 の導入・ロールバック説明](./docs/release-notes-v0.4.0.md#日本語)もご確認ください。
 
 ### ライセンス
 
@@ -218,7 +223,7 @@ Dibao は [Business Source License 1.1](./LICENSE.md)（`BUSL-1.1`）のもと�
 
 **スマートフォンにインストールできますか？**
 
-はい。Safari、Chrome、Edge から PWA としてインストールできます。localhost 以外で使う場合は HTTPS を推奨します。
+はい。Safari、Chrome、Edge から PWA としてインストールできます。localhost・ループバック以外でのオフライン起動には HTTPS が必要です。最初にオンラインで記事を保存し、実際に回線を切って確認してください。
 
 **Provider のテストに失敗したら？**
 

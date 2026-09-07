@@ -123,6 +123,9 @@ const sentrySourceMapUploadRequested = process.env.DIBAO_SENTRY_UPLOAD_SOURCEMAP
 const sentrySourceMapsEnabled = Boolean(
   sentrySourceMapUploadRequested && sentryAuthToken && sentryConfig.org && sentryConfig.project
 );
+if (sentrySourceMapUploadRequested && !sentrySourceMapsEnabled) {
+  throw new Error("Sentry sourcemap upload was requested but auth token, org or project is missing");
+}
 
 export default defineConfig({
   define: {
@@ -169,13 +172,13 @@ export default defineConfig({
               setCommits: false
             },
             telemetry: false,
-            errorHandler(error) {
-              throw error;
+            errorHandler() {
+              throw new Error("Sentry sourcemap upload failed; check private release diagnostics");
             },
             sourcemaps: {
               filesToDeleteAfterUpload: ["dist/**/*.map"]
             },
-            silent: false
+            silent: true
           })
         ]
       : [])

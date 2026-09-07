@@ -35,6 +35,7 @@ specific test notes, and generated validation evidence are kept outside Git in
 
 - [License FAQ](./license-faq.md)
 - [Release process](./release-process.md)
+- [v0.4.0 release notes (简体中文 / English / 日本語)](./release-notes-v0.4.0.md)
 - [v0.3.1 release notes](./release-notes-v0.3.1.md)
 - [v0.3.0 release notes](./release-notes-v0.3.0.md)
 - [v0.2.1 release notes](./release-notes-v0.2.1.md)
