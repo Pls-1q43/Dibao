@@ -125,19 +125,32 @@ describe("real derived-data upgrade service", () => {
     const { upgrade, ranking } = service(db);
     const before = snapshot(db);
     const fetcher = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network forbidden during upgrade"));
-    const original = ranking.recalculateArticles.bind(ranking);
+    const original = ranking.createBlockingUpgradeSession.bind(ranking);
     let batches = 0;
-    const spy = vi.spyOn(ranking, "recalculateArticles").mockImplementation((ids) => {
-      expect(db.prepare("select count(*) as n from article_rank_scores where rank_context = 'legacy:schema_3'").get()).toEqual({ n: 620 });
-      if (++batches === 2) throw new Error("Injected batch failure");
-      return original(ids);
+    const disposals: ReturnType<typeof vi.fn>[] = [];
+    const spy = vi.spyOn(ranking, "createBlockingUpgradeSession").mockImplementation(() => {
+      const session = original();
+      const dispose = vi.fn(() => session.dispose());
+      disposals.push(dispose);
+      return {
+        recalculateArticles(ids) {
+          expect(db.prepare("select count(*) as n from article_rank_scores where rank_context = 'legacy:schema_3'").get()).toEqual({ n: 620 });
+          if (++batches === 2) throw new Error("Injected batch failure");
+          return session.recalculateArticles(ids);
+        },
+        dispose
+      };
     });
     try {
       await expect(upgrade.startIfRequired()).rejects.toThrow("Injected batch failure");
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(disposals[0]).toHaveBeenCalledTimes(1);
       expect(upgrade.getStatus()).toMatchObject({ state: "failed", blocking: true });
       expect(snapshot(db)).toEqual(before);
-      spy.mockRestore();
       expect(await upgrade.retry()).toMatchObject({ state: "completed", result: { rebuilt: { rankingRows: 620 } } });
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(disposals[1]).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
       expect(db.prepare("select count(*) as n from article_rank_scores where rank_context = 'legacy:schema_3'").get()).toEqual({ n: 0 });
       expect(db.prepare("select count(*) as n from article_rank_scores where rank_context = ?").get(ranking.getActiveRankContext())).toEqual({ n: 620 });
       expect(snapshot(db)).toEqual(before);

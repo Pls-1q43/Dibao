@@ -334,6 +334,11 @@ export class SqliteRankingRepository implements RankingRepository {
       articleIds === undefined && input.afterArticleId ? "and a.id > ?" : "";
     const limit = input.limit === undefined ? null : normalizeCandidateLimit(input.limit);
     const limitClause = limit === null ? "" : "limit ?";
+    const orderedPage = articleIds === undefined && limit !== null;
+    // The shipped articles schema has a text PRIMARY KEY(id). Keep that order
+    // and make articles the outer loop so LIMIT stops after enough eligible rows.
+    const articleIndex = orderedPage ? "indexed by sqlite_autoindex_articles_1" : "";
+    const feedJoin = orderedPage ? "cross join" : "join";
     const filterParams: unknown[] = [];
     if (articleIds) {
       filterParams.push(...articleIds);
@@ -344,14 +349,16 @@ export class SqliteRankingRepository implements RankingRepository {
       filterParams.push(limit);
     }
 
+    // Pin event lookups to each article: without ANALYZE, SQLite can choose the
+    // event-type index per corpus row. CROSS JOIN keeps aggregation batch-led.
     return (
       this.db
         .prepare(
           `
             with eligible_articles as (
               select a.id
-              from articles a
-              join feeds f on f.id = a.feed_id
+              from articles a ${articleIndex}
+              ${feedJoin} feeds f on f.id = a.feed_id
               left join article_states s on s.article_id = a.id
               where a.deleted_at is null
                 and a.status != 'deleted'
@@ -364,7 +371,7 @@ export class SqliteRankingRepository implements RankingRepository {
                 and not (
                   exists (
                     select 1
-                    from behavior_events ignored
+                    from behavior_events ignored indexed by idx_behavior_events_article_id
                     where ignored.article_id = a.id
                       and ignored.event_type = 'impression'
                       and ignored.event_weight < 0
@@ -412,8 +419,8 @@ export class SqliteRankingRepository implements RankingRepository {
                   end
                 ), 0) as behaviorProjectionScore,
                 count(*) as behaviorEventCount
-              from behavior_events be
-              join eligible_articles ea on ea.id = be.article_id
+              from eligible_articles ea
+              cross join behavior_events be indexed by idx_behavior_events_article_id on be.article_id = ea.id
               left join article_states s on s.article_id = be.article_id
               group by be.article_id
             )
@@ -446,7 +453,7 @@ export class SqliteRankingRepository implements RankingRepository {
               s.last_opened_at as lastOpenedAt,
               (
                 select max(be.created_at)
-                from behavior_events be
+                from behavior_events be indexed by idx_behavior_events_article_id
                 where be.article_id = a.id
                   and be.event_type = 'impression'
                   and be.event_weight < 0
@@ -466,8 +473,8 @@ export class SqliteRankingRepository implements RankingRepository {
                 else 'ready'
               end as embeddingStatus
             from eligible_articles ea
-            join articles a on a.id = ea.id
-            join feeds f on f.id = a.feed_id
+            cross join articles a on a.id = ea.id
+            cross join feeds f on f.id = a.feed_id
             left join article_states s on s.article_id = a.id
             left join article_contents ac on ac.article_id = a.id
             left join feed_stats fs on fs.feed_id = a.feed_id

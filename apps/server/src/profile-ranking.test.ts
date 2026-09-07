@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   openDatabase,
   SqliteArticleActionRepository,
@@ -63,6 +63,94 @@ function buildServer(options: Parameters<typeof buildRealServer>[0] = {}) {
 }
 
 describe("profile algorithm and recommendation ranking", () => {
+  it("reuses exact corpus BM25 only within a blocking upgrade session", () => {
+    const { db, articles, embeddings, profiles, rankings } = createProfileFixture();
+    const ranking = new RecommendationRankingService({
+      db, embeddings, profiles, rankings, now: () => 5000,
+      getRankingSettings: () => ({ cocoonLevel: 5, localLearningEnabled: false,
+        localLearningShadowMode: false, explorationEnabled: false, evaluationEnabled: false })
+    });
+    const session = ranking.createBlockingUpgradeSession();
+    try {
+      db.prepare(`insert into profile_terms(term,polarity,scope,weight,evidence_count,updated_at)
+        values ('profile','positive','long',8,1,5000), ('similar','positive','recent',7,1,5000),
+          ('unmatched','negative','long',4,1,5000)`).run();
+      // Include duplicate FTS IDs: the ordinary path takes the greatest score.
+      db.prepare(`insert into article_fts(article_id,title,summary,content_text)
+        values ('article_liked','profile profile','similar','profile')`).run();
+      for (let i = 0; i < 107; i++) {
+        insertArticle(articles, `extra_${i}`, i % 3 === 0 ? "Profile similar" : "Unrelated weather",
+          `hash_${i}`, 1500);
+      }
+      const ids = rankings.listCandidates().map((row) => row.articleId);
+      const batches = [ids.slice(0, 50), ids.slice(50, 100), ids.slice(100)];
+      const output = () => ({
+        scores: db.prepare("select * from article_rank_scores order by article_id,rank_context").all(),
+        explanations: db.prepare("select * from article_rank_explanations order by article_id,rank_context").all()
+      });
+      for (const batch of batches) ranking.recalculateArticles(batch);
+      const expected = output();
+      const prepare = vi.spyOn(db, "prepare");
+      const matchQueries = () => prepare.mock.calls.filter(([sql]) =>
+        sql.includes("bm25(article_fts") && sql.includes("as rank"));
+      for (const batch of batches) expect(session.recalculateArticles(batch)).toBe(batch.length);
+      expect(output()).toEqual(expected);
+      expect(matchQueries()).toHaveLength(2);
+      expect(matchQueries().every(([sql]) => !sql.includes("article_id in"))).toBe(true);
+
+      // A normal request interleaved with the session must observe changed FTS.
+      const previousScore = bm25ScoreForContext(db, "article_liked", ranking.getActiveRankContext())!;
+      db.prepare("delete from article_fts where article_id = ?").run("article_liked");
+      ranking.recalculateArticles(["article_liked"]);
+      const changedScore = bm25ScoreForContext(db, "article_liked", ranking.getActiveRankContext());
+      expect(changedScore).toBeLessThan(previousScore);
+      expect(matchQueries()).toHaveLength(4);
+      session.dispose();
+      session.dispose();
+      expect(() => session.recalculateArticles(ids)).toThrow("disposed");
+      const fresh = ranking.createBlockingUpgradeSession();
+      try {
+        fresh.recalculateArticles(["article_liked"]);
+        expect(bm25ScoreForContext(db, "article_liked", ranking.getActiveRankContext())).toBe(changedScore);
+        expect(matchQueries()).toHaveLength(6);
+      } finally { fresh.dispose(); }
+      prepare.mockRestore();
+    } finally {
+      session.dispose();
+      db.close();
+    }
+  });
+
+  it("does not cache failed BM25 scans or issue MATCH for empty upgrade terms", () => {
+    const { db, embeddings, profiles, rankings } = createProfileFixture();
+    const ranking = new RecommendationRankingService({ db, embeddings, profiles, rankings, now: () => 5000 });
+    const session = ranking.createBlockingUpgradeSession();
+    const originalPrepare = db.prepare.bind(db);
+    let scans = 0;
+    const prepare = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      if (sql.includes("bm25(article_fts") && sql.includes("as rank")) {
+        scans++;
+        if (scans === 1) throw new Error("Injected FTS failure");
+      }
+      return originalPrepare(sql);
+    });
+    try {
+      expect(session.recalculateArticles(["article_liked"])).toBe(1);
+      expect(scans).toBe(0);
+      db.prepare(`insert into profile_terms(term,polarity,scope,weight,evidence_count,updated_at)
+        values ('profile','positive','long',8,1,5000), ('profile','positive','recent',8,1,5000)`).run();
+      expect(() => session.recalculateArticles(["article_liked"])).toThrow("Injected FTS failure");
+      expect(session.recalculateArticles(["article_liked"])).toBe(1);
+      expect(scans).toBe(2);
+      expect(session.recalculateArticles(["article_other"])).toBe(1);
+      expect(scans).toBe(2);
+    } finally {
+      session.dispose();
+      prepare.mockRestore();
+      db.close();
+    }
+  });
+
   it("processes a single event idempotently and does not replay it after a content hash change", () => {
     const fixture = createProfileFixture();
     const { actions, articles, db, profile, profiles, vectorStore } = fixture;

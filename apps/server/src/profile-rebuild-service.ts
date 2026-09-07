@@ -74,7 +74,7 @@ export type ProfileRebuildServiceOptions = {
   calibration?: Pick<InterestClusterCalibrationService, "getOrCreateCalibration" | "refreshCalibration">;
   interestFamilies?: Pick<InterestFamilyService, "rebuildFamiliesForIndex">;
   ranking?: Pick<RecommendationRankingService, "recalculateAll"> &
-    Partial<Pick<RecommendationRankingService, "getActiveRankContext" | "recalculateArticles">>;
+    Partial<Pick<RecommendationRankingService, "getActiveRankContext" | "recalculateArticles" | "createBlockingUpgradeSession">>;
 };
 
 type TopicSnapshot = {
@@ -116,37 +116,42 @@ export class ProfileRebuildService {
       from article_rank_scores where article_id = ? and rank_context = ?
     `);
 
-    // recalculateAll uses a bounded discovery window. Upgrade must visit every
-    // eligible article, including those outside that ordinary ranking window.
-    while (true) {
-      onProgress({ step: "ranking", articleCount: total, articleIdsProcessed: processed, chunksProcessed: chunks });
-      const candidates = repository.listCandidates({ afterArticleId: cursor, limit: 50 });
-      if (candidates.length === 0) {
-        break;
-      }
-      const ids = candidates.map((candidate) => candidate.articleId);
-      const written = ranking.recalculateArticles(ids);
-      if (written !== ids.length) {
-        throw new Error(`Incomplete ranking upgrade: expected ${ids.length}, wrote ${written}`);
-      }
-      for (const candidate of candidates) {
-        const id = candidate.articleId;
-        // The ranking contract intentionally gives interacted articles only
-        // baseline scores; embedding-context scores are for unseen articles.
-        const expectedContext = candidate.stateRowExists ? "base" : contract.rankContext;
-        const row = score.get(id, expectedContext) as typeof contract | undefined;
-        if (!row || (expectedContext !== "base" &&
-          (row.algorithmVersion !== contract.algorithmVersion || row.featureSchemaVersion !== contract.featureSchemaVersion))) {
-          throw new Error(`Missing current-contract ranking for ${id} (${expectedContext})`);
+    const session = ranking.createBlockingUpgradeSession?.();
+    try {
+      // recalculateAll uses a bounded discovery window. Upgrade must visit every
+      // eligible article, including those outside that ordinary ranking window.
+      while (true) {
+        onProgress({ step: "ranking", articleCount: total, articleIdsProcessed: processed, chunksProcessed: chunks });
+        const candidates = repository.listCandidates({ afterArticleId: cursor, limit: 50 });
+        if (candidates.length === 0) {
+          break;
         }
+        const ids = candidates.map((candidate) => candidate.articleId);
+        const written = session ? session.recalculateArticles(ids) : ranking.recalculateArticles(ids);
+        if (written !== ids.length) {
+          throw new Error(`Incomplete ranking upgrade: expected ${ids.length}, wrote ${written}`);
+        }
+        for (const candidate of candidates) {
+          const id = candidate.articleId;
+          // The ranking contract intentionally gives interacted articles only
+          // baseline scores; embedding-context scores are for unseen articles.
+          const expectedContext = candidate.stateRowExists ? "base" : contract.rankContext;
+          const row = score.get(id, expectedContext) as typeof contract | undefined;
+          if (!row || (expectedContext !== "base" &&
+            (row.algorithmVersion !== contract.algorithmVersion || row.featureSchemaVersion !== contract.featureSchemaVersion))) {
+            throw new Error(`Missing current-contract ranking for ${id} (${expectedContext})`);
+          }
+        }
+        processed += ids.length;
+        chunks += 1;
+        cursor = ids.at(-1)!;
+        await delayImmediate();
       }
-      processed += ids.length;
-      chunks += 1;
-      cursor = ids.at(-1)!;
-      await delayImmediate();
+      onProgress({ step: "ranking", articleCount: processed, articleIdsProcessed: processed, chunksProcessed: chunks });
+      return processed;
+    } finally {
+      session?.dispose();
     }
-    onProgress({ step: "ranking", articleCount: processed, articleIdsProcessed: processed, chunksProcessed: chunks });
-    return processed;
   }
 
   rebuildActiveIndexProfile(input: ProfileRebuildInput = {}): ProfileRebuildResult {

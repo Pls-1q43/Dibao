@@ -123,6 +123,11 @@ export type RecommendationRankingServiceOptions = {
   now?: () => number;
 };
 
+export type BlockingRankingUpgradeSession = {
+  recalculateArticles(articleIds: string[]): number;
+  dispose(): void;
+};
+
 type ClusterVector = {
   cluster: InterestClusterRow;
   polarity: InterestClusterPolarity;
@@ -245,9 +250,29 @@ const RANKING_TIME_BUDGET_RESUME_DELAY_MS = 5_000;
 
 export class RecommendationRankingService implements ArticleRankingRecalculator {
   private readonly now: () => number;
+  private upgradeBm25Results: Map<string, Map<string, number>> | null = null;
 
   constructor(private readonly options: RecommendationRankingServiceOptions) {
     this.now = options.now ?? Date.now;
+  }
+
+  // Only for blocking upgrades with stable FTS/profile inputs. The ordinary
+  // service never shares this cache; callers must dispose in a finally block.
+  createBlockingUpgradeSession(): BlockingRankingUpgradeSession {
+    const ranking = new RecommendationRankingService(this.options);
+    ranking.upgradeBm25Results = new Map();
+    let disposed = false;
+    return {
+      recalculateArticles: (articleIds) => {
+        if (disposed) throw new Error("Ranking upgrade session is disposed");
+        return ranking.recalculateArticles(articleIds);
+      },
+      dispose: () => {
+        disposed = true;
+        ranking.upgradeBm25Results?.clear();
+        ranking.upgradeBm25Results = null;
+      }
+    };
   }
 
   getActiveRankContext(): string {
@@ -1004,6 +1029,28 @@ export class RecommendationRankingService implements ArticleRankingRecalculator 
     ) => {
       const query = sanitizeFtsQuery(terms.map((term) => term.term).join(" "));
       if (!query) {
+        return;
+      }
+      if (this.upgradeBm25Results) {
+        let scores = this.upgradeBm25Results.get(query);
+        if (!scores) {
+          scores = new Map();
+          // BM25 uses corpus statistics, not the candidate filter. Evaluate
+          // the identical MATCH once, retaining the max for duplicate FTS IDs.
+          const rows = db.prepare(`
+            select article_id as articleId, bm25(article_fts, 5.0, 2.0, 0.6) as rank
+            from article_fts where article_fts match ?
+          `).iterate(query) as Iterable<{ articleId: string; rank: number }>;
+          for (const row of rows) {
+            const score = 1 / (1 + Math.max(0, row.rank));
+            scores.set(row.articleId, Math.max(scores.get(row.articleId) ?? 0, score));
+          }
+          this.upgradeBm25Results.set(query, scores);
+        }
+        for (const id of ids) {
+          const feature = result.get(id)!;
+          feature[field] = Math.max(feature[field], scores.get(id) ?? 0);
+        }
         return;
       }
       const rows = db
