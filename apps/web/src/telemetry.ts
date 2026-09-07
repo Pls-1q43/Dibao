@@ -67,6 +67,7 @@ export function configureClientTelemetry(enabled: boolean): void {
         integrations: [
           Sentry.browserTracingIntegration(),
           Sentry.replayIntegration({
+            useCompression: false,
             maskAllText: true,
             blockAllMedia: true
           })
