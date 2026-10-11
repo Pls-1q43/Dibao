@@ -23,7 +23,7 @@
 
 ### 安装、升级与限制
 
-桌面安装无需 Node.js、Docker 或数据库。Windows 运行 EXE；macOS 打开对应 DMG 并拖入“应用程序”。数据独立存放在 `%LOCALAPPDATA%\Dibao` 或 `~/Library/Application Support/Dibao`，更新、覆盖、重装和默认卸载不主动删除数据。macOS 更新前完全退出，下载新 DMG 覆盖应用。完整步骤见 [安装与恢复说明](./desktop-install.md)。
+桌面安装无需 Node.js、Docker 或数据库。Windows 运行 EXE；macOS 打开对应 DMG 并拖入“应用程序”。数据独立存放在 `%LOCALAPPDATA%\Dibao` 或 `~/Library/Application Support/Dibao`，更新、覆盖、重装和默认卸载不主动删除数据。macOS 更新前完全退出，下载新 DMG 覆盖应用。完整步骤见 [安装与恢复说明](https://github.com/Pls-1q43/Dibao/blob/v0.4.1/docs/desktop-install.md)。
 
 当前桌面包未签名，系统可能警告或阻止首次运行；仅使用本 Release 下载并按系统提示确认，不要关闭安全校验。macOS 当前不支持应用内自动安装，未签名登录项也可能注册失败。Windows 使用 electron-updater，下载和重启分别由你确认，退出不自动安装。稳定渠道不接收预发布，不自动降级。暂不支持 Windows ARM 原生版、NAS 数据迁入、远程实例连接或多端同步。抓取、外部图片和 AI 仍需联网。
 
@@ -72,7 +72,7 @@ Docker と三種類の直接インストール可能なデスクトップ版を�
 
 ### 導入、更新、制限
 
-Windows は EXE、Mac は対応 DMG を開いてアプリケーションへドラッグします。Node.js、Docker、DB の別途導入は不要です。データは `%LOCALAPPDATA%\Dibao` または `~/Library/Application Support/Dibao` に保存し、通常の更新、再導入、アンインストールでは削除しません。Mac は完全終了後に新 DMG で上書きします。[導入・復元手順](./desktop-install.md#日本語)。
+Windows は EXE、Mac は対応 DMG を開いてアプリケーションへドラッグします。Node.js、Docker、DB の別途導入は不要です。データは `%LOCALAPPDATA%\Dibao` または `~/Library/Application Support/Dibao` に保存し、通常の更新、再導入、アンインストールでは削除しません。Mac は完全終了後に新 DMG で上書きします。[導入・復元手順](https://github.com/Pls-1q43/Dibao/blob/v0.4.1/docs/desktop-install.md#日本語)。
 
 現在のパッケージは未署名で、OS の警告や実行制限があり得ます。本 Release のみを使用し、システム検証を無効にしないでください。Mac はアプリ内自動インストール未対応、未署名ログイン項目も登録に失敗する場合があります。Windows は electron-updater を使用し、ダウンロードと再起動の確認が必要です。終了時の自動インストールや安定版へのプレリリース配信、自動降格は行いません。Windows ARM、NAS 移行、遠隔接続、同期は未対応です。取得、外部画像、AI はネットワークが必要です。
 
@@ -107,7 +107,7 @@ Release gates cover authentication/CSRF, sandbox/IPC, plugin frames, the private
 
 ### Install, upgrade and limitations
 
-Run the Windows EXE, or open the matching Mac DMG and drag Dibao into Applications. No additional Node.js, Docker or database installation is required. Data stays separately in `%LOCALAPPDATA%\Dibao` or `~/Library/Application Support/Dibao`; normal updates, replacement installs, reinstalls and uninstall do not delete it. On Mac, quit fully and replace the app using the new DMG. See [installation and recovery](./desktop-install.md#english).
+Run the Windows EXE, or open the matching Mac DMG and drag Dibao into Applications. No additional Node.js, Docker or database installation is required. Data stays separately in `%LOCALAPPDATA%\Dibao` or `~/Library/Application Support/Dibao`; normal updates, replacement installs, reinstalls and uninstall do not delete it. On Mac, quit fully and replace the app using the new DMG. See [installation and recovery](https://github.com/Pls-1q43/Dibao/blob/v0.4.1/docs/desktop-install.md#english).
 
 Packages remain unsigned. OS warnings or launch restrictions may apply. Only use this Release's downloads; do not disable OS security checks. Mac currently needs manual replacement and unsigned login-item registration may fail. Windows uses electron-updater with separate download/restart confirmation; normal quit does not install automatically. Stable users do not receive prereleases; automatic downgrade is disabled. Native Windows ARM, NAS imports, remote connections and synchronization are not supported. Fetching, remote images and AI still need internet.
 

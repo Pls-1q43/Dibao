@@ -28,6 +28,8 @@ Every formal release, starting with 0.4.1, must deliver Docker linux/amd64 and l
 
 Run `Publish Complete Release` with `validation_only=true`, an exact candidate revision and matching version before tagging. The native matrix, installed upgrades, security/E2E gates and exact registry-digest migration checks must all pass. Validation may publish a run-scoped candidate, but cannot move formal or stable/latest tags. After approval, tag the verified revision. The tag workflow repeats acceptance and validates all installers before promoting Docker. Asset uploads remain a draft until complete. Only then merge the completed release into main and sync the development line.
 
+Draft lookup must include the authenticated paginated releases listing: the tag endpoint can return 404 for an existing draft. A failed upload may resume that draft, but cannot overwrite a public release. Before publication, verify every asset's uploaded state, size and SHA-256 digest, including the manifest and checksum list. Preserve the accepted tag and binaries when repairing publication-only failures, and record any recovery separately from the successful application/image gates.
+
 - [ ] Update `package.json` version.
 - [ ] Confirm Release Date.
 - [ ] Calculate Change Date as Release Date plus 4 years.
@@ -39,7 +41,7 @@ Run `Publish Complete Release` with `validation_only=true`, an exact candidate r
 - [ ] Check README License section for accuracy.
 - [ ] Run release gates appropriate for the release scope.
 - [ ] All three native installers pass first run, sandbox/IPC, offline reading, backup/recovery, background startup and installed upgrade checks at the same revision/version.
-- [ ] Audit production dependencies and review build-only advisories; no shipping high/critical vulnerabilities.
+- [ ] Audit production dependencies and review build-only advisories; no fixable high/critical findings. Retain vendor-unfixed findings and review their runtime reachability.
 - [ ] Browser/mobile E2E proves desktop controls absent; Docker contains no Electron or desktop runtime.
 - [ ] Validate direct installers, blockmaps, merged Mac updater metadata, SHA256SUMS and source manifest before Docker promotion.
 - [ ] Three-language notes include install, full-data backup, migration list, rollback and unsigned/manual-update limitations.
