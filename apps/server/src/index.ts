@@ -32,9 +32,29 @@ const server = buildServer({
 
 try {
   await server.listen({ host, port });
+  if (process.send && process.env.DIBAO_DESKTOP_RUNTIME_TOKEN) {
+    const address = server.server.address();
+    if (address && typeof address !== "string") process.send({ type: "dibao-ready", port: address.port });
+  }
 } catch (error) {
   server.log.error(error);
   process.exit(1);
+}
+
+let closing = false;
+async function shutdown() {
+  if (closing) return;
+  closing = true;
+  try { await server.close(); process.exit(0); }
+  catch (error) { server.log.error(error); process.exit(1); }
+}
+process.once("SIGTERM", () => void shutdown());
+process.once("SIGINT", () => void shutdown());
+if (process.send && process.env.DIBAO_DESKTOP_RUNTIME_TOKEN) {
+  process.on("message", message => {
+    if (typeof message === "object" && message !== null && "type" in message && message.type === "dibao-stop") void shutdown();
+  });
+  process.once("disconnect", () => void shutdown());
 }
 
 function parseOptionalPositiveInteger(value: string | undefined): number | undefined {

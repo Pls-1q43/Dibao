@@ -10,6 +10,17 @@ const migrationWaitAbort = new AbortController();
 const abortMigrationWait = () => migrationWaitAbort.abort();
 process.once("SIGTERM", abortMigrationWait);
 process.once("SIGINT", abortMigrationWait);
+process.on("message", message => {
+  if (typeof message === "object" && message !== null && "type" in message && message.type === "dibao-stop") {
+    migrationWaitAbort.abort();
+    if (workerReady) void closeAndExit(0);
+  }
+});
+let workerReady = false;
+if (process.send) process.once("disconnect", () => {
+  migrationWaitAbort.abort();
+  if (workerReady) void closeAndExit(0);
+});
 
 try {
   await waitForWorkerCoreMigrationsReady();
@@ -78,6 +89,8 @@ const keepAlive = setInterval(() => undefined, 60_000);
 
 try {
   await server.ready();
+  workerReady = true;
+  process.send?.({ type: "dibao-worker-ready" });
   server.log.info(
     {
       processRole: "worker",

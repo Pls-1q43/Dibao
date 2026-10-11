@@ -1,3 +1,5 @@
+import { isDesktopRuntime } from "./desktop.js";
+
 export type ServiceWorkerUpdateState =
   | { status: "unsupported" }
   | { status: "disabled" }
@@ -17,6 +19,7 @@ const PWA_UPDATE_EVENT = "dibao:pwa-update-available";
 export function registerServiceWorker(
   options: ServiceWorkerRegistrationOptions = {}
 ): void {
+  if (isDesktopRuntime()) return;
   if (!import.meta.env.PROD) {
     return;
   }

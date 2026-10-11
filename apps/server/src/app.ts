@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -522,6 +522,7 @@ const WAL_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
 const WAL_MAINTENANCE_MIN_BYTES = 16 * 1024 * 1024;
 
 type BuildServerOptions = {
+  desktopRuntimeToken?: string;
   db?: DibaoDatabase;
   databasePath?: string;
   migrate?: boolean;
@@ -593,6 +594,17 @@ export function buildServer(options: BuildServerOptions = {}) {
   const app = Fastify({
     logger: options.logger ?? true
   });
+  const desktopRuntimeToken = options.desktopRuntimeToken ?? process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+  if (desktopRuntimeToken) {
+    app.addHook("onRequest", async (request, reply) => {
+      const supplied = request.headers["x-dibao-desktop-token"];
+      const expected = Buffer.from(desktopRuntimeToken);
+      const actual = Buffer.from(typeof supplied === "string" ? supplied : "");
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+        return sendApiError(reply, 403, "DESKTOP_RUNTIME_REQUIRED", "Desktop runtime access required");
+      }
+    });
+  }
   const backgroundJobs = options.backgroundJobs ?? false;
   const recordForegroundActivityEnabled = options.recordForegroundActivity ?? !backgroundJobs;
   const foregroundActivityWriteThrottleMs =
@@ -1783,17 +1795,23 @@ export function buildServer(options: BuildServerOptions = {}) {
     });
   }
 
+  app.addHook("preClose", async () => {
+    for (const subscriber of recommendationInventorySubscribers.values()) subscriber.close();
+  });
+
   app.addHook("onClose", async () => {
     upgradePipelineClosing = true;
     if (upgradePipelineTimer) clearInterval(upgradePipelineTimer);
     await derivedDataUpgradeService.stop();
-    coreDatabaseMigrationService.stop();
+    if (desktopRuntimeToken) await coreDatabaseMigrationService.stopAndWait();
+    else coreDatabaseMigrationService.stop();
     recommendationMaintenanceScheduler.stop();
     profileDecayScheduler.stop();
     jobHistoryCleanupScheduler.stop();
     retentionCleanupScheduler.stop();
     feedRefreshScheduler.stop();
     jobRunner.stop();
+    if (desktopRuntimeToken) await jobRunner.waitForIdle();
     for (const subscriber of recommendationInventorySubscribers.values()) {
       subscriber.close();
     }
@@ -1807,7 +1825,8 @@ export function buildServer(options: BuildServerOptions = {}) {
       stopJobWakeWatcher = null;
     }
     passiveExposureBuffer.dispose();
-    pluginService.dispose();
+    if (desktopRuntimeToken) await pluginService.disposeAndWait();
+    else pluginService.dispose();
     if (maintenanceTickTimer) {
       clearInterval(maintenanceTickTimer);
       maintenanceTickTimer = null;

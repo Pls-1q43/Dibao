@@ -1,6 +1,7 @@
 import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent, RefObject } from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dibaoVersion } from "@dibao/shared";
+import { isDesktopRuntime, isLocalServiceOffline } from "./desktop.js";
 import {
   ApiRequestError,
   defaultAppSettings,
@@ -530,7 +531,7 @@ export function App() {
   );
   const [notice, setNotice] = useState<Notice | null>(null);
   const [isOffline, setIsOffline] = useState(
-    () => typeof navigator !== "undefined" && navigator.onLine === false
+    () => isLocalServiceOffline()
   );
   const [offlineScope, setOfflineScope] = useState<string | null>(null);
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfileRecord | null>(null);
@@ -583,7 +584,7 @@ export function App() {
   const appPageRef = useRef<AppPage>(appPage);
   const appStageRef = useRef<AppStage>(appStage);
   const hasExplicitUrlPageIntent = useRef(initialRoute.hasExplicitPage);
-  const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled === true;
+  const offlineReadingEnabled = !isDesktopRuntime() && offlineProfile?.deviceSettings.enabled === true;
 
   const selectedFeed = useMemo(
     () =>
@@ -998,6 +999,7 @@ export function App() {
     reason: OfflineModePromptReason
   ): Promise<boolean> => {
     if (
+      isDesktopRuntime() ||
       manualOfflineMode.current ||
       isUsingOfflineData ||
       dismissedOfflinePromptReason.current === reason
@@ -1032,7 +1034,7 @@ export function App() {
     ) {
       return false;
     }
-    if (navigator.onLine === false) {
+    if (isLocalServiceOffline()) {
       setIsOffline(true);
       await offerOfflineMode("network-offline");
       return false;
@@ -1106,7 +1108,7 @@ export function App() {
       if (authSessionInvalidated.current || manualOfflineMode.current || offlineReauthenticationScope.current) return;
       try {
         const bootstrap = await readOfflineBootstrap();
-        if (bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
+        if (!isDesktopRuntime() && bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
           manualOfflineMode.current = true;
           if (await applyOfflineBootstrap(bootstrap, "offline", { coldStart: true })) return;
           manualOfflineMode.current = false;
@@ -1213,13 +1215,14 @@ export function App() {
     }
 
     function handleOffline() {
+      if (isDesktopRuntime()) return;
       setIsOffline(true);
       void offerOfflineMode("network-offline");
     }
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    const browserOffline = navigator.onLine === false;
+    const browserOffline = isLocalServiceOffline();
     setIsOffline(browserOffline);
     if (browserOffline) {
       void offerOfflineMode("network-offline");
@@ -1638,7 +1641,7 @@ export function App() {
   }, [offlineScope, t.errors.api]);
 
   const reconnectToServer = useCallback(async (): Promise<boolean> => {
-    if (!offlineScope || navigator.onLine === false) return false;
+    if (!offlineScope || isLocalServiceOffline()) return false;
     const sessionVersion = authSessionVersion.current;
     setOfflineConnectionMode("reconnecting");
     setOfflineCacheError(null);
@@ -1712,7 +1715,7 @@ export function App() {
   }, [invalidateOfflineSession, markServerAvailable, offlineScope, resetReaderState, t.errors.api]);
 
   const retryOfflineSync = useCallback(async () => {
-    if (!offlineScope || navigator.onLine === false || reconnectInFlight.current) return;
+    if (!offlineScope || isLocalServiceOffline() || reconnectInFlight.current) return;
     const sessionVersion = authSessionVersion.current;
     reconnectInFlight.current = true;
     setIsExitingOfflineMode(true);
@@ -1738,6 +1741,7 @@ export function App() {
   useEffect(() => {
     if (
       appStage.type !== "reader" ||
+      isDesktopRuntime() ||
       isUsingOfflineData ||
       !offlineReadingEnabled ||
       !offlineScope ||
@@ -3129,7 +3133,7 @@ export function App() {
       deviceSettings: { ...current.deviceSettings, recommendedTarget }
     } : current);
     setOfflineSummary(summary);
-    if (offlineReadingEnabled && !isUsingOfflineData && navigator.onLine !== false) {
+    if (offlineReadingEnabled && !isUsingOfflineData && !isLocalServiceOffline()) {
       if (offlineTargetRefreshTimer.current !== null) {
         window.clearTimeout(offlineTargetRefreshTimer.current);
       }

@@ -1,0 +1,20 @@
+import type { DesktopBridge, DesktopUpdateState } from "@dibao/shared";
+const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
+
+const bridge: DesktopBridge = {
+  getRuntime: () => ipcRenderer.invoke("dibao:runtime"),
+  getUpdateState: () => ipcRenderer.invoke("dibao:update-state"),
+  checkForUpdates: () => ipcRenderer.invoke("dibao:update-check"),
+  downloadUpdate: () => ipcRenderer.invoke("dibao:update-download"),
+  installUpdate: () => ipcRenderer.invoke("dibao:update-install"),
+  openDataDirectory: () => ipcRenderer.invoke("dibao:open-data"),
+  recoverBackup: () => ipcRenderer.invoke("dibao:recover"),
+  setAutoLaunch: enabled => ipcRenderer.invoke("dibao:auto-launch", enabled),
+  setHasUnsavedChanges: pending => ipcRenderer.invoke("dibao:pending-changes", pending),
+  onUpdateState: listener => {
+    const receive = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) => listener(state);
+    ipcRenderer.on("dibao:update-state", receive);
+    return () => ipcRenderer.removeListener("dibao:update-state", receive);
+  }
+};
+contextBridge.exposeInMainWorld("dibaoDesktop", bridge);

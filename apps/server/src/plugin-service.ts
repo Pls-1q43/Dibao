@@ -510,6 +510,11 @@ export class PluginService {
     }
   }
 
+  async disposeAndWait(): Promise<void> {
+    this.dispose();
+    await Promise.all([...this.disposingRuntimes.values()]);
+  }
+
   async checkUpdate(pluginId: string): Promise<PluginListItem> {
     const install = this.requireInstall(pluginId);
     if (!install.updateUrl) {
@@ -1198,7 +1203,7 @@ export class PluginService {
         runtime.disposed = true;
         const error = new PluginServiceError(503, "PLUGIN_RUNTIME_UNAVAILABLE", "Plugin host stopped");
         rejectPendingPluginCalls(pending, error);
-        if (child && !child.killed) {
+        if (child && child.exitCode === null && child.signalCode === null) {
           await terminatePluginChild(child);
         }
       }
@@ -3875,7 +3880,7 @@ function isTerminalDeliveryStatus(status: PluginDeliveryStatus): boolean {
 }
 
 async function terminatePluginChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+  if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
 
@@ -3890,10 +3895,9 @@ async function terminatePluginChild(child: ChildProcess): Promise<void> {
       resolve();
     };
     const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null && !child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
-      finish();
     }, PLUGIN_RUNTIME_STOP_GRACE_MS);
     child.once("exit", finish);
     child.kill();

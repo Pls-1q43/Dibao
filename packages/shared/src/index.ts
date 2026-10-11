@@ -155,6 +155,8 @@ export type ArticleState = {
   ignoredAt: number | null;
 };
 
+export * from "./desktop.js";
+
 export type RankReasonImpact = "positive" | "negative" | "neutral";
 
 export type RankReason = {

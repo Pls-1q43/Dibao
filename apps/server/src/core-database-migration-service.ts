@@ -163,6 +163,11 @@ export class CoreDatabaseMigrationService {
     }
   }
 
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    await this.running?.catch(() => undefined);
+  }
+
   private async runMigration(initial: CoreDatabaseMigrationStatus): Promise<CoreDatabaseMigrationStatus> {
     if (this.deferMs > 0) {
       await delay(this.deferMs);
