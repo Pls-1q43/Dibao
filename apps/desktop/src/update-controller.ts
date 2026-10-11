@@ -54,7 +54,7 @@ export class DesktopUpdateController {
       await this.canInstall();
       this.patch({ status: "installing" });
       await this.stop();
-      this.updater.quitAndInstall(false, true);
+      this.updater.quitAndInstall(true, true);
     } catch (error) {
       this.patch({ status: "downloaded", error: error instanceof Error ? error.message : "Update could not be installed" });
       throw error;

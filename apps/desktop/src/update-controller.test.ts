@@ -34,7 +34,7 @@ describe("desktop update policy", () => {
     f.emitter.emit("update-available", { version: "0.4.1-beta.2" });
     await f.controller.download(); expect(f.emitter.downloadUpdate).toHaveBeenCalledOnce();
     f.emitter.emit("update-downloaded");
-    await f.controller.install(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.emitter.quitAndInstall).toHaveBeenCalledOnce();
+    await f.controller.install(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.emitter.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(f.stop.mock.invocationCallOrder[0]).toBeLessThan(f.emitter.quitAndInstall.mock.invocationCallOrder[0]);
   });
   it("never installs when data upgrade or shutdown has failed", async () => {
