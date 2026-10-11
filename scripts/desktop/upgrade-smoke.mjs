@@ -112,8 +112,8 @@ try {
     });
     await new Promise(resolve => fixture.listen(0, "127.0.0.1", resolve));
     page = await launch();
-    await electron.evaluate(async ({ app, dialog }, url) => {
-      const { createRequire } = await import("node:module");
+    await electron.evaluate(({ app, dialog }, url) => {
+      const { createRequire } = process.getBuiltinModule("node:module");
       const updater = createRequire(`${app.getAppPath()}/package.json`)("electron-updater").autoUpdater;
       updater.setFeedURL({ provider: "generic", url, channel: "beta" });
       updater.disableDifferentialDownload = true;
@@ -126,7 +126,12 @@ try {
       const downloaded = await page.evaluate(() => window.dibaoDesktop.downloadUpdate().then(() => true, () => false));
       assert(downloaded === (scenario === "valid"), `${scenario} download did not respect updater verification`);
       assert(await page.evaluate(async () => (await fetch("/api/articles?view=latest&limit=1")).ok), "Failed download stopped local reading");
+      console.log(JSON.stringify({ updaterScenario: scenario, passed: true }));
     }
+    await page.evaluate(() => window.dibaoDesktop.setHasUnsavedChanges(true));
+    assert(!await page.evaluate(() => window.dibaoDesktop.installUpdate().then(() => true, () => false)), "Update ignored unsaved changes");
+    assert(await page.evaluate(async () => (await fetch("/api/articles?view=latest&limit=1")).ok), "An unsaved draft stopped local reading");
+    await page.evaluate(() => window.dibaoDesktop.setHasUnsavedChanges(false));
     const processHandle = electron.process();
     const exit = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Updater did not exit for installation")), 90_000);
@@ -166,7 +171,7 @@ try {
   const backups = await readdir(join(data, "backups"));
   assert(backups.length > 0, "Installer update skipped pre-upgrade backups");
   await writeFile(join(output, "upgrade.json"), JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, installation, data,
-    checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "force-exit-recovery", "data-regression"] }, null, 2));
+    checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "unsaved-draft-gate", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "force-exit-recovery", "data-regression"] }, null, 2));
   console.log(JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, output }));
 } finally {
   if (electron) await closeTestApplication(electron).catch(() => undefined);
