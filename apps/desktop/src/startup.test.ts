@@ -18,6 +18,9 @@ describe("desktop launch intent", () => {
     expect(args).toEqual(["Dibao", "--dibao-backups", FOREGROUND_STARTUP_ARG]);
     expect(isBackgroundStartup("win32", args)).toBe(false);
   });
+  it("does not carry an upgrade retry into later foreground launches", () => {
+    expect(foregroundRelaunchArgs([BACKGROUND_STARTUP_ARG, "--dibao-retry-upgrade"])).toEqual([FOREGROUND_STARTUP_ARG]);
+  });
   it("uses matching Windows login registration and lookup arguments", () => {
     const app = { getLoginItemSettings: vi.fn(), setLoginItemSettings: vi.fn() };
     const path = "C:\\Users\\Test\\App Data\\Dibao.exe";

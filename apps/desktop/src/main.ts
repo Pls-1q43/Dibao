@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, session, shell, Tray } from "electron";
 import electronUpdater from "electron-updater";
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DESKTOP_ORIGIN, type DesktopRuntimeInfo } from "@dibao/shared";
@@ -101,13 +101,19 @@ async function acquireDataLock() {
   }
 }
 
-async function boot(retry = false) {
+async function prepareData(retry = false) {
+  if (app.isReady()) throw new Error("Cold data protection cannot run after browser initialization");
+  await mkdir(root, { recursive: true, mode: 0o700 });
   if (!lockOwned) await acquireDataLock();
   await waitForPreviousDesktopWriters(root);
   await protection.initialize();
   await protection.restoreRequested();
   await protection.backupRequested();
   await protection.prepare(version, retry);
+  if (app.isReady()) throw new Error("The browser initialized before data protection finished");
+}
+
+async function boot() {
   stopped = false;
   upgradeReady = false;
   articlesReady = false;
@@ -330,7 +336,12 @@ async function showFailure(error: unknown) {
       type: "error", title: "Dibao", message: "Dibao could not open your data", detail: error instanceof Error ? error.message : String(error),
       buttons: ["Retry", "Restore backup", "Open data directory", "Quit"], cancelId: 3
     });
-    if (result.response === 0) { failureOpen = false; await boot(true); return; }
+    if (result.response === 0) {
+      await stopServices();
+      app.relaunch({ args: foregroundRelaunchArgs(process.argv.slice(1)).concat("--dibao-retry-upgrade") });
+      app.quit();
+      return;
+    }
     if (result.response === 1) {
       if (await chooseRecovery()) return;
       failureOpen = false;
@@ -362,12 +373,18 @@ async function chooseRecovery() {
 }
 
 if (gotLock) {
+  let preparationFailure: { error: unknown } | null = null;
+  // Top-level await keeps Chromium's default profile closed during cold data operations.
+  try { await prepareData(process.argv.includes("--dibao-retry-upgrade")); }
+  catch (error) {
+    preparationFailure = { error };
+    await writeFile(join(protection.paths.logs, "startup-error.txt"), error instanceof Error ? error.message : String(error), { mode: 0o600 }).catch(() => undefined);
+  }
   void app.whenReady().then(async () => {
     migrateLegacyLoginItem(app, process.platform, process.execPath);
     backgroundStartup = isBackgroundStartup(process.platform, process.argv, process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin);
     if (backgroundStartup && !windowRequested && process.platform === "darwin") app.setActivationPolicy("accessory");
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    await acquireDataLock();
+    if (preparationFailure) { await showFailure(preparationFailure.error); return; }
     await boot();
   }).catch(showFailure);
 }

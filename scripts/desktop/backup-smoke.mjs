@@ -163,6 +163,7 @@ try {
   await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, data, checks: ["empty-disabled", "manual-button", "unsaved-feedback", "parented-confirmation", "cancel-feedback", "cold-backup", "restore-selection", "cold-restore", "login", "article-state", "article-content", "plugin-key", "client-state", "safety-snapshot", "corruption-feedback", "untrusted-ipc", "narrow-layout"], errors }, null, 2));
   console.log(JSON.stringify({ backupUi: true, data, output }));
 } catch (error) {
+  console.error(await readFile(join(data, "logs", "startup-error.txt"), "utf8").catch(() => "No cold-start preparation error"));
   if (electron) for (const page of electron.windows()) {
     await page.screenshot({ path: join(output, "failure.png") }).catch(() => undefined);
     console.error((await page.locator("body").innerText().catch(() => "")).slice(-5000));

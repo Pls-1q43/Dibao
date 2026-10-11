@@ -7,7 +7,7 @@ export function isBackgroundStartup(platform: string, args: readonly string[], w
 }
 
 export function foregroundRelaunchArgs(args: readonly string[]) {
-  return args.filter(arg => arg !== BACKGROUND_STARTUP_ARG && arg !== FOREGROUND_STARTUP_ARG).concat(FOREGROUND_STARTUP_ARG);
+  return args.filter(arg => arg !== BACKGROUND_STARTUP_ARG && arg !== FOREGROUND_STARTUP_ARG && arg !== "--dibao-retry-upgrade").concat(FOREGROUND_STARTUP_ARG);
 }
 
 export function loginItemOptions(platform: string, executable: string): Electron.LoginItemSettingsOptions {

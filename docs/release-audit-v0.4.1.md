@@ -14,6 +14,7 @@ The release/v0.4.1 line preserves the prior desktop work and freezes Desktop, HT
 - Empty or incomplete newly created snapshots cannot be published as valid backups. Failures preserve the data version and current live data.
 - First-run Chromium bootstrap preferences are not mistaken for an existing database. Previously successful data with a missing, empty or symlinked database blocks startup/upgrade and requires recovery instead of creating an empty replacement.
 - Missing/empty-database recovery preserves residual current files in a verified `.incomplete` quarantine under the backup directory, then restores the selected complete snapshot. Quarantines are not normal restore points and are never pruned automatically.
+- Cold data protection now finishes with top-level await before Electron's ready event and Chromium profile initialization. This prevents Windows profile locks and startup writes during backup/restore. Retry restarts into the same cold gate; persistent profile paths and cookie encryption state are unchanged.
 - A smoke test used an asynchronous browser predicate without awaiting it. It now polls the actual saved reading progress, so pending-write acceptance is no longer vacuous.
 - Formal asset assembly now verifies every installer, checksum, native source identity and upgrade result before Docker promotion. Both Mac architectures are merged into updater metadata rather than overwriting each other. Three-language notes are required before building a formal version. Partial uploads remain drafts.
 
@@ -38,7 +39,7 @@ The release/v0.4.1 line preserves the prior desktop work and freezes Desktop, HT
 Completed on macOS Apple Silicon on 2026-10-11:
 
 - Full source build and typecheck.
-- 651 initial workspace tests and 18 release-gate tests; desktop coverage subsequently increased from 51 to 56 cases for bootstrap, missing-database protection and usable recovery.
+- 651 initial workspace tests and 18 release-gate tests; desktop coverage subsequently increased from 51 to 57 cases for bootstrap, missing-database protection, usable recovery and one-shot retry intent.
 - Historical upgrade fixtures: fresh, v0.1.0, v0.1.1, v0.1.2, v0.1.3, v0.2.0, v0.2.1, v0.3.0, v0.3.1 and v0.4.0; no pending migrations, foreign-key errors or changed embeddings.
 - 28 browser/mobile E2E cases, including real offline/cold refresh, session revocation, recommendation scrolling, actions and desktop-control absence.
 - Packaged native application: three-language first run, optional RSS setup, plugin stylesheet, login restart, private HTTP, offline reading, SSE, untrusted IPC, tray, singleton, resume and progress flush.
@@ -58,4 +59,4 @@ The full development-dependency audit still reports seven moderate entries from 
 
 Trivy also flags Debian source-package advisories without a vendor fix. They are retained in full reports, not hidden by a blanket ignore list: util-linux/mount/nsenter issues require privileged mounting/cgroup operations absent from the non-root container; systemd-homed is not installed; gzip LZH/Perl archive/ncurses terminal paths are not used to parse articles; zlib's minizip API is not used; GnuTLS and system OpenSSL DTLS paths are not used by the Node HTTP/TLS service. These findings do not establish a reachable remote Dibao exploit. Do not run the image privileged, add host-device mounts or grant arbitrary plugins root access. Re-evaluate exposure and vendor fixes on every release. Fixable high/critical findings remain blocking.
 
-References: [Electron security checklist](https://www.electronjs.org/docs/latest/tutorial/security), [Undici advisory](https://github.com/nodejs/undici/security/advisories/GHSA-3xpg-4rpp-hhhm), [Fastify advisory](https://github.com/fastify/fastify/security/advisories/GHSA-4mh8-r7rc-xpvc), [desktop installation limits](./desktop-install.md).
+References: [Electron security checklist](https://www.electronjs.org/docs/latest/tutorial/security), [Electron pre-ready ESM ordering](https://www.electronjs.org/docs/latest/tutorial/esm#you-must-use-await-generously-before-the-apps-ready-event), [Undici advisory](https://github.com/nodejs/undici/security/advisories/GHSA-3xpg-4rpp-hhhm), [Fastify advisory](https://github.com/fastify/fastify/security/advisories/GHSA-4mh8-r7rc-xpvc), [desktop installation limits](./desktop-install.md).
