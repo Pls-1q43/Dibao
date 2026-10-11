@@ -523,7 +523,8 @@ describe("server API vertical slice", () => {
           export async function activate(ctx) {
             ctx.api.get("/locale", async () => ({
               startupLocale: ctx.locale,
-              currentLocale: await ctx.i18n.getLocale()
+              currentLocale: await ctx.i18n.getLocale(),
+              hasDesktopCapability: Boolean(process.env.DIBAO_DESKTOP_RUNTIME_TOKEN)
             }));
           }
         `
@@ -549,7 +550,14 @@ describe("server API vertical slice", () => {
         publisher: "Example"
       });
 
-      expect((await app.inject({ method: "POST", url: "/api/plugins/com.example.localized/enable" })).statusCode).toBe(200);
+      const previousToken = process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+      process.env.DIBAO_DESKTOP_RUNTIME_TOKEN = "desktop-private-test-capability";
+      try {
+        expect((await app.inject({ method: "POST", url: "/api/plugins/com.example.localized/enable" })).statusCode).toBe(200);
+      } finally {
+        if (previousToken === undefined) delete process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+        else process.env.DIBAO_DESKTOP_RUNTIME_TOKEN = previousToken;
+      }
       const contributions = await app.inject({ method: "GET", url: "/api/plugins/contributions" });
       expect(contributions.statusCode, contributions.body).toBe(200);
       const localized = contributions.json().data.find((plugin: { id: string }) => plugin.id === "com.example.localized");
@@ -569,7 +577,8 @@ describe("server API vertical slice", () => {
       expect(locale.statusCode, locale.body).toBe(200);
       expect(locale.json().data).toEqual({
         startupLocale: "en-US",
-        currentLocale: "ja-JP"
+        currentLocale: "ja-JP",
+        hasDesktopCapability: false
       });
     } finally {
       await app.close();

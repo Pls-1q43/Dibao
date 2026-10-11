@@ -54,6 +54,13 @@ async function api(page, path, body) {
 function assert(value, message) { if (!value) throw new Error(message); }
 try {
   let page = await launch();
+  const listening = (await readFile(join(data, "logs", "server.log"), "utf8")).split("\n")
+    .filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } })
+    .find(line => line?.msg?.startsWith("Server listening at "));
+  assert(Boolean(listening), "Private local service did not announce its listener");
+  const internalUrl = new URL(listening.msg.slice("Server listening at ".length));
+  assert(internalUrl.hostname === "127.0.0.1", "Desktop service is exposed beyond loopback");
+  assert((await fetch(`${internalUrl.origin}/api/system/health`)).status === 403, "Local service accepted a request without the private capability");
   const setup = await api(page, "/api/auth/setup", { username: "DesktopTest", password: "Desktop-test-password-2026" });
   assert(setup.status === 200, `Account creation failed: ${JSON.stringify(setup)}`);
   assert((await api(page, "/api/auth/session")).payload.data.authenticated, "Desktop cookie was not persisted");
@@ -135,7 +142,7 @@ try {
     await protection.restore(prepared.pending.backupId);
   }
   assert(errors.length === 0, `Renderer errors: ${errors.join("; ")}`);
-  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["account", "cookies", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume", "pending-progress-flush", "writer-ownership"] }, null, 2));
+  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["private-loopback", "account", "cookies", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume", "pending-progress-flush", "writer-ownership"] }, null, 2));
   console.log(JSON.stringify({ passed: true, data, output }));
 } catch (error) {
   if (electron) {

@@ -1223,9 +1223,12 @@ export class PluginService {
       entryPath,
       locale: this.currentLocale()
     }), "utf8").toString("base64url");
+    const pluginEnvironment = { ...process.env };
+    delete pluginEnvironment.DIBAO_DESKTOP_RUNTIME_TOKEN;
+    delete pluginEnvironment.DIBAO_DESKTOP_OWNER_DIR;
     child = spawn(host.command, host.args, {
       env: {
-        ...process.env,
+        ...pluginEnvironment,
         DIBAO_PLUGIN_HOST_CONFIG: hostConfig
       },
       stdio: ["ignore", "ignore", "pipe", "ipc"]
