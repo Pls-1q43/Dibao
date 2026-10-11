@@ -44,6 +44,8 @@ Windows installer validation runs only on a disposable GitHub Actions runner, us
 
 `.github/workflows/build-desktop.yml` builds Windows x64, macOS Intel and macOS Apple Silicon, and uploads installers plus validation evidence. A push to `0.4` creates only CI artifacts. It does not publish a release, tag, Docker image or alter Synology.
 
+The first complete native acceptance record is [desktop beta.1 validation](./desktop-validation-0.4.1-beta.1.md), including actual installed upgrades and explicit unsigned-build limits.
+
 ## Release boundary
 
 The current desktop package is `0.4.1-beta.1`, distinct from the existing `0.4.0` service line. Formal desktop publication requires separate approval. Upload the generated installer, blockmaps and matching `beta.yml` / `beta-mac.yml` only to an approved prerelease; stable metadata belongs only to stable releases. The application consumes GitHub Releases without a publishing token. Data compatibility is conservative: downgrades require explicit restore.
