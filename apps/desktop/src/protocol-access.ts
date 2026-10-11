@@ -9,4 +9,3 @@ export function desktopRequestAccess(request: Request & { initiatorOrigin?: stri
       url.pathname === "/api/plugins/ui.css" && ["GET", "HEAD"].includes(request.method)) return "public-style";
   return "denied";
 }
-
