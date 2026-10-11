@@ -1,6 +1,6 @@
 import { _electron } from "@playwright/test";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { repoRoot } from "./prepare-resources.mjs";
@@ -25,6 +25,7 @@ for (const [locale, enabled] of cases) {
   if (!process.env.DIBAO_DESKTOP_EXECUTABLE) env.DIBAO_DESKTOP_RESOURCES = process.env.DIBAO_DESKTOP_RESOURCES ?? join(repoRoot, ".tmp", `desktop-${process.platform}-${process.arch}`, "payload");
   const options = { executablePath: process.env.DIBAO_DESKTOP_EXECUTABLE ?? require("electron"), args: process.env.DIBAO_DESKTOP_EXECUTABLE ? [] : [join(repoRoot, "apps", "desktop")], env, timeout: 90_000 };
   let electron;
+  let stderr = "";
   const errors = [];
   const shutdownErrors = [];
   const failedRequests = [];
@@ -32,6 +33,7 @@ for (const [locale, enabled] of cases) {
   const failedStyles = [];
   try {
     electron = await _electron.launch(options);
+    electron.process().stderr?.on("data", chunk => { stderr = (stderr + chunk.toString()).slice(-16000); });
     let page = await electron.firstWindow({ timeout: 90_000 });
     const tray = await electron.evaluate(({ app, nativeImage }) => {
       const require = process.getBuiltinModule("node:module").createRequire(`${app.getAppPath()}/package.json`);
@@ -103,6 +105,13 @@ for (const [locale, enabled] of cases) {
     assert(!await page.locator("#setup-feed-url").isVisible(), "Restart required a feed after the step was skipped");
     assert(await page.evaluate(async () => (await (await fetch("/api/auth/session")).json()).data.authenticated), "Restart lost the account session");
     results.push({ locale, enabled, passed: true, tray, consoleErrors: errors, shutdownErrors, failedRequests });
+  } catch (error) {
+    const serverLog = await readFile(join(data, "logs", "server.log"), "utf8").catch(() => "No local service log");
+    const state = await electron?.evaluate(({ app, BrowserWindow }) => ({ ready: app.isReady(), version: app.getVersion(), windows: BrowserWindow.getAllWindows().map(window => ({ url: window.webContents.getURL(), visible: window.isVisible() })) })).catch(() => null);
+    const diagnostic = JSON.stringify({ locale, state, error: String(error), stderr, serverLog: serverLog.slice(-24000) }, null, 2).replace(/[a-f0-9]{64}/gi, "[redacted]");
+    await writeFile(join(output, `${locale}-failure.json`), diagnostic);
+    console.error(diagnostic);
+    throw error;
   } finally {
     if (electron) await closeTestApplication(electron);
   }
