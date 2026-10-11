@@ -24,6 +24,10 @@ If the Sentry config is missing or empty, treat the release image as invalid and
 
 ## Release Checklist
 
+### User-Facing Release Notes
+
+Follow the feature-first style of previous releases. Start each language with a short product summary, then describe new features, improvements and concrete fixes from the previous public tag in user terms. Do not present existing features as new. Keep upgrade impact, migrations, direct downloads and known limitations below the changes. Put detailed installation instructions, test counts, CI/recovery records, vulnerability findings and implementation details in linked guides or the release audit, not in the lead release narrative. Keep Simplified Chinese, English and Japanese equivalent in scope and limitations.
+
 Every formal release, starting with 0.4.1, must deliver Docker linux/amd64 and linux/arm64 plus Windows x64 EXE, Intel Mac DMG and Apple Silicon Mac DMG. Desktop assets are direct Release downloads, not Actions wrappers. Missing targets block promotion; a Docker-only build is not a complete release.
 
 Run `Publish Complete Release` with `validation_only=true`, an exact candidate revision and matching version before tagging. The native matrix, installed upgrades, security/E2E gates and exact registry-digest migration checks must all pass. Validation may publish a run-scoped candidate, but cannot move formal or stable/latest tags. After approval, tag the verified revision. The tag workflow repeats acceptance and validates all installers before promoting Docker. Asset uploads remain a draft until complete. Only then merge the completed release into main and sync the development line.
