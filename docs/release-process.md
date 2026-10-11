@@ -24,6 +24,10 @@ If the Sentry config is missing or empty, treat the release image as invalid and
 
 ## Release Checklist
 
+Every formal release, starting with 0.4.1, must deliver Docker linux/amd64 and linux/arm64 plus Windows x64 EXE, Intel Mac DMG and Apple Silicon Mac DMG. Desktop assets are direct Release downloads, not Actions wrappers. Missing targets block promotion; a Docker-only build is not a complete release.
+
+Run `Publish Complete Release` with `validation_only=true`, an exact candidate revision and matching version before tagging. The native matrix, installed upgrades, security/E2E gates and exact registry-digest migration checks must all pass. Validation may publish a run-scoped candidate, but cannot move formal or stable/latest tags. After approval, tag the verified revision. The tag workflow repeats acceptance and validates all installers before promoting Docker. Asset uploads remain a draft until complete. Only then merge the completed release into main and sync the development line.
+
 - [ ] Update `package.json` version.
 - [ ] Confirm Release Date.
 - [ ] Calculate Change Date as Release Date plus 4 years.
@@ -34,6 +38,12 @@ If the Sentry config is missing or empty, treat the release image as invalid and
 - [ ] Update CHANGELOG or release notes.
 - [ ] Check README License section for accuracy.
 - [ ] Run release gates appropriate for the release scope.
+- [ ] All three native installers pass first run, sandbox/IPC, offline reading, backup/recovery, background startup and installed upgrade checks at the same revision/version.
+- [ ] Audit production dependencies and review build-only advisories; no shipping high/critical vulnerabilities.
+- [ ] Browser/mobile E2E proves desktop controls absent; Docker contains no Electron or desktop runtime.
+- [ ] Validate direct installers, blockmaps, merged Mac updater metadata, SHA256SUMS and source manifest before Docker promotion.
+- [ ] Three-language notes include install, full-data backup, migration list, rollback and unsigned/manual-update limitations.
 - [ ] Create the release tag only after explicit approval.
 - [ ] Publish the Docker image with an explicit immutable version tag.
 - [ ] Verify the published Docker image has non-empty runtime and browser Sentry config without printing private values.
+- [ ] Verify the public Release contains all installers, and version/stable/latest image aliases resolve to the accepted digest.

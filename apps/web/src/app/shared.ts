@@ -149,11 +149,16 @@ export function stageForSetupStatus(status: SetupStatus): AppStage {
     return { type: "derived-data-upgrade" };
   }
 
-  if (status.hasFeeds && status.optionalPluginSteps && status.optionalPluginSteps.length > 0) {
+  const sourcesCompleted = status.sourcesCompleted ?? status.hasFeeds;
+  if (!sourcesCompleted) {
+    return { type: "setup-sources" };
+  }
+
+  if (status.optionalPluginSteps && status.optionalPluginSteps.length > 0) {
     return { type: "setup-optional-plugins", plugins: status.optionalPluginSteps };
   }
 
-  return { type: status.hasFeeds ? "reader" : "setup-sources" };
+  return { type: "reader" };
 }
 
 export function correctSourceSelection(

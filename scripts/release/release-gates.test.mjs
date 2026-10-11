@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { checkVersion } from "./check-version.mjs";
+import { dibaoVersion } from "../../packages/shared/src/index.ts";
 import { assertImageArchitecture, assertUpgradeStatus, embeddingSnapshot, seedFixture, sentryReport, verifyHttpRelease } from "./image-probe.mjs";
 import { platformImages, safeProbeFailure } from "./verify-docker-release.mjs";
 import { assertImmutableTags, isMissingManifest } from "./promote-image.mjs";
@@ -23,7 +24,7 @@ import { buildServer } from "../../apps/server/src/app.ts";
 async function verifyRealHttpRoutes(db, seeded) {
   const app = buildServer({ db, logger: false, backgroundJobs: false, webDistDir: false, recordForegroundActivity: false });
   try {
-    await verifyHttpRelease({ expectedVersion: "0.4.0", seeded, request: async (url, options = {}) => {
+    await verifyHttpRelease({ expectedVersion: dibaoVersion, seeded, request: async (url, options = {}) => {
       const response = await app.inject({ method: options.method ?? "GET", url: new URL(url).pathname,
         headers: { host: new URL(url).host, ...options.headers }, payload: options.body });
       const headers = new Headers();
@@ -113,7 +114,7 @@ test("published platform selection is pinned to digest and rejects missing/dupli
   assert.throws(() => platformImages({ ...manifest, digest: "wrong" }, image));
 });
 
-for (const tag of ["v0.3.1", "v0.1.0", "v0.1.3"]) {
+for (const tag of ["v0.4.0", "v0.3.1", "v0.1.0", "v0.1.3"]) {
   test(`image fixture runs on actual ${tag} migrations and completes full derived upgrade without embedding changes`, async () => {
     const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
     const paths = git("ls-tree", "-r", "--name-only", tag, "packages/db/migrations").trim().split("\n");
@@ -167,6 +168,10 @@ for (const tag of ["v0.3.1", "v0.1.0", "v0.1.3"]) {
 test("workflow verifies registry digest before promotion and enables opt-in sourcemaps", () => {
   const workflow = readFileSync(".github/workflows/publish-docker-image.yml", "utf8");
   assert(workflow.indexOf("node scripts/release/verify-docker-release.mjs") < workflow.indexOf("node scripts/release/promote-image.mjs"));
+  assert(workflow.includes("needs: [source, desktop]"));
+  assert(workflow.indexOf("node scripts/release/desktop-assets.mjs") < workflow.indexOf("node scripts/release/promote-image.mjs"));
+  assert(workflow.includes("!inputs.validation_only"));
+  assert(workflow.includes("node scripts/release/publish-release.mjs"));
   assert(workflow.includes("flavor: latest=false"));
   assert.equal((workflow.match(/uses: docker\/build-push-action/g) ?? []).length, 1);
   assert(workflow.includes("DIBAO_SENTRY_UPLOAD_SOURCEMAPS=1"));

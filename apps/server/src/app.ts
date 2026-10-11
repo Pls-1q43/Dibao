@@ -230,7 +230,7 @@ import {
   RetentionCleanupJobService,
   RetentionCleanupScheduler
 } from "./retention-cleanup-job-service.js";
-import { SettingsService, SettingsServiceError } from "./settings-service.js";
+import { SettingsService, SettingsServiceError, supportedSettingsLocales, type SettingsLocale } from "./settings-service.js";
 import {
   attachServerTelemetryErrorHandler,
   configureServerTelemetry
@@ -253,6 +253,7 @@ type HealthResponse = {
 type SetupStatusResponse = {
   setupCompleted: boolean;
   hasFeeds: boolean;
+  sourcesCompleted?: boolean;
   hasEmbeddingProvider: boolean;
   firstRefreshStatus: "idle" | "running" | "succeeded" | "failed";
   coreDatabaseMigration?: CoreDatabaseMigrationStatus;
@@ -282,6 +283,7 @@ type AuthCredentialBody = {
   username?: unknown;
   password?: unknown;
   telemetryEnabled?: unknown;
+  locale?: unknown;
 };
 
 type ChangePasswordBody = {
@@ -1855,11 +1857,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     try {
       const session = await authService.setup(parsed.username, parsed.password, requestMeta(request));
       settingsService.markInstallationCompleted();
-      if (parsed.telemetryEnabled !== undefined) {
+      if (parsed.telemetryEnabled !== undefined || parsed.locale !== undefined) {
         const result = settingsService.updateSettings({
-          telemetry: {
-            enabled: parsed.telemetryEnabled
-          }
+          ...(parsed.telemetryEnabled !== undefined ? { telemetry: { enabled: parsed.telemetryEnabled } } : {}),
+          ...(parsed.locale !== undefined ? { ui: { locale: parsed.locale } } : {})
         });
         configureServerTelemetry({
           enabled: result.settings.telemetry.enabled
@@ -1965,7 +1966,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
   });
 
-  app.get("/api/setup/status", async () => {
+  function currentSetupStatus() {
     const coreMigrationStatus = coreDatabaseMigrationService.getStatus();
     if (coreMigrationStatus.blocking) {
       return {
@@ -1981,6 +1982,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const hasFeeds = feeds.list().length > 0;
+    const sourcesCompleted = hasFeeds || settings.getJson("setup.sources.completed") === true;
     return {
       data: getSetupStatus(
         credentials.hasCredential(),
@@ -1988,13 +1990,20 @@ export function buildServer(options: BuildServerOptions = {}) {
         embeddingProviderService.hasActiveProviderAndIndex(),
         coreMigrationStatus,
         derivedDataUpgradeService.getStatus(),
-        hasFeeds
+        sourcesCompleted
           ? pluginService.listSetupSteps().filter(
               (plugin) => settings.getJson(`setup.optionalPlugin.${plugin.id}`) === null
             )
-          : []
+          : [],
+        sourcesCompleted
       )
     };
+  }
+
+  app.get("/api/setup/status", async () => currentSetupStatus());
+  app.post("/api/setup/sources/skip", async () => {
+    settings.setJson("setup.sources.completed", true, options.now?.() ?? Date.now());
+    return currentSetupStatus();
   });
 
   app.post<{ Params: PluginParams; Body: OptionalPluginBody }>(
@@ -4267,7 +4276,8 @@ function getSetupStatus(
   hasEmbeddingProvider: boolean,
   coreDatabaseMigration: CoreDatabaseMigrationStatus,
   derivedDataUpgrade: DerivedDataUpgradeStatus | null,
-  optionalPluginSteps: unknown[] = []
+  optionalPluginSteps: unknown[] = [],
+  sourcesCompleted?: boolean
 ): SetupStatusResponse {
   const status: SetupStatusResponse = {
     setupCompleted,
@@ -4277,6 +4287,9 @@ function getSetupStatus(
   };
   if (optionalPluginSteps.length > 0) {
     status.optionalPluginSteps = optionalPluginSteps;
+  }
+  if (sourcesCompleted !== undefined) {
+    status.sourcesCompleted = sourcesCompleted;
   }
   if (coreDatabaseMigration.blocking || coreDatabaseMigration.state === "pending") {
     status.coreDatabaseMigration = coreDatabaseMigration;
@@ -6777,7 +6790,7 @@ function parseDiscoverFeedBody(body: DiscoverFeedBody | undefined):
 }
 
 function parseAuthCredentialBody(body: AuthCredentialBody | undefined):
-  | { ok: true; username: string; password: string; telemetryEnabled?: boolean }
+  | { ok: true; username: string; password: string; telemetryEnabled?: boolean; locale?: SettingsLocale }
   | { ok: false; message: string; details?: unknown } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, message: "request body must be an object" };
@@ -6813,11 +6826,16 @@ function parseAuthCredentialBody(body: AuthCredentialBody | undefined):
   const telemetryEnabled =
     typeof body.telemetryEnabled === "boolean" ? body.telemetryEnabled : undefined;
 
+  if (Object.hasOwn(body, "locale") && !(supportedSettingsLocales as readonly unknown[]).includes(body.locale)) {
+    return { ok: false, message: "locale must be zh-CN, en-US, or ja-JP", details: { field: "locale" } };
+  }
+
   return {
     ok: true,
     username: body.username,
     password: body.password,
-    telemetryEnabled
+    telemetryEnabled,
+    locale: body.locale as SettingsLocale | undefined
   };
 }
 

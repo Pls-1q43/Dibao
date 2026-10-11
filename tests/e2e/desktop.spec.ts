@@ -50,6 +50,10 @@ test("desktop MVP self-host smoke flow", async ({ page }) => {
 
     // First setup must retain its offline scope without a reload or a second login.
     await page.getByRole("link", { name: "设置", exact: true }).click();
+    expect(await page.evaluate(() => typeof window.dibaoDesktop)).toBe("undefined");
+    for (const name of ["打开数据目录", "创建备份", "登录系统时在后台启动", "重启并更新"]) {
+      await expect(page.getByText(name, { exact: true })).toHaveCount(0);
+    }
     const firstSetupToggle = page.getByRole("switch", { name: "启用离线阅读" });
     await firstSetupToggle.check();
     await expect(firstSetupToggle).toBeChecked();

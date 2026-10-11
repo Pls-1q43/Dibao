@@ -10,6 +10,12 @@ import { DesktopRuntime } from "./runtime.js";
 import { DesktopUpdateController } from "./update-controller.js";
 import { desktopCookieHeader, storeDesktopCookies } from "./cookie-bridge.js";
 import { waitForPreviousDesktopWriters } from "./process-ownership.js";
+import { desktopRequestAccess } from "./protocol-access.js";
+import { createDesktopTrayIcon } from "./tray-icon.js";
+import { DesktopBackupController } from "./backup-controller.js";
+import { backupDialogOptions } from "./backup-dialog.js";
+import { backupError, backupErrorCode } from "./backup-errors.js";
+import { foregroundRelaunchArgs, isBackgroundStartup, loginItemOptions, migrateLegacyLoginItem, setDesktopAutoLaunch } from "./startup.js";
 
 const root = desktopDataRoot();
 const protection = new DesktopDataProtection(root);
@@ -34,17 +40,35 @@ let lockOwned = false;
 let hasUnsavedChanges = false;
 let serviceStopping = false;
 let browserSession: Electron.Session | null = null;
+let backgroundStartup = false;
+let windowReady = false;
+let windowRequested = false;
 const version = app.getVersion();
 const channel = version.includes("-") ? "beta" : "latest";
 const here = dirname(fileURLToPath(import.meta.url));
 const resourceRoot = process.env.DIBAO_DESKTOP_RESOURCES ?? (app.isPackaged ? join(process.resourcesPath, "dibao") : resolve(here, "../../.."));
+const backups = new DesktopBackupController(protection, version, async () => {
+  if (!lockOwned || quitting || failureOpen || ["downloading", "installing"].includes(updates?.state.status ?? "")) throw backupError("busy");
+  if (hasUnsavedChanges) throw backupError("unsaved");
+  if (!upgradeReady || !articlesReady || (await protection.readState())?.pending) throw backupError("upgrade");
+}, async (action, locale, backup) => {
+  const options = backupDialogOptions(action, locale, backup);
+  const result = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+  return result.response === 1;
+}, () => stopServices(false), () => {
+  quitting = true;
+  app.relaunch({ args: foregroundRelaunchArgs(process.argv.slice(1).filter(arg => arg !== "--dibao-backups")).concat("--dibao-backups") });
+  app.quit();
+});
 
-app.on("second-instance", () => showWindow());
-app.on("activate", () => showWindow());
+app.on("second-instance", (_event, args) => { if (!isBackgroundStartup(process.platform, args)) showWindow(); });
+// macOS also emits activate during launch, before any user requests the window.
+app.on("activate", () => { if (windowReady) showWindow(); });
 app.on("window-all-closed", () => undefined);
 app.on("before-quit", event => {
   if (stopped) return;
   event.preventDefault();
+  if (backups.busy) return;
   if (quitting) return;
   quitting = true;
   void (async () => {
@@ -82,6 +106,7 @@ async function boot(retry = false) {
   await waitForPreviousDesktopWriters(root);
   await protection.initialize();
   await protection.restoreRequested();
+  await protection.backupRequested();
   await protection.prepare(version, retry);
   stopped = false;
   upgradeReady = false;
@@ -96,12 +121,17 @@ async function boot(retry = false) {
     activeSession.protocol.handle("https", async request => {
       const url = new URL(request.url);
       if (url.origin !== DESKTOP_ORIGIN) return activeSession.fetch(request, { bypassCustomProtocolHandlers: true });
-      const initiator = (request as Request & { initiatorOrigin?: string }).initiatorOrigin;
-      if (initiator !== undefined && initiator !== DESKTOP_ORIGIN) return new Response("Untrusted origin", { status: 403 });
+      const access = desktopRequestAccess(request);
+      if (access === "denied") return new Response("Untrusted origin", { status: 403 });
       if (!runtime || !runtime.port) return new Response("Local service is unavailable", { status: 503 });
       if (serviceStopping) return new Response("Local service is saving data", { status: 503 });
       const headers = new Headers(request.headers);
-      headers.set("cookie", await desktopCookieHeader(activeSession.cookies, request.url));
+      if (access === "trusted") {
+        headers.set("cookie", await desktopCookieHeader(activeSession.cookies, request.url));
+      } else {
+        headers.delete("cookie");
+        headers.delete("authorization");
+      }
       headers.set("x-dibao-desktop-token", runtime.token);
       headers.set("x-forwarded-host", "dibao.localhost");
       headers.set("x-forwarded-proto", "https");
@@ -112,7 +142,7 @@ async function boot(retry = false) {
         redirect: "manual",
         signal: request.signal
       });
-      await storeDesktopCookies(response.headers, activeSession.cookies);
+      if (access === "trusted") await storeDesktopCookies(response.headers, activeSession.cookies);
       // Read only bounded status responses; SSE and article bodies remain streamed.
       if (["/api/system/upgrade/status", "/api/setup/status"].includes(url.pathname) && response.ok) {
         const status = await response.clone().json() as { data: { blocking?: boolean; state?: string; coreDatabaseMigration?: { blocking: boolean }; derivedDataUpgrade?: { blocking: boolean } } };
@@ -143,16 +173,20 @@ async function completeIfReady() {
 }
 
 function createWindow(browserSession: Electron.Session) {
+  windowReady = false;
   window = new BrowserWindow({
     width: 1280, height: 900, minWidth: 720, minHeight: 540, show: false,
     backgroundColor: "#ffffff",
     webPreferences: { session: browserSession, preload: join(here, "preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false }
   });
-  window.once("ready-to-show", () => window?.show());
+  window.once("ready-to-show", () => {
+    windowReady = true;
+    if (!backgroundStartup || windowRequested) showWindow();
+  });
   window.on("close", event => { if (!quitting) { event.preventDefault(); window?.hide(); } });
   protectNavigation(window);
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  void window.loadURL(DESKTOP_ORIGIN);
+  void window.loadURL(DESKTOP_ORIGIN + (process.argv.includes("--dibao-backups") ? "/?page=settings" : ""));
 }
 
 function protectNavigation(target: BrowserWindow) {
@@ -172,12 +206,17 @@ function protectNavigation(target: BrowserWindow) {
   });
 }
 
-function showWindow() { if (window) { window.show(); window.focus(); } }
+function showWindow() {
+  windowRequested = true;
+  if (!window || !windowReady) return;
+  if (process.platform === "darwin") app.setActivationPolicy("regular");
+  if (window.isMinimized()) window.restore();
+  window.show(); window.focus();
+}
 
 function createTray() {
   if (tray) return;
-  const icon = nativeImage.createFromPath(join(resourceRoot, "desktop-assets", "tray.png"));
-  if (process.platform === "darwin") icon.setTemplateImage(true);
+  const icon = createDesktopTrayIcon(nativeImage.createFromPath(join(resourceRoot, "desktop-assets", "tray.png")), process.platform);
   tray = new Tray(icon);
   tray.setToolTip("Dibao");
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -199,6 +238,7 @@ function configureUpdates() {
   updates = new DesktopUpdateController(autoUpdater, version, process.platform === "darwin" && process.env.DIBAO_DESKTOP_SIGNED !== "true", state => {
     window?.webContents.send("dibao:update-state", state);
   }, async () => {
+    if (backups.busy || quitting || failureOpen) throw new Error("Finish the backup or recovery operation before updating");
     if (hasUnsavedChanges) throw new Error("Save your changes before updating");
     if (!upgradeReady || !articlesReady || (await protection.readState())?.pending) throw new Error("Finish the database upgrade and open the article list before updating");
     await protection.checkBackupSpace(256 * 1024 * 1024);
@@ -222,23 +262,35 @@ function handle(channel: string, handler: (...args: unknown[]) => unknown) {
   ipcMain.handle(channel, (event, ...args) => { assertSender(event); return handler(...args); });
 }
 
-handle("dibao:runtime", (): DesktopRuntimeInfo => ({ platform: process.platform, version, channel, autoLaunch: app.getLoginItemSettings().openAtLogin }));
+handle("dibao:runtime", (): DesktopRuntimeInfo => ({ platform: process.platform, version, channel, autoLaunch: app.getLoginItemSettings(loginItemOptions(process.platform, process.execPath)).openAtLogin }));
 handle("dibao:update-state", () => updates?.state);
 handle("dibao:update-check", () => updates?.check());
 handle("dibao:update-download", () => updates?.download());
 handle("dibao:update-install", () => updates?.install());
 handle("dibao:open-data", () => shell.openPath(root));
-handle("dibao:recover", () => chooseRecovery());
+handle("dibao:backup-state", async () => {
+  try { return await backups.state(); }
+  catch (error) { throw backupError(backupErrorCode(error)); }
+});
+async function runBackupOperation(action: "backup" | "restore", locale: unknown, id?: unknown) {
+  try { return await backups.run(action, locale, id); }
+  catch (error) {
+    if (stopped || !window) { quitting = false; void showFailure(error); }
+    throw error;
+  }
+}
+handle("dibao:backup-create", locale => runBackupOperation("backup", locale));
+handle("dibao:recover", (id, locale) => runBackupOperation("restore", locale, id));
 handle("dibao:auto-launch", enabled => {
   if (typeof enabled !== "boolean") throw new Error("Invalid startup setting");
-  app.setLoginItemSettings({ openAtLogin: enabled });
+  setDesktopAutoLaunch(app, process.platform, process.execPath, enabled);
 });
 handle("dibao:pending-changes", pending => {
   if (typeof pending !== "boolean") throw new Error("Invalid pending state");
   hasUnsavedChanges = pending;
 });
 
-async function stopServices() {
+async function stopServices(releaseLock = true) {
   if (stopped) return;
   for (const opened of BrowserWindow.getAllWindows()) {
     if (new URL(opened.webContents.getURL() || "about:blank").origin !== DESKTOP_ORIGIN) continue;
@@ -255,12 +307,13 @@ async function stopServices() {
   catch (error) { serviceStopping = false; throw error; }
   for (const opened of BrowserWindow.getAllWindows()) { opened.webContents.stop(); opened.destroy(); }
   window = null;
+  windowReady = false;
   if (browserSession) {
     await browserSession.cookies.flushStore();
     await browserSession.flushStorageData();
   }
   runtime = null;
-  if (lockOwned) { await rm(protection.paths.lock, { force: true }); lockOwned = false; }
+  if (lockOwned && releaseLock) { await rm(protection.paths.lock, { force: true }); lockOwned = false; }
   stopped = true;
 }
 
@@ -272,6 +325,7 @@ async function showFailure(error: unknown) {
     runtime = null;
     window?.destroy();
     window = null;
+    windowReady = false;
     const result = await dialog.showMessageBox({
       type: "error", title: "Dibao", message: "Dibao could not open your data", detail: error instanceof Error ? error.message : String(error),
       buttons: ["Retry", "Restore backup", "Open data directory", "Quit"], cancelId: 3
@@ -293,20 +347,25 @@ async function chooseRecovery() {
   if (hasUnsavedChanges) throw new Error("Save your changes before restoring a backup");
   const backups = await protection.listBackups();
   if (!backups.length) throw new Error("No data backup is available");
-  const choice = await dialog.showMessageBox({
+  const options: Electron.MessageBoxOptions = {
     type: "warning", message: "Restore a backup? Changes after its date will be rolled back. The current data will be saved separately. Dibao will restart before restoring.",
     buttons: [...backups.map(b => `${b.createdAt} (${b.version})`), "Cancel"], cancelId: backups.length, defaultId: backups.length
-  });
+  };
+  const choice = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
   if (choice.response >= backups.length) return false;
-  await stopServices();
+  await protection.verifyBackup(backups[choice.response].id);
+  await stopServices(false);
   await protection.requestRestore(backups[choice.response].id);
-  app.relaunch();
+  app.relaunch({ args: foregroundRelaunchArgs(process.argv.slice(1)) });
   app.quit();
   return true;
 }
 
 if (gotLock) {
   void app.whenReady().then(async () => {
+    migrateLegacyLoginItem(app, process.platform, process.execPath);
+    backgroundStartup = isBackgroundStartup(process.platform, process.argv, process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin);
+    if (backgroundStartup && !windowRequested && process.platform === "darwin") app.setActivationPolicy("accessory");
     await mkdir(root, { recursive: true, mode: 0o700 });
     await acquireDataLock();
     await boot();

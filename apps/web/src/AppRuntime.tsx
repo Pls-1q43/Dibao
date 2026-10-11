@@ -76,7 +76,6 @@ import {
   hasPluginBridgeCapability
 } from "./pluginBridge.js";
 import {
-  browserPreferredLocale,
   useI18n,
   type Dictionary,
   type Locale,
@@ -396,6 +395,7 @@ export function App() {
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [setupSourceError, setSetupSourceError] = useState<string | null>(null);
+  const [isSkippingSetupSources, setIsSkippingSetupSources] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [derivedDataUpgrade, setDerivedDataUpgrade] =
     useState<DerivedDataUpgradeStatus | null>(null);
@@ -883,7 +883,6 @@ export function App() {
     setDeletingProviderId(null);
     setRebuildingIndexId(null);
     setEmbeddingError(null);
-    setLocale(browserPreferredLocale());
     setOpmlSummary(null);
     setNextArticleCursor(null);
     setPendingArticleAction(null);
@@ -926,7 +925,7 @@ export function App() {
       offlineTargetRefreshTimer.current = null;
     }
     articleRequestVersion.current += 1;
-  }, [setLocale]);
+  }, []);
 
   const invalidateOfflineSession = useCallback(() => {
     authSessionInvalidated.current = true;
@@ -1261,6 +1260,11 @@ export function App() {
           const status = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getSetupStatus(signal)
           );
+          if (status.setupCompleted && !status.coreDatabaseMigration?.blocking && !status.derivedDataUpgrade?.blocking) {
+            const settings = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, signal => dibaoApi.getSettings(signal));
+            if (cancelled || manualOfflineMode.current) return;
+            applySettings(settings);
+          }
           if (!cancelled && !manualOfflineMode.current) {
             markServerAvailable();
             setDerivedDataUpgrade(status.coreDatabaseMigration ?? status.derivedDataUpgrade ?? null);
@@ -1295,6 +1299,7 @@ export function App() {
   }, [
     appStage.type,
     authGateRetryToken,
+    applySettings,
     markServerAvailable,
     offerOfflineModeForError,
     resetReaderState,
@@ -2653,7 +2658,7 @@ export function App() {
         throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
       }
       if (mode === "setup") {
-        await dibaoApi.setupAuth(username, password, telemetryEnabled);
+        await dibaoApi.setupAuth(username, password, telemetryEnabled, locale);
       } else {
         await dibaoApi.login(username, password);
       }
@@ -2845,11 +2850,25 @@ export function App() {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       await dibaoApi.selectOptionalPlugin(pluginId, { enabled, timezone });
       setPluginContributions(await dibaoApi.listPluginContributions());
-      setAppStage({ type: "setup-provider" });
+      const nextStage = stageForSetupStatus(await dibaoApi.getSetupStatus());
+      setAppStage(nextStage.type === "reader" ? { type: "setup-provider" } : nextStage);
     } catch (error) {
       setAuthError(userMessageForError(error, t.errors.api));
     } finally {
       setOptionalPluginDecisionId(null);
+    }
+  }
+
+  async function handleSkipSetupSources() {
+    setIsSkippingSetupSources(true);
+    setSetupSourceError(null);
+    try {
+      const nextStage = stageForSetupStatus(await dibaoApi.skipSetupSources());
+      setAppStage(nextStage.type === "reader" ? { type: "setup-provider" } : nextStage);
+    } catch (error) {
+      setSetupSourceError(userMessageForError(error, t.errors.api));
+    } finally {
+      setIsSkippingSetupSources(false);
     }
   }
 
@@ -4559,6 +4578,8 @@ export function App() {
           onAddCandidate={handleSetupAddDiscoveredFeed}
           onAddFeed={handleSetupAddFeed}
           onImportOpml={handleSetupImportOpml}
+          isSkipping={isSkippingSetupSources}
+          onSkip={handleSkipSetupSources}
           onUpdateFeedUrl={setFeedUrl}
           opmlSummary={opmlSummary}
         />

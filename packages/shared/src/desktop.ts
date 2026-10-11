@@ -16,6 +16,26 @@ export type DesktopRuntimeInfo = {
   autoLaunch: boolean;
 };
 
+export type DesktopBackupError = "busy" | "unsaved" | "upgrade" | "missing" | "space" | "invalid" | "permission" | "failed";
+export type DesktopBackupInfo = {
+  id: string;
+  version: string;
+  createdAt: string;
+  reason: "upgrade" | "recovery" | "manual";
+  bytes: number;
+};
+export type DesktopBackupOperation = {
+  action: "backup" | "restore";
+  status: "success" | "error";
+  completedAt: string;
+  backupId?: string;
+  error?: DesktopBackupError;
+};
+export type DesktopBackupState = {
+  backups: DesktopBackupInfo[];
+  lastOperation: DesktopBackupOperation | null;
+};
+
 export type DesktopBridge = {
   getRuntime(): Promise<DesktopRuntimeInfo>;
   getUpdateState(): Promise<DesktopUpdateState>;
@@ -23,7 +43,9 @@ export type DesktopBridge = {
   downloadUpdate(): Promise<void>;
   installUpdate(): Promise<void>;
   openDataDirectory(): Promise<void>;
-  recoverBackup(): Promise<boolean>;
+  getBackupState(): Promise<DesktopBackupState>;
+  createBackup(locale: "zh-CN" | "ja-JP" | "en-US"): Promise<boolean>;
+  recoverBackup(id: string, locale: "zh-CN" | "ja-JP" | "en-US"): Promise<boolean>;
   setAutoLaunch(enabled: boolean): Promise<void>;
   setHasUnsavedChanges(pending: boolean): Promise<void>;
   prepareToQuit(): Promise<void>;

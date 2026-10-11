@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.4.0.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.0-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.1-2f6f5e" /></a>
 </p>
 
 ---
@@ -34,11 +34,12 @@ Quick links:
 - [What You Get](#what-you-get)
 - [Support Dibao](#support-dibao)
 - [Quick Install](#quick-install)
+- [Windows / macOS desktop installers](./docs/desktop-install.md#english)
 - [Recommended Providers](#recommended-providers)
 - [Backup And Upgrade](#backup-and-upgrade)
 - [License](#license)
 - [FAQ](#faq)
-- [Release notes](./docs/release-notes-v0.4.0.md#english)
+- [Release notes](./docs/release-notes-v0.4.1.md#english)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [Chinese home page](./README.md)
 
@@ -63,7 +64,7 @@ Chronological RSS is honest, but it can become impossible to scan. Platform feed
 | Use low-cost AI | Works with SiliconFlow, Gemini, Ollama, and OpenAI-compatible embedding providers. |
 | Read on mobile | Installable PWA with optional offline reading of prepared article copies. |
 
-Offline reading is off by default, with settings stored only in the current browser or PWA. The recommendation target defaults to 200 articles and can be set from 50 to 1,000; up to 200 read-later copies are stored separately without limiting your server-side list. You choose when to switch offline. A banner identifies the mode, and the status light opens sync details and the exit control. Mobile background execution and storage are limited by the OS, so check the actual cache before leaving. See the [v0.4.0 release notes](./docs/release-notes-v0.4.0.md#english).
+Offline reading is off by default, with settings stored only in the current browser or PWA. The recommendation target defaults to 200 articles and can be set from 50 to 1,000; up to 200 read-later copies are stored separately without limiting your server-side list. You choose when to switch offline. A banner identifies the mode, and the status light opens sync details and the exit control. Mobile background execution and storage are limited by the OS, so check the actual cache before leaving. See the [v0.4.1 release notes](./docs/release-notes-v0.4.1.md#english).
 
 Dibao does not provide multi-user teams, official hosting, social following, comments, platform-wide recommendations, cross-device cloud sync, or an unlimited offline mirror of your entire library.
 
@@ -82,7 +83,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.4.0
+    image: ghcr.io/pls-1q43/dibao:v0.4.1
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -162,7 +163,7 @@ docker compose stop
 tar czf "dibao-data-backup-$(date +%Y%m%d-%H%M%S).tgz" -C data .
 ```
 
-Set the Compose image to `ghcr.io/pls-1q43/dibao:v0.4.0`, then upgrade:
+Set the Compose image to `ghcr.io/pls-1q43/dibao:v0.4.1`, then upgrade:
 
 ```bash
 docker compose pull
@@ -170,11 +171,11 @@ docker compose up -d
 docker compose ps
 ```
 
-v0.4.0 automatically applies `027_recommendation_sessions.sql` and any earlier pending migrations. When needed, a blocking recommendation-data upgrade screen appears; normal features resume after completion. Existing vectors are reused without embedding recomputation.
+There are no new SQL migrations or mandatory derived-data updates from v0.4.0 to v0.4.1. Older versions automatically apply `027_recommendation_sessions.sql` and any earlier pending migrations. When needed, a blocking recommendation-data upgrade screen appears; normal features resume after completion. Existing vectors are reused without embedding recomputation.
 
-Check `/api/system/health` for `data.ok: true` and `data.version: "0.4.0"`. While signed in, also check `/api/system/upgrade/status`: an existing-data upgrade must reach `data.id: "recommendation-contract"`, `data.state: "completed"`, and `data.blocking: false`. A fresh empty database may report `not_required` without blocking. HTTP 200 or a healthy container alone does not prove upgrade completion.
+Check `/api/system/health` for `data.ok: true` and `data.version: "0.4.1"`. While signed in, also check `/api/system/upgrade/status`: an existing-data upgrade must reach `data.id: "recommendation-contract"`, `data.state: "completed"`, and `data.blocking: false`. A fresh empty database may report `not_required` without blocking. HTTP 200 or a healthy container alone does not prove upgrade completion.
 
-To roll back, stop the new container, restore the complete pre-upgrade `/data` backup into a clean directory or new volume, and start the previous image. Do not run an older image against the migrated database or overlay a backup onto newer WAL files. See the [v0.4.0 installation and rollback notes](./docs/release-notes-v0.4.0.md#docker-installation-backup-and-rollback).
+To roll back, stop the new container, restore the complete pre-upgrade `/data` backup into a clean directory or new volume, and start the previous image. Do not run an older image against the migrated database or overlay a backup onto newer WAL files. See the [v0.4.1 installation and rollback notes](./docs/release-notes-v0.4.1.md#docker-installation-backup-and-rollback).
 
 ### License
 

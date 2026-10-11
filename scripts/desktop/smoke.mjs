@@ -1,4 +1,4 @@
-import { _electron } from "@playwright/test";
+import { _electron, expect } from "@playwright/test";
 import { createRequire } from "node:module";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -11,6 +11,7 @@ import { repoRoot } from "./prepare-resources.mjs";
 import { closeTestApplication } from "./test-utils.mjs";
 
 const require = createRequire(import.meta.url);
+const semver = require("semver");
 const data = process.env.DIBAO_DESKTOP_SMOKE_DATA ?? await mkdtemp(join(tmpdir(), "dibao-desktop-smoke-"));
 const output = join(repoRoot, "test-results", `desktop-${process.platform}-${process.arch}`);
 await mkdir(join(data, "data"), { recursive: true }); await mkdir(output, { recursive: true });
@@ -130,14 +131,14 @@ try {
   await reader.waitFor();
   await page.getByText("Local reading paragraph 149. This content remains available without an internet connection.", { exact: true }).waitFor();
   // DOM content can appear before React installs the reader's passive scroll listener.
-  await page.waitForFunction(async () => {
+  await expect.poll(() => page.evaluate(async () => {
     const container = document.querySelector('[data-testid="reader-scroll-container"]');
     if (!container) return false;
     container.scrollTop = container.scrollHeight * 0.3;
     container.dispatchEvent(new Event("scroll"));
     const response = await fetch("/api/articles/desktop-smoke-article");
     return (await response.json()).data.state.readingProgress >= 0.25;
-  }, undefined, { timeout: 30_000, polling: 100 });
+  }), { timeout: 30_000, intervals: [100, 250] }).toBe(true);
   await reader.evaluate(container => { container.scrollTop = container.scrollHeight * 0.8; container.dispatchEvent(new Event("scroll")); });
   await page.evaluate(() => window.dibaoDesktop.prepareToQuit());
   const progress = await api(page, "/api/articles/desktop-smoke-article");
@@ -150,8 +151,8 @@ try {
   await closeTestApplication(electron); electron = null;
   const protection = new DesktopDataProtection(data);
   const oldVersion = state.highestVersion;
-  const next = oldVersion.replace(/beta\.(\d+)$/, (_, n) => `beta.${Number(n) + 1}`);
-  if (next !== oldVersion) {
+  const next = semver.inc(oldVersion, oldVersion.includes("-") ? "prerelease" : "patch");
+  if (next) {
     const prepared = await protection.prepare(next);
     assert(Boolean(prepared.pending?.backupId), "Version upgrade did not create a complete backup");
     await protection.restore(prepared.pending.backupId);

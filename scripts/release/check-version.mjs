@@ -50,6 +50,10 @@ export function checkVersion(root, { tag = "", moving = false } = {}) {
 
 if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const version = checkVersion(process.cwd(), { tag: process.env.RELEASE_IMAGE_TAG, moving: process.env.RELEASE_MOVING_ALIASES === "true" });
+  if (process.env.RELEASE_IMAGE_TAG === `v${version}` && !version.includes("-")) {
+    const notes = readFileSync(resolve(`docs/release-notes-v${version}.md`), "utf8");
+    for (const locale of ["## 简体中文", "## 日本語", "## English"]) assert(notes.includes(locale), "Missing release notes language");
+  }
   console.log(`Release version consistency passed: ${version}`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
 }

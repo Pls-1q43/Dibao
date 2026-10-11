@@ -1,4 +1,4 @@
-name: Publish Docker Image
+name: Publish Complete Release
 
 on:
   push:
@@ -24,6 +24,11 @@ on:
         required: true
         type: boolean
         default: false
+      validation_only:
+        description: "Build and verify every desktop and Docker target without publishing formal aliases or a GitHub Release"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,7 +43,29 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.identity.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          fetch-depth: 0
+      - id: identity
+        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: source
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      ref: ${{ needs.source.outputs.revision }}
+    secrets: inherit
+
   publish:
+    needs: [source, desktop]
     name: Gate, stage, verify and promote the exact multiarch image
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -46,7 +73,7 @@ jobs:
       - name: Check out release source and historical tags
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          ref: ${{ needs.source.outputs.revision }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -179,7 +206,38 @@ jobs:
           EXPECTED_REVISION: ${{ steps.image.outputs.revision }}
         run: node scripts/release/verify-docker-release.mjs
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Dibao-desktop-*
+          path: .tmp/desktop-release-input
+
+      - name: Audit OS and library vulnerabilities on both exact platform images
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+        run: node scripts/release/scan-image.mjs
+
+      - name: Preserve image security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-security-${{ github.run_id }}
+          path: test-results/image-security-*.json
+          if-no-files-found: ignore
+
+      - name: Validate every installer before any release promotion
+        env:
+          EXPECTED_REVISION: ${{ needs.source.outputs.revision }}
+        run: node scripts/release/desktop-assets.mjs .tmp/desktop-release-input .tmp/release-assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Release-assets
+          path: .tmp/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Promote only the verified manifest (no rebuild)
+        if: ${{ !inputs.validation_only }}
         env:
           IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
@@ -190,3 +248,29 @@ jobs:
         if: always()
         shell: bash
         run: rm -f "${RUNNER_TEMP}/dibao-sentry.json"
+
+  release:
+    if: ${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    needs: [source, desktop, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.3"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: Release-assets
+          path: .tmp/release-assets
+      - name: Publish three-language notes and directly installable desktop assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release/publish-release.mjs .tmp/release-assets

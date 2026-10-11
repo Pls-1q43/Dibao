@@ -124,7 +124,8 @@
   font-weight: var(--weight-medium);
 }
 
-.authForm input {
+.authForm input,
+.authForm select {
   min-width: 0;
   height: var(--input-height-md);
   border: var(--input-border);
@@ -170,6 +171,7 @@
 }
 
 .authForm input:focus-visible,
+.authForm select:focus-visible,
 .managementForm input:focus-visible,
 .managementForm select:focus-visible,
 .managementFolderRow input:focus-visible,
@@ -2072,6 +2074,15 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  width: 100%;
+}
+
+.desktopBackupStatus {
+  width: 100%;
+  min-width: 0;
+}
+
+.desktopBackupStatus select {
   width: 100%;
 }
 

@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, cp, mkdir, open, readFile, readdir, rename, rm, stat, statfs } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, statfs } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import semver from "semver";
+import type { DesktopBackupOperation } from "@dibao/shared";
 import { desktopPaths } from "./paths.js";
+import { backupErrorCode } from "./backup-errors.js";
 
 type Entry = { path: string; size: number; sha256: string };
 export type BackupManifest = {
@@ -11,7 +13,7 @@ export type BackupManifest = {
   id: string;
   version: string;
   createdAt: string;
-  reason: "upgrade" | "recovery";
+  reason: "upgrade" | "recovery" | "manual";
   files: Entry[];
 };
 export type DesktopDataState = {
@@ -23,6 +25,38 @@ export type DesktopDataState = {
 
 const transient = new Set(["SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile", "LOCK", "DevToolsActivePort"]);
 const cacheDirectories = new Set(["Cache", "Code Cache", "GPUCache", "GPUPersistentCache", "GraphiteDawnCache", "Crashpad", "DawnGraphiteCache", "DawnWebGPUCache"]);
+
+function validateManifest(value: unknown): BackupManifest {
+  const manifest = value as BackupManifest;
+  if (!manifest || manifest.format !== 1 || typeof manifest.id !== "string" || !/^[a-z0-9-]+$/.test(manifest.id) ||
+      !semver.valid(manifest.version) || !Number.isFinite(Date.parse(manifest.createdAt)) ||
+      !["upgrade", "recovery", "manual"].includes(manifest.reason) || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error("Invalid backup manifest");
+  const paths = new Set<string>();
+  for (const entry of manifest.files) {
+    if (!entry || typeof entry.path !== "string" || !Number.isSafeInteger(entry.size) || entry.size < 0 ||
+        typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("Invalid backup entry");
+    const path = entry.path.replaceAll("\\", "/");
+    const parts = path.split("/");
+    if (!["data", "profile"].includes(parts[0]) || parts.length < 2 ||
+        parts.some(part => !part || part === "." || part === ".." || /[:\0]/.test(part)) || paths.has(path)) throw new Error("Invalid backup path");
+    paths.add(path);
+  }
+  if (!paths.has("data/dibao.sqlite")) throw new Error("Invalid backup manifest: database is missing");
+  return manifest;
+}
+
+async function verifySnapshotFile(root: string, entry: Entry) {
+  const parts = entry.path.replaceAll("\\", "/").split("/");
+  let path = root;
+  const directory = await lstat(root);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Invalid backup directory");
+  for (let index = 0; index < parts.length; index++) {
+    path = join(path, parts[index]);
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || (index < parts.length - 1 ? !info.isDirectory() : !info.isFile())) throw new Error("Invalid backup entry");
+  }
+  if (await digest(path) !== entry.sha256 || (await stat(path)).size !== entry.size) throw new Error("Backup verification failed");
+}
 
 async function entries(root: string): Promise<string[]> {
   const result: string[] = [];
@@ -126,6 +160,7 @@ export class DesktopDataProtection {
         if (sourceHash !== await digest(destination)) throw new Error("Data changed during backup");
         manifest.files.push({ path, size: (await stat(destination)).size, sha256: sourceHash });
       }
+      validateManifest(manifest);
       await writeJson(join(staging, "manifest.json"), manifest);
       await rename(staging, join(this.paths.backups, id));
       return manifest;
@@ -142,19 +177,75 @@ export class DesktopDataProtection {
   }
 
   async listBackups(): Promise<BackupManifest[]> {
-    await this.initialize();
+    // Listing from a running renderer must never resume a restore or replace data.
+    await mkdir(this.paths.backups, { recursive: true, mode: 0o700 });
     const manifests: BackupManifest[] = [];
-    for (const dir of await readdir(this.paths.backups)) {
-      if (dir.endsWith(".partial")) continue;
-      const manifest = JSON.parse(await readFile(join(this.paths.backups, dir, "manifest.json"), "utf8")) as BackupManifest;
-      if (manifest.format !== 1 || manifest.id !== dir) throw new Error("Invalid backup manifest");
-      manifests.push(manifest);
+    for (const dir of await readdir(this.paths.backups, { withFileTypes: true })) {
+      if (!dir.isDirectory() || dir.isSymbolicLink() || !/^[a-z0-9-]+$/.test(dir.name)) continue;
+      try {
+        const manifest = validateManifest(JSON.parse(await readFile(join(this.paths.backups, dir.name, "manifest.json"), "utf8")));
+        if (manifest.id === dir.name) manifests.push(manifest);
+      } catch { /* Keep damaged snapshots untouched; they must not block healthy data or other restore points. */ }
     }
     return manifests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  async lastOperation(): Promise<(DesktopBackupOperation & { requestId?: string }) | null> {
+    try {
+      const operation = JSON.parse(await readFile(join(this.paths.root, "backup-result.json"), "utf8")) as DesktopBackupOperation & { requestId?: string };
+      if (!operation || !["backup", "restore"].includes(operation.action) || !["success", "error"].includes(operation.status) ||
+          !Number.isFinite(Date.parse(operation.completedAt)) ||
+          (operation.error && !["busy", "unsaved", "upgrade", "missing", "space", "invalid", "permission", "failed"].includes(operation.error))) throw new Error("Invalid backup operation result");
+      return operation;
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  }
+
+  private async recordOperation(operation: Omit<DesktopBackupOperation, "completedAt"> & { requestId?: string }) {
+    await writeJson(join(this.paths.root, "backup-result.json"), { ...operation, completedAt: new Date().toISOString() });
+  }
+
+  async requestBackup(version: string) {
+    if (!semver.valid(version)) throw new Error("Invalid application version");
+    await writeJson(join(this.paths.root, "backup-request.json"), { version, requestId: randomUUID() });
+  }
+
+  // Run only during cold startup, before opening any database or Chromium profile.
+  async backupRequested() {
+    const path = join(this.paths.root, "backup-request.json");
+    let request: { version: string; requestId: string };
+    try { request = JSON.parse(await readFile(path, "utf8")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    try {
+      if (!semver.valid(request.version) || !/^[a-f0-9-]{36}$/.test(request.requestId)) throw new Error("Invalid backup request");
+      const state = await this.readState();
+      if (state?.pending || state?.successfulVersion !== request.version) throw new Error("Invalid backup data version");
+      const previous = await this.lastOperation();
+      if (previous?.requestId === request.requestId && previous.status === "success") {
+        await rm(path, { force: true });
+        return;
+      }
+      const saved = await this.backup(request.version, "manual");
+      await this.recordOperation({ action: "backup", status: "success", backupId: saved.id, requestId: request.requestId });
+    } catch (error) {
+      await this.recordOperation({ action: "backup", status: "error", error: backupErrorCode(error) });
+    }
+    await rm(path, { force: true });
+  }
+
+  async verifyBackup(id: string): Promise<BackupManifest> {
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error("Invalid backup id");
+    const sourceRoot = join(this.paths.backups, id);
+    const directory = await lstat(sourceRoot);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Invalid backup directory");
+    const manifest = validateManifest(JSON.parse(await readFile(join(sourceRoot, "manifest.json"), "utf8")));
+    if (manifest.id !== id) throw new Error("Invalid backup manifest");
+    for (const entry of manifest.files) await verifySnapshotFile(sourceRoot, entry);
+    return manifest;
+  }
+
   async requestRestore(id: string) {
-    if (!(await this.listBackups()).some(backup => backup.id === id)) throw new Error("Backup not found");
+    await this.verifyBackup(id);
     await writeJson(join(this.paths.root, "restore-request.json"), { id });
   }
 
@@ -164,7 +255,17 @@ export class DesktopDataProtection {
     try { request = JSON.parse(await readFile(path, "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
     if (!/^[a-z0-9-]+$/.test(request.id)) throw new Error("Invalid restore request");
-    await this.restore(request.id);
+    try { await this.restore(request.id); }
+    catch (error) {
+      await this.recordOperation({ action: "restore", status: "error", error: backupErrorCode(error) });
+      // A failed preflight leaves current data intact. An interrupted journal must resume.
+      const journal = await stat(join(this.paths.root, "restore.json")).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (!journal) await rm(path, { force: true });
+      throw error;
+    }
     await rm(path, { force: true });
   }
 
@@ -179,15 +280,8 @@ export class DesktopDataProtection {
   }
 
   async restore(id: string) {
-    const manifest = (await this.listBackups()).find(item => item.id === id);
-    if (!manifest) throw new Error("Backup not found");
+    const manifest = await this.verifyBackup(id);
     const sourceRoot = join(this.paths.backups, id);
-    for (const entry of manifest.files) {
-      const source = resolve(sourceRoot, entry.path);
-      if (!source.startsWith(`${sourceRoot}/`) && !source.startsWith(`${sourceRoot}\\`)) throw new Error("Invalid backup path");
-      if (!entry.path.startsWith("data/") && !entry.path.startsWith("profile/") && !entry.path.startsWith("data\\") && !entry.path.startsWith("profile\\")) throw new Error("Invalid backup entry");
-      if (await digest(source) !== entry.sha256 || (await stat(source)).size !== entry.size) throw new Error("Backup verification failed");
-    }
     const state = await this.readState();
     const restoreSize = manifest.files.reduce((sum, entry) => sum + entry.size, 0);
     await this.checkBackupSpace(restoreSize + 64 * 1024 * 1024);
@@ -212,7 +306,18 @@ export class DesktopDataProtection {
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
     if (!/^restore-[a-f0-9-]+$/.test(journal.stage) || !semver.valid(journal.version)) throw new Error("Invalid restore journal");
     const staging = join(this.paths.root, journal.stage);
-    const manifest = JSON.parse(await readFile(join(staging, "manifest.json"), "utf8")) as BackupManifest;
+    const manifest = validateManifest(JSON.parse(await readFile(join(staging, "manifest.json"), "utf8")));
+    if (manifest.version !== journal.version) throw new Error("Invalid restore journal version");
+    // Verify all remaining staged files before moving either live directory. A
+    // completed directory move is verified in place when resuming after a crash.
+    for (const entry of manifest.files) {
+      const name = entry.path.replaceAll("\\", "/").split("/")[0];
+      const staged = await lstat(join(staging, name)).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      await verifySnapshotFile(staged ? staging : this.paths.root, entry);
+    }
     for (const name of ["data", "profile"]) {
       const target = join(this.paths.root, name);
       try {
@@ -229,6 +334,7 @@ export class DesktopDataProtection {
       if (await digest(path) !== entry.sha256) throw new Error("Restored data verification failed");
     }
     await writeJson(this.paths.state, { format: 1, highestVersion: journal.version, successfulVersion: journal.version, pending: null });
+    await this.recordOperation({ action: "restore", status: "success", backupId: manifest.id });
     await rm(journalPath);
     await rm(join(this.paths.root, "restore-request.json"), { force: true });
     await rm(staging, { recursive: true, force: true });

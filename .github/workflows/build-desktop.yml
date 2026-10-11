@@ -1,6 +1,11 @@
-name: Build desktop test applications
+name: Build and verify desktop applications
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
   workflow_dispatch:
   push:
     branches: ["0.4"]
@@ -32,12 +37,14 @@ jobs:
             platform: macos
             arch: arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22.23.3"

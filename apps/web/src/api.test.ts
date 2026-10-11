@@ -3,6 +3,19 @@ import { ApiRequestError, createDibaoApi, userMessageForError } from "./api.js";
 import { dictionaries } from "./i18n.js";
 
 describe("web API client", () => {
+  it("sends the selected first-run locale with credentials and persists the feed skip decision", async () => {
+    const calls: Array<{ path: string; method?: string; body?: unknown }> = [];
+    const api = createDibaoApi(async (input, init) => {
+      calls.push({ path: String(input), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      return new Response(JSON.stringify({ data: { ok: true } }));
+    });
+    await api.setupAuth("Test", "password", false, "ja-JP");
+    await api.skipSetupSources();
+    expect(calls).toEqual([
+      { path: "/api/auth/setup", method: "POST", body: { username: "Test", password: "password", telemetryEnabled: false, locale: "ja-JP" } },
+      { path: "/api/setup/sources/skip", method: "POST", body: undefined }
+    ]);
+  });
   it.each([
     "../../../feeds", "/../../../auth/logout-all", "x/../../../../feeds",
     "%2e%2e/%2e%2e/%2e%2e/feeds", ".%2e/feeds", "%2e./feeds",

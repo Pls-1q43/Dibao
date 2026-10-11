@@ -41,12 +41,14 @@ describe("desktop data upgrades", () => {
   it("retains three successful upgrade backups without deleting recovery snapshots", async () => {
     const { protection } = await fixture();
     await protection.backup("0.4.0", "recovery");
+    await protection.backup("0.4.0", "manual");
     for (let n = 1; n <= 5; n++) {
       await protection.prepare(`0.4.1-beta.${n}`); await protection.complete(`0.4.1-beta.${n}`);
     }
     const backups = await protection.listBackups();
     expect(backups.filter(b => b.reason === "upgrade")).toHaveLength(3);
     expect(backups.filter(b => b.reason === "recovery")).toHaveLength(1);
+    expect(backups.filter(b => b.reason === "manual")).toHaveLength(1);
   });
   it("defers confirmed recovery until the next startup", async () => {
     const { root, protection } = await fixture();
@@ -122,5 +124,74 @@ describe("desktop data upgrades", () => {
     const backup = await protection.backup("0.4.1-beta.1", "upgrade");
     expect(backup.files.some(file => file.path.replaceAll("\\", "/") === "data/plugins/Cache/important")).toBe(true);
     expect(backup.files.some(file => file.path.includes("profile/Cache"))).toBe(false);
+  });
+  it("backs up all data and client state on cold manual startup without changing version markers", async () => {
+    const { root, protection } = await fixture();
+    const version = "0.4.1-beta.2";
+    await protection.prepare(version); await protection.complete(version);
+    const before = await protection.readState();
+    await protection.requestBackup(version);
+    await new DesktopDataProtection(root).backupRequested();
+    const backup = (await protection.listBackups()).find(item => item.reason === "manual")!;
+    expect(backup.files.map(file => file.path.replaceAll("\\", "/"))).toEqual(expect.arrayContaining([
+      "data/dibao.sqlite", "data/plugins/secrets/plugin-secret.key", "profile/IndexedDB/pending-actions"
+    ]));
+    expect(await protection.readState()).toEqual(before);
+    await protection.restore(backup.id);
+    const db = new Database(join(root, "data", "dibao.sqlite"));
+    expect(db.prepare("select * from articles").get()).toEqual({ id: "article-a", state: "saved", embedding: Buffer.from([1, 2, 3, 4]) }); db.close();
+    expect(await readFile(join(root, "profile", "IndexedDB", "pending-actions"), "utf8")).toBe("unsynced-actions");
+  });
+  it("records manual backup failure visibly and still permits opening unchanged current data", async () => {
+    const { root, protection } = await fixture();
+    const version = "0.4.1-beta.2";
+    await protection.prepare(version); await protection.complete(version); await protection.requestBackup(version);
+    const noSpace = new DesktopDataProtection(root, async () => 0);
+    await noSpace.backupRequested();
+    expect(await protection.lastOperation()).toMatchObject({ action: "backup", status: "error", error: "space" });
+    expect((await noSpace.prepare(version)).pending).toBeNull();
+    expect((await protection.listBackups()).some(item => item.reason === "manual")).toBe(false);
+    await expect(readFile(join(root, "backup-request.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+  });
+  it("listing backups never resumes a pending restore while the application is running", async () => {
+    const { root, protection } = await fixture();
+    const backup = await protection.backup("0.4.0", "manual");
+    await cp(join(root, "backups", backup.id), join(root, "restore-abcdef12"), { recursive: true });
+    await writeFile(join(root, "restore.json"), JSON.stringify({ stage: "restore-abcdef12", version: backup.version }));
+    await writeFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "current-key");
+    await protection.listBackups();
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("current-key");
+  });
+  it("keeps a damaged manifest from blocking healthy data or other restore points", async () => {
+    const { root, protection } = await fixture();
+    const broken = await protection.backup("0.4.0", "manual");
+    const good = await protection.backup("0.4.0", "manual");
+    await writeFile(join(root, "backups", broken.id, "manifest.json"), "{broken");
+    expect((await protection.listBackups()).map(item => item.id)).toContain(good.id);
+    await expect(protection.verifyBackup(broken.id)).rejects.toThrow();
+    await protection.prepare("0.4.1"); await protection.complete("0.4.1");
+    expect((await protection.readState())?.successfulVersion).toBe("0.4.1");
+  });
+  it.each(["empty", "traversal", "duplicate"])("rejects %s manifests without replacing data", async kind => {
+    const { root, protection } = await fixture();
+    const backup = await protection.backup("0.4.0", "manual");
+    if (kind === "empty") backup.files = [];
+    if (kind === "traversal") backup.files[0].path = "data/../profile/invalid";
+    if (kind === "duplicate") backup.files.push({ ...backup.files[0] });
+    await writeFile(join(root, "backups", backup.id, "manifest.json"), JSON.stringify(backup));
+    await expect(protection.restore(backup.id)).rejects.toThrow("Invalid backup");
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+  });
+  it("verifies a damaged interrupted restore before moving live data", async () => {
+    const { root, protection } = await fixture();
+    const backup = await protection.backup("0.4.0", "manual");
+    const stage = "restore-abcdef12";
+    await cp(join(root, "backups", backup.id), join(root, stage), { recursive: true });
+    await writeFile(join(root, stage, "profile", "IndexedDB", "pending-actions"), "corrupt-stage");
+    await writeFile(join(root, "restore.json"), JSON.stringify({ stage, version: backup.version }));
+    await expect(new DesktopDataProtection(root).initialize()).rejects.toThrow("verification failed");
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+    await expect(readFile(join(root, stage, "old-data", "dibao.sqlite"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

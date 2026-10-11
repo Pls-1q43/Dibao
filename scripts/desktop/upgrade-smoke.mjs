@@ -12,6 +12,7 @@ import { closeTestApplication } from "./test-utils.mjs";
 
 const require = createRequire(import.meta.url);
 const yaml = require("js-yaml");
+const semver = require("semver");
 const output = join(repoRoot, "test-results", `desktop-${process.platform}-${process.arch}`);
 const evidence = JSON.parse(await readFile(join(output, "result.json"), "utf8"));
 if (!evidence.passed) throw new Error("Run the packaged application smoke test first");
@@ -24,8 +25,9 @@ if (process.platform === "win32") {
   await cp(sourceData, data, { recursive: true });
 }
 const originalVersion = JSON.parse(await readFile(join(data, "desktop-state.json"), "utf8")).highestVersion;
-const nextVersion = originalVersion.replace(/beta\.(\d+)$/, (_, n) => `beta.${Number(n) + 1}`);
-if (nextVersion === originalVersion) throw new Error("Upgrade validation requires a beta version");
+const nextVersion = semver.inc(originalVersion, originalVersion.includes("-") ? "prerelease" : "patch");
+const updateChannel = originalVersion.includes("-") ? "beta" : "latest";
+if (!nextVersion) throw new Error("Upgrade validation requires a valid version");
 const installation = await mkdtemp(join(tmpdir(), "dibao-installed-"));
 const builds = join(repoRoot, "dist", "desktop");
 const replacement = join(builds, "upgrade-test");
@@ -124,13 +126,13 @@ try {
     });
     await new Promise(resolve => fixture.listen(0, "127.0.0.1", resolve));
     page = await launch();
-    await electron.evaluate(({ app, dialog }, url) => {
+    await electron.evaluate(({ app, dialog }, { url, channel }) => {
       const { createRequire } = process.getBuiltinModule("node:module");
       const updater = createRequire(`${app.getAppPath()}/package.json`)("electron-updater").autoUpdater;
-      updater.setFeedURL({ provider: "generic", url, channel: "beta" });
+      updater.setFeedURL({ provider: "generic", url, channel });
       updater.disableDifferentialDownload = true;
       dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-    }, `http://127.0.0.1:${fixture.address().port}`);
+    }, { url: `http://127.0.0.1:${fixture.address().port}`, channel: updateChannel });
     await page.evaluate(() => window.dibaoDesktop.checkForUpdates());
     for (const scenario of ["interrupt", "corrupt", "valid"]) {
       console.log(JSON.stringify({ stage: "download", scenario }));
