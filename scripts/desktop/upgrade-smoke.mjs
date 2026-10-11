@@ -15,7 +15,14 @@ const yaml = require("js-yaml");
 const output = join(repoRoot, "test-results", `desktop-${process.platform}-${process.arch}`);
 const evidence = JSON.parse(await readFile(join(output, "result.json"), "utf8"));
 if (!evidence.passed) throw new Error("Run the packaged application smoke test first");
-const data = evidence.data;
+const sourceData = evidence.data;
+const data = process.platform === "win32" ? join(process.env.LOCALAPPDATA, "Dibao") : sourceData;
+if (process.platform === "win32") {
+  if (process.env.GITHUB_ACTIONS !== "true" || process.env.CI !== "true") throw new Error("Windows installer checks require a disposable GitHub Actions runner");
+  try { await stat(data); throw new Error("Refusing to replace an existing desktop data directory"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  await cp(sourceData, data, { recursive: true });
+}
 const originalVersion = JSON.parse(await readFile(join(data, "desktop-state.json"), "utf8")).highestVersion;
 const nextVersion = originalVersion.replace(/beta\.(\d+)$/, (_, n) => `beta.${Number(n) + 1}`);
 if (nextVersion === originalVersion) throw new Error("Upgrade validation requires a beta version");
@@ -27,6 +34,7 @@ const installedApp = join(installation, "Dibao.app");
 const executable = process.platform === "win32" ? join(installation, "Dibao.exe") : join(installedApp, "Contents", "MacOS", "Dibao");
 const env = { ...process.env, DIBAO_DESKTOP_DATA_DIR: data, DIBAO_FOREGROUND_QUIET_WINDOW_MS: "0", DIBAO_BACKGROUND_STARTUP_DELAY_MS: "0" };
 delete env.DIBAO_DESKTOP_RESOURCES;
+if (process.platform === "win32") delete env.DIBAO_DESKTOP_DATA_DIR;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
@@ -70,13 +78,16 @@ async function launch() {
 }
 
 try {
+  console.log(JSON.stringify({ stage: "initial-install" }));
   if (process.platform === "win32") await run(await installerIn(builds), ["/S", `/D=${installation}`], { env });
   else await cp(join(builds, macFolder, "Dibao.app"), installedApp, { recursive: true, verbatimSymlinks: true });
   let page = await launch();
+  console.log(JSON.stringify({ stage: "initial-launch", passed: true }));
   assert(await page.evaluate(() => window.dibaoDesktop.getRuntime().then(runtime => runtime.version)) === originalVersion, "First installer version mismatch");
   await page.evaluate(() => localStorage.setItem("desktop-upgrade-pending-action", "preserve-client-operation"));
   await closeTestApplication(electron); electron = null;
 
+  console.log(JSON.stringify({ stage: "build-next-version" }));
   await run(process.execPath, [join(repoRoot, "scripts", "desktop", "package.mjs"),
     `--config.extraMetadata.version=${nextVersion}`, "--config.directories.output=../../dist/desktop/upgrade-test",
     ...(process.platform === "darwin" ? ["--dir"] : [])]);
@@ -121,6 +132,7 @@ try {
     }, `http://127.0.0.1:${fixture.address().port}`);
     await page.evaluate(() => window.dibaoDesktop.checkForUpdates());
     for (const scenario of ["interrupt", "corrupt", "valid"]) {
+      console.log(JSON.stringify({ stage: "download", scenario }));
       mode = scenario;
       if (scenario !== "interrupt") await page.evaluate(() => window.dibaoDesktop.checkForUpdates());
       const downloaded = await page.evaluate(() => window.dibaoDesktop.downloadUpdate().then(() => true, () => false));
@@ -137,8 +149,10 @@ try {
       const timer = setTimeout(() => reject(new Error("Updater did not exit for installation")), 90_000);
       processHandle.once("exit", () => { clearTimeout(timer); resolve(); });
     });
+    console.log(JSON.stringify({ stage: "install-update" }));
     await page.evaluate(() => window.dibaoDesktop.installUpdate()).catch(() => undefined);
     await exit; electron = null;
+    console.log(JSON.stringify({ stage: "wait-for-restart" }));
     await until(async () => {
       try {
         const state = JSON.parse(await readFile(join(data, "desktop-state.json"), "utf8"));
@@ -170,7 +184,7 @@ try {
   assert(createHash("sha256").update(await readFile(secretPath)).digest("hex") === secretBefore, "Upgrade replaced plugin encryption key");
   const backups = await readdir(join(data, "backups"));
   assert(backups.length > 0, "Installer update skipped pre-upgrade backups");
-  await writeFile(join(output, "upgrade.json"), JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, installation, data,
+  await writeFile(join(output, "upgrade.json"), JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, installation, data, sourceData,
     checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "unsaved-draft-gate", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "force-exit-recovery", "data-regression"] }, null, 2));
   console.log(JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, output }));
 } finally {

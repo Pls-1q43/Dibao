@@ -83,7 +83,12 @@ try {
   await network.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await page.goto("https://dibao.localhost/?page=settings");
   await page.getByText("打开数据目录", { exact: true }).waitFor({ timeout: 30_000 });
-  await page.locator(".about-settings-card").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const about = document.querySelector(".about-settings-card");
+    if (!about) return false;
+    about.scrollIntoView({ behavior: "instant", block: "end" });
+    return true;
+  });
   await page.screenshot({ path: join(output, "settings.png"), fullPage: true });
   assert(!await page.locator("#settings-offline-enabled").isVisible(), "Desktop exposed the limited PWA cache controls");
   const cookie = await electron.evaluate(async ({ session }) => session.fromPartition("persist:dibao").cookies.get({ url: "https://dibao.localhost" }));

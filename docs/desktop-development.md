@@ -40,6 +40,8 @@ The packaged smoke test runs from a temporary directory outside the checkout. It
 
 The installed upgrade test builds the next beta version without changing source versions or tags. On macOS it manually replaces the application in an isolated installation directory. On Windows it first installs NSIS, then uses the real electron-updater against a local fixture serving electron-builder's generated metadata and installer. This test fixture is not a shipped update server or custom update protocol. It exercises interrupted downloads, invalid checksums, explicit installation/restart and recovery after forced exit. It compares article content/state, subscriptions, a real sqlite-vec table, settings, plugin keys and browser state across versions.
 
+Windows installer validation runs only on a disposable GitHub Actions runner, using the real `%LOCALAPPDATA%\Dibao` data root. It refuses to replace an existing directory. This covers shell-launched installer restarts without relying on inherited test environment variables. macOS validation uses an isolated data-root override so local developer data is never touched.
+
 `.github/workflows/build-desktop.yml` builds Windows x64, macOS Intel and macOS Apple Silicon, and uploads installers plus validation evidence. A push to `0.4` creates only CI artifacts. It does not publish a release, tag, Docker image or alter Synology.
 
 ## Release boundary
