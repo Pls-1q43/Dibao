@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
@@ -57,6 +57,23 @@ describe("desktop data upgrades", () => {
     await expect(protection.prepare("0.4.2")).rejects.toThrow("existing database");
     expect(await protection.readState()).toEqual(before);
     expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+  });
+  it.each(["missing", "empty"])("recovers a %s database while separately preserving incomplete current data", async kind => {
+    const { root, protection } = await fixture();
+    await protection.prepare("0.4.1"); await protection.complete("0.4.1");
+    const saved = await protection.backup("0.4.1", "manual");
+    await writeFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "current-key");
+    if (kind === "missing") await rm(join(root, "data", "dibao.sqlite"));
+    else await writeFile(join(root, "data", "dibao.sqlite"), "");
+    await protection.restore(saved.id);
+    await expect(protection.prepare("0.4.1")).resolves.toMatchObject({ successfulVersion: "0.4.1" });
+    const quarantine = (await readdir(protection.paths.backups)).find(name => name.endsWith(".incomplete"))!;
+    expect(quarantine).toBeTruthy();
+    expect(await readFile(join(protection.paths.backups, quarantine, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("current-key");
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+    expect((await protection.listBackups()).every(backup => backup.files.some(entry => entry.path.replaceAll("\\", "/") === "data/dibao.sqlite" && entry.size > 0))).toBe(true);
+    const db = new Database(join(root, "data", "dibao.sqlite"));
+    expect(db.prepare("select count(*) as n from articles").get()).toEqual({ n: 1 }); db.close();
   });
   it("retains three successful upgrade backups without deleting recovery snapshots", async () => {
     const { protection } = await fixture();

@@ -15,6 +15,8 @@
 
 “设置 → 关于”现在可创建完整备份、按日期选择恢复点、确认重启并查看结果。备份包含数据库及 WAL、插件数据和密钥、登录与客户端状态；未保存的设置、迁移或其他写入未完成时会阻止操作。修复损坏备份阻塞正常恢复点、恢复中断时替换前校验不足的问题。更新前同样先备份，失败不升级数据，不重算已有 embedding。
 
+首次启动不会把系统生成的浏览器配置误当作已有数据库。已有数据库缺失或为空时会阻止打开并提供恢复；恢复前残留文件单独保存到备份目录中的 `.incomplete` 副本，不作为正常恢复点，也不自动清理。
+
 安全与回归检查覆盖登录／CSRF、沙箱与 IPC、插件框架、私有回环访问凭证、单实例、退出写入、下载校验和版本保护。更新有安全公告的 HTTP 与构建依赖。Docker 不包含 Electron 或桌面运行进程，网页／PWA 不显示桌面备份、数据目录、登录启动或应用安装操作，原离线和推荐功能继续保留。
 
 ### 安装、升级与限制
@@ -60,6 +62,8 @@ Docker と三種類の直接インストール可能なデスクトップ版を�
 
 設定のバージョン欄で完全バックアップ作成、日時による復元選択、再起動の確認と結果表示ができます。SQLite と WAL、プラグインの鍵、ログイン、クライアント状態を保存します。未保存の設定や移行中の操作は拒否します。壊れたバックアップが正常な復元点を妨げる問題と、中断復元の置換前検証を修正しました。更新前バックアップに失敗した場合はデータを移行せず、既存 embedding を再計算しません。
 
+初回に OS が生成したブラウザー設定を既存 DB と誤認しません。以前の DB が欠落・空の場合は起動を停止して復元を案内します。復元前の残存ファイルはバックアップ内の `.incomplete` に別途保存し、通常の復元点として扱わず、自動削除しません。
+
 認証、CSRF、サンドボックス、IPC、プラグイン、私有ループバック接続、単一起動、終了時の保存、更新チェックサム、バージョン保護を検証します。安全上の修正がある HTTP／ビルド依存を更新しました。Docker は Electron を同梱せず、Web/PWA にデスクトップ専用操作を表示しません。既存のオフライン／推薦機能は保持します。
 
 ### 導入、更新、制限
@@ -90,6 +94,8 @@ This release delivers Docker and all three directly installable desktop targets.
 Desktop includes its runtime. Choose a language and create an account; feeds and optional AI can be configured later. Closing the window keeps fetching in the tray. Launch at login is off by default and runs silently when enabled. Offline reading uses the complete local database, not a PWA cache subset.
 
 Settings > About provides full manual backups, dated restore-point selection, restart confirmation and results. Backups preserve SQLite including WAL, plugin keys, login and client state. Unsaved settings, pending migrations and conflicting operations block unsafe actions. Damaged snapshots no longer block healthy restore points; interrupted recovery validates staged data before replacing live directories. Upgrades first back up data and stop on failure, without recomputing existing embeddings.
+
+First launch does not mistake OS-created browser preferences for an existing database. A missing or empty previously used database blocks startup and offers recovery. Residual current files are preserved separately in an `.incomplete` backup-directory copy before recovery; it is not a normal restore point and is never automatically pruned.
 
 Release gates cover authentication/CSRF, sandbox/IPC, plugin frames, the private loopback capability, singleton behavior, pending writes, update checksums and version protection. HTTP and build dependencies with security fixes are updated. Docker excludes Electron and the desktop runtime; Web/PWA do not show desktop backup, data-folder, login-startup or app-install actions. Existing offline and recommendation workflows remain available.
 

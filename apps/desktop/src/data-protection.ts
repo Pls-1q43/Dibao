@@ -26,11 +26,12 @@ export type DesktopDataState = {
 const transient = new Set(["SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile", "LOCK", "DevToolsActivePort"]);
 const cacheDirectories = new Set(["Cache", "Code Cache", "GPUCache", "GPUPersistentCache", "GraphiteDawnCache", "Crashpad", "DawnGraphiteCache", "DawnWebGPUCache"]);
 
-function validateManifest(value: unknown): BackupManifest {
+function validateManifest(value: unknown, incompleteRecovery = false): BackupManifest {
   const manifest = value as BackupManifest;
   if (!manifest || manifest.format !== 1 || typeof manifest.id !== "string" || !/^[a-z0-9-]+$/.test(manifest.id) ||
       !semver.valid(manifest.version) || !Number.isFinite(Date.parse(manifest.createdAt)) ||
-      !["upgrade", "recovery", "manual"].includes(manifest.reason) || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error("Invalid backup manifest");
+      !["upgrade", "recovery", "manual"].includes(manifest.reason) || !Array.isArray(manifest.files) ||
+      (!incompleteRecovery && !manifest.files.length)) throw new Error("Invalid backup manifest");
   const paths = new Set<string>();
   for (const entry of manifest.files) {
     if (!entry || typeof entry.path !== "string" || !Number.isSafeInteger(entry.size) || entry.size < 0 ||
@@ -41,7 +42,8 @@ function validateManifest(value: unknown): BackupManifest {
         parts.some(part => !part || part === "." || part === ".." || /[:\0]/.test(part)) || paths.has(path)) throw new Error("Invalid backup path");
     paths.add(path);
   }
-  if (!paths.has("data/dibao.sqlite")) throw new Error("Invalid backup manifest: database is missing");
+  const database = manifest.files.find(entry => entry.path.replaceAll("\\", "/") === "data/dibao.sqlite");
+  if (!incompleteRecovery && (!database || database.size === 0)) throw new Error("Invalid backup manifest: database is missing or empty");
   return manifest;
 }
 
@@ -148,6 +150,10 @@ export class DesktopDataProtection {
   }
 
   async backup(version: string, reason: BackupManifest["reason"]): Promise<BackupManifest> {
+    return this.snapshot(version, reason);
+  }
+
+  private async snapshot(version: string, reason: BackupManifest["reason"], preserveIncomplete = false): Promise<BackupManifest> {
     await this.initialize();
     const sourceFiles = [...await entries(this.paths.data), ...await entries(this.paths.profile)];
     await this.checkBackupSpace();
@@ -168,9 +174,12 @@ export class DesktopDataProtection {
         if (sourceHash !== await digest(destination)) throw new Error("Data changed during backup");
         manifest.files.push({ path, size: (await stat(destination)).size, sha256: sourceHash });
       }
-      validateManifest(manifest);
+      const database = manifest.files.find(entry => entry.path.replaceAll("\\", "/") === "data/dibao.sqlite");
+      const incomplete = preserveIncomplete && (!database || database.size === 0);
+      validateManifest(manifest, incomplete);
       await writeJson(join(staging, "manifest.json"), manifest);
-      await rename(staging, join(this.paths.backups, id));
+      // Incomplete current data is retained for inspection, never offered as a restore point.
+      await rename(staging, join(this.paths.backups, `${id}${incomplete ? ".incomplete" : ""}`));
       return manifest;
     } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   }
@@ -293,7 +302,7 @@ export class DesktopDataProtection {
     const state = await this.readState();
     const restoreSize = manifest.files.reduce((sum, entry) => sum + entry.size, 0);
     await this.checkBackupSpace(restoreSize + 64 * 1024 * 1024);
-    await this.backup(state?.highestVersion ?? manifest.version, "recovery");
+    await this.snapshot(state?.highestVersion ?? manifest.version, "recovery", true);
     const staging = join(this.paths.root, `restore-${randomUUID()}`);
     await mkdir(staging, { mode: 0o700 });
     for (const name of ["data", "profile"]) await mkdir(join(staging, name), { mode: 0o700 });
