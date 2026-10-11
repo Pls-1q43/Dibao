@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { openDatabase } from "../../packages/db/dist/index.js";
 import { repoRoot, run } from "./prepare-resources.mjs";
+import { closeTestApplication } from "./test-utils.mjs";
 
 const require = createRequire(import.meta.url);
 const yaml = require("js-yaml");
@@ -74,7 +75,7 @@ try {
   let page = await launch();
   assert(await page.evaluate(() => window.dibaoDesktop.getRuntime().then(runtime => runtime.version)) === originalVersion, "First installer version mismatch");
   await page.evaluate(() => localStorage.setItem("desktop-upgrade-pending-action", "preserve-client-operation"));
-  await electron.close(); electron = null;
+  await closeTestApplication(electron); electron = null;
 
   await run(process.execPath, [join(repoRoot, "scripts", "desktop", "package.mjs"),
     `--config.extraMetadata.version=${nextVersion}`, "--config.directories.output=../../dist/desktop/upgrade-test",
@@ -159,7 +160,7 @@ try {
     page = await launch();
     assert(await page.evaluate(() => localStorage.getItem("desktop-upgrade-pending-action")) === "preserve-client-operation", "Forced exit lost persisted client state");
   }
-  await electron.close(); electron = null;
+  await closeTestApplication(electron); electron = null;
   assert(JSON.stringify(snapshot()) === before, "Upgrade changed article, vector or settings data");
   assert(createHash("sha256").update(await readFile(secretPath)).digest("hex") === secretBefore, "Upgrade replaced plugin encryption key");
   const backups = await readdir(join(data, "backups"));
@@ -168,7 +169,7 @@ try {
     checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "force-exit-recovery", "data-regression"] }, null, 2));
   console.log(JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, output }));
 } finally {
-  if (electron) await electron.close().catch(() => undefined);
+  if (electron) await closeTestApplication(electron).catch(() => undefined);
   if (installerLaunchedPid) { try { process.kill(installerLaunchedPid, "SIGKILL"); } catch {} }
   if (fixture) { fixture.closeAllConnections(); await new Promise(resolve => fixture.close(resolve)); }
 }

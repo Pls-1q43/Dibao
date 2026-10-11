@@ -56,6 +56,7 @@ export class JobRunner {
   private interval: ReturnType<typeof setInterval> | null = null;
   private followUpTimer: ReturnType<typeof setTimeout> | null = null;
   private isDraining = false;
+  private stopped = false;
 
   constructor(private readonly options: JobRunnerOptions) {
     this.now = options.now ?? Date.now;
@@ -72,6 +73,7 @@ export class JobRunner {
       return;
     }
 
+    this.stopped = false;
     this.recoverStaleRunningJobs();
     this.scheduleDrain(0);
     this.interval = setInterval(() => {
@@ -80,11 +82,8 @@ export class JobRunner {
   }
 
   stop(): void {
-    if (!this.interval) {
-      return;
-    }
-
-    clearInterval(this.interval);
+    this.stopped = true;
+    if (this.interval) clearInterval(this.interval);
     this.interval = null;
     if (this.followUpTimer) {
       clearTimeout(this.followUpTimer);
@@ -103,7 +102,7 @@ export class JobRunner {
   }
 
   async drainDue(): Promise<number> {
-    if (this.isDraining) {
+    if (this.stopped || this.isDraining) {
       return 0;
     }
 
@@ -131,6 +130,7 @@ export class JobRunner {
   }
 
   async runDueOnce(): Promise<JobRow | null> {
+    if (this.stopped) return null;
     const job = this.options.jobs.claimNextDue(this.now());
     if (!job) {
       return null;

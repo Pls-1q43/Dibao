@@ -1605,7 +1605,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   }
 
   function startBackgroundServices(): void {
-    if (!backgroundJobs) {
+    if (!backgroundJobs || upgradePipelineClosing) {
       return;
     }
     if (backgroundStartupTimer || backgroundServicesStarted) {
@@ -1627,7 +1627,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   }
 
   function startBackgroundServicesNow(): void {
-    if (backgroundServicesStarted) {
+    if (backgroundServicesStarted || upgradePipelineClosing) {
       return;
     }
     backgroundServicesStarted = true;
@@ -1803,15 +1803,25 @@ export function buildServer(options: BuildServerOptions = {}) {
   app.addHook("onClose", async () => {
     upgradePipelineClosing = true;
     if (upgradePipelineTimer) clearInterval(upgradePipelineTimer);
-    await derivedDataUpgradeService.stop();
-    if (desktopRuntimeToken) await coreDatabaseMigrationService.stopAndWait();
-    else coreDatabaseMigrationService.stop();
+    if (maintenanceTickTimer) clearInterval(maintenanceTickTimer);
+    if (maintenanceInitialTickTimer) clearTimeout(maintenanceInitialTickTimer);
+    if (walMaintenanceTimer) clearInterval(walMaintenanceTimer);
+    if (backgroundStartupTimer) clearTimeout(backgroundStartupTimer);
+    maintenanceTickTimer = null;
+    maintenanceInitialTickTimer = null;
+    walMaintenanceTimer = null;
+    backgroundStartupTimer = null;
+    stopJobWakeWatcher?.();
+    stopJobWakeWatcher = null;
     recommendationMaintenanceScheduler.stop();
     profileDecayScheduler.stop();
     jobHistoryCleanupScheduler.stop();
     retentionCleanupScheduler.stop();
     feedRefreshScheduler.stop();
     jobRunner.stop();
+    await derivedDataUpgradeService.stop();
+    if (desktopRuntimeToken) await coreDatabaseMigrationService.stopAndWait();
+    else coreDatabaseMigrationService.stop();
     if (desktopRuntimeToken) await jobRunner.waitForIdle();
     for (const subscriber of recommendationInventorySubscribers.values()) {
       subscriber.close();
@@ -1821,29 +1831,9 @@ export function buildServer(options: BuildServerOptions = {}) {
       clearInterval(recommendationInventoryHeartbeatTimer);
       recommendationInventoryHeartbeatTimer = null;
     }
-    if (stopJobWakeWatcher) {
-      stopJobWakeWatcher();
-      stopJobWakeWatcher = null;
-    }
     passiveExposureBuffer.dispose();
     if (desktopRuntimeToken) await pluginService.disposeAndWait();
     else pluginService.dispose();
-    if (maintenanceTickTimer) {
-      clearInterval(maintenanceTickTimer);
-      maintenanceTickTimer = null;
-    }
-    if (maintenanceInitialTickTimer) {
-      clearTimeout(maintenanceInitialTickTimer);
-      maintenanceInitialTickTimer = null;
-    }
-    if (walMaintenanceTimer) {
-      clearInterval(walMaintenanceTimer);
-      walMaintenanceTimer = null;
-    }
-    if (backgroundStartupTimer) {
-      clearTimeout(backgroundStartupTimer);
-      backgroundStartupTimer = null;
-    }
   });
 
   if (closeDatabaseOnClose) {

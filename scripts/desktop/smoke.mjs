@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { DesktopDataProtection } from "../../apps/desktop/dist/data-protection.js";
 import { openDatabase, SqliteFeedRepository, SqliteArticleRepository, SqliteAppSettingsRepository } from "../../packages/db/dist/index.js";
 import { repoRoot } from "./prepare-resources.mjs";
+import { closeTestApplication } from "./test-utils.mjs";
 
 const require = createRequire(import.meta.url);
 const data = process.env.DIBAO_DESKTOP_SMOKE_DATA ?? await mkdtemp(join(tmpdir(), "dibao-desktop-smoke-"));
@@ -127,12 +128,12 @@ try {
   await page.evaluate(() => window.dibaoDesktop.prepareToQuit());
   const progress = await api(page, "/api/articles/desktop-smoke-article");
   assert(progress.payload.data.state.readingProgress >= 0.75, "Pending reading progress was not flushed before exit");
-  await electron.close(); electron = null;
+  await closeTestApplication(electron); electron = null;
   const state = JSON.parse(await readFile(join(data, "desktop-state.json"), "utf8"));
   assert(state.pending === null, "Successful article loading did not finish the upgrade marker");
   page = await launch();
   assert((await api(page, "/api/auth/session")).payload.data.authenticated, "Login did not survive restart / internal port change");
-  await electron.close(); electron = null;
+  await closeTestApplication(electron); electron = null;
   const protection = new DesktopDataProtection(data);
   const oldVersion = state.highestVersion;
   const next = oldVersion.replace(/beta\.(\d+)$/, (_, n) => `beta.${Number(n) + 1}`);
@@ -153,6 +154,6 @@ try {
   }
   throw error;
 } finally {
-  if (electron) await electron.close().catch(() => undefined);
+  if (electron) await closeTestApplication(electron).catch(() => undefined);
   await new Promise(resolve => rss.close(resolve));
 }
