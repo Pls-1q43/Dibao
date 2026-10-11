@@ -38,7 +38,8 @@ if (process.platform === "win32") delete env.DIBAO_DESKTOP_DATA_DIR;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
-  for (let n = 0; n < 180; n++) { if (await check()) return; await delay(500); }
+  // Native NSIS extraction on hosted Windows runners can exceed two minutes.
+  for (let n = 0; n < 600; n++) { if (await check()) return; await delay(500); }
   throw new Error(`Timed out: ${label}`);
 }
 async function installerIn(dir) { return join(dir, (await readdir(dir)).find(file => file.endsWith(".exe")) ?? "missing-installer"); }
