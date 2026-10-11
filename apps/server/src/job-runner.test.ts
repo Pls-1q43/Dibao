@@ -61,6 +61,28 @@ afterEach(() => {
 });
 
 describe("job runner foundation", () => {
+  it("finishes the active write but rejects later drains after shutdown", async () => {
+    const db = createEmptyDatabase();
+    const jobs = new SqliteJobRepository(db);
+    let finish!: () => void;
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const active = new Promise<void>(resolve => { finish = resolve; });
+    const runner = new JobRunner({ jobs, now: () => 2000, handlers: { feed_refresh: async () => { started(); await active; } } });
+    try {
+      for (const id of ["job_shutdown_a", "job_shutdown_b"]) jobs.enqueue({ id, type: "feed_refresh", payloadJson: null, maxAttempts: 1, runAfter: 1000, now: 1000 });
+      const draining = runner.drainDue();
+      await entered;
+      runner.stop();
+      finish();
+      await expect(draining).resolves.toBe(1);
+      await runner.waitForIdle();
+      expect(jobs.findById("job_shutdown_b")?.status).toBe("queued");
+      db.close();
+      await expect(runner.drainDue()).resolves.toBe(0);
+      await expect(runner.runDueOnce()).resolves.toBeNull();
+    } finally { finish?.(); if (db.open) db.close(); }
+  });
   it("defers a job without spending an attempt when a handler requests a future run time", async () => {
     const db = createEmptyDatabase();
     const jobs = new SqliteJobRepository(db);

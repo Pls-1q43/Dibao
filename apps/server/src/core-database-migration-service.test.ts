@@ -16,6 +16,17 @@ import {
 import { CoreDatabaseMigrationService } from "./core-database-migration-service.js";
 
 describe("CoreDatabaseMigrationService", () => {
+  it("cancels queued migrations and waits without starting a writer after shutdown", async () => {
+    const db = openDatabase(":memory:");
+    const service = new CoreDatabaseMigrationService({ db, deferMs: 30_000, runInChildProcess: false });
+    try {
+      const pending = service.startIfRequired();
+      await service.stopAndWait();
+      expect((await pending).state).toBe("pending");
+      expect(getAppliedMigrations(db)).toHaveLength(0);
+      expect((await service.startIfRequired()).state).toBe("pending");
+    } finally { db.close(); }
+  });
   it("upgrades every historical migration prefix to the latest schema", async () => {
     const migrations = loadDefaultMigrations();
     const latestVersion = migrations.at(-1)?.version;

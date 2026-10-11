@@ -1,3 +1,4 @@
+import { isLocalServiceOffline } from "../desktop.js";
 import {
   ApiRequestError,
   type AppSettings,
@@ -819,7 +820,7 @@ export type OfflineModePromptReason = "network-offline" | "server-unavailable";
 
 export function offlineModePromptReasonForError(
   error: unknown,
-  browserOffline = typeof navigator !== "undefined" && navigator.onLine === false
+  browserOffline = isLocalServiceOffline()
 ): OfflineModePromptReason | null {
   if (browserOffline) return "network-offline";
   if (error instanceof ApiRequestError) {

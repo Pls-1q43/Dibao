@@ -124,7 +124,8 @@
   font-weight: var(--weight-medium);
 }
 
-.authForm input {
+.authForm input,
+.authForm select {
   min-width: 0;
   height: var(--input-height-md);
   border: var(--input-border);
@@ -170,6 +171,7 @@
 }
 
 .authForm input:focus-visible,
+.authForm select:focus-visible,
 .managementForm input:focus-visible,
 .managementForm select:focus-visible,
 .managementFolderRow input:focus-visible,
@@ -2013,7 +2015,7 @@
   margin: 0;
 }
 
-.aboutList div {
+.aboutList > div {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(104px, 0.35fr) minmax(0, 1fr);
@@ -2022,7 +2024,7 @@
   padding-block: var(--space-2);
 }
 
-.aboutList div:last-child {
+.aboutList > div:last-child {
   border-bottom: 0;
 }
 
@@ -2055,6 +2057,33 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+.desktopUpdateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.desktopUpdateStatus {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.desktopStartupSetting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.desktopBackupStatus {
+  width: 100%;
+  min-width: 0;
+}
+
+.desktopBackupStatus select {
+  width: 100%;
 }
 
 .latestReleaseStatus span,

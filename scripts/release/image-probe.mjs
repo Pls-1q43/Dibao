@@ -1,7 +1,7 @@
 // Sent over stdin to Node inside isolated release-test containers.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 
 let probeStage = "initialize";
 
@@ -64,6 +64,11 @@ export function assertUpgradeStatus(status, seeded) {
 export async function verifyHttpRelease({ expectedVersion, seeded, request = fetch }) {
   const origin = "http://127.0.0.1:8080";
   probeStage = "http_health";
+  if (existsSync("/app")) {
+    for (const path of ["/app/apps/desktop", "/app/node_modules/electron", "/app/node_modules/electron-updater", "/app/node_modules/@dibao/desktop"]) {
+      assert(!existsSync(path), `Desktop runtime must not ship in Docker: ${path}`);
+    }
+  }
   const healthResponse = await request(`${origin}/api/system/health`);
   assert.equal(healthResponse.status, 200);
   const health = (await healthResponse.json()).data;

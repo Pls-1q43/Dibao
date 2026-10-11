@@ -54,7 +54,7 @@ export async function verifyRelease({ image, version, revision }) {
   const repository = image.split("@")[0];
   // Historical images seed with their own shipped migrations on amd64. The
   // same portable SQLite fixture must upgrade on BOTH target architectures.
-  const previous = ["v0.3.1", "v0.1.0", "v0.1.3"];
+  const previous = ["v0.4.0", "v0.3.1", "v0.1.0", "v0.1.3"];
   const historical = new Map();
   for (const tag of previous) {
     stage("pull_historical_image", "linux/amd64", tag);

@@ -1,6 +1,6 @@
 {
   "name": "dibao",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -15,6 +15,9 @@
     "test": "npm run test --workspaces --if-present",
     "dev:server": "npm run dev -w @dibao/server",
     "dev:web": "npm run dev -w @dibao/web",
+    "build:desktop": "npm run build && npm run build -w @dibao/desktop",
+    "desktop:package": "npm run build:desktop && npm run package -w @dibao/desktop",
+    "desktop:smoke": "node scripts/desktop/smoke.mjs",
     "e2e": "npm run build && node scripts/e2e/prepare.mjs && playwright test",
     "e2e:install": "playwright install chromium",
     "perf:recommendation": "tsx scripts/perf/recommendation-performance.ts",
@@ -36,6 +39,6 @@
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "vite": "^8.2.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

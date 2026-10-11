@@ -1,7 +1,7 @@
 import type { ChangeEvent, FormEvent } from "react";
 import { useRef, useState } from "react";
 import type { DerivedDataUpgradeStatus, FeedDiscoveryCandidate, FeedDiscoveryResponse, OpmlImportResponse, PluginListItem } from "../api.js";
-import { useI18n } from "../i18n.js";
+import { useI18n, type Locale } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { classNames, type AuthMode } from "../app/shared.js";
 import type { OfflineModePromptReason } from "../offline/offlineReading.js";
@@ -77,7 +77,7 @@ export function PwaStatusBanner(props: {
 }
 
 export function SetupWelcomePanel(props: { onStart: () => void }) {
-  const { t } = useI18n();
+  const { locale, t, setLocale } = useI18n();
 
   return (
     <section className={styles.authPanel} aria-labelledby="setup-welcome-title">
@@ -92,6 +92,14 @@ export function SetupWelcomePanel(props: { onStart: () => void }) {
         <p className={styles.kicker}>{t.setup.kicker}</p>
         <h1 id="setup-welcome-title">{t.setup.welcome.title}</h1>
         <p>{t.setup.welcome.body}</p>
+      </div>
+      <div className={styles.authForm}>
+        <label htmlFor="setup-language">{t.setup.welcome.languageLabel}</label>
+        <select id="setup-language" value={locale} onChange={event => setLocale(event.target.value as Locale)}>
+          <option value="zh-CN">简体中文</option>
+          <option value="ja-JP">日本語</option>
+          <option value="en-US">English</option>
+        </select>
       </div>
       <button className={styles.primaryButton} onClick={props.onStart} type="button">
         {t.setup.welcome.start}
@@ -264,6 +272,7 @@ export function SetupOptionalPluginsPanel(props: {
   onDecision: (pluginId: string, enabled: boolean) => void;
   plugins: PluginListItem[];
 }) {
+  const { t } = useI18n();
   const primaryPlugin = props.plugins[0] ?? null;
   const setupStep = primaryPlugin?.contributions.setupSteps[0] ?? null;
 
@@ -272,14 +281,14 @@ export function SetupOptionalPluginsPanel(props: {
       <div className={styles.brand}>
         <img alt="" className={styles.brandMark} src="/logo-64.png" />
         <span>
-          <strong>邸报</strong>
-          <small>Dibao</small>
+          <strong>{t.common.brandName}</strong>
+          <small>{t.common.brandSubtitle}</small>
         </span>
       </div>
       <div>
-        <p className={styles.kicker}>Official Plugin</p>
-        <h1 id="setup-plugin-title">{setupStep?.title ?? primaryPlugin?.name ?? "插件"}</h1>
-        <p>{setupStep?.body ?? "可以现在启用，也可以稍后在设置中管理。"}</p>
+        <p className={styles.kicker}>{t.setup.plugins.kicker}</p>
+        <h1 id="setup-plugin-title">{setupStep?.title ?? primaryPlugin?.name ?? t.setup.plugins.title}</h1>
+        <p>{setupStep?.body ?? t.setup.plugins.body}</p>
       </div>
       {props.error ? <p className={styles.errorText}>{props.error}</p> : null}
       {primaryPlugin ? (
@@ -291,8 +300,8 @@ export function SetupOptionalPluginsPanel(props: {
             type="button"
           >
             {props.busyPluginId === primaryPlugin.id
-              ? "处理中"
-              : setupStep?.enableLabel ?? "启用"}
+              ? t.setup.plugins.processing
+              : setupStep?.enableLabel ?? t.setup.plugins.enable}
           </button>
           <button
             className={styles.secondaryButton}
@@ -300,7 +309,7 @@ export function SetupOptionalPluginsPanel(props: {
             onClick={() => props.onDecision(primaryPlugin.id, false)}
             type="button"
           >
-            {setupStep?.skipLabel ?? "暂不启用"}
+            {setupStep?.skipLabel ?? t.setup.plugins.skip}
           </button>
         </div>
       ) : null}
@@ -316,10 +325,12 @@ export function SetupSourcesPanel(props: {
   isAddingFeed: boolean;
   isDiscoveringFeeds: boolean;
   isImportingOpml: boolean;
+  isSkipping?: boolean;
   onAddCandidate: (candidate: FeedDiscoveryCandidate) => void;
   onAddFeed: (event: FormEvent<HTMLFormElement>) => void;
   onImportOpml: (event: ChangeEvent<HTMLInputElement>) => void;
   onUpdateFeedUrl: (value: string) => void;
+  onSkip?: () => void;
   opmlSummary: OpmlImportResponse | null;
 }) {
   const { t } = useI18n();
@@ -407,6 +418,16 @@ export function SetupSourcesPanel(props: {
       ) : null}
 
       {props.error ? <p className={styles.errorText}>{props.error}</p> : null}
+      {props.onSkip ? (
+        <button
+          className={styles.secondaryButton}
+          disabled={props.isAddingFeed || props.isDiscoveringFeeds || props.isImportingOpml || props.isSkipping}
+          onClick={props.onSkip}
+          type="button"
+        >
+          {props.isSkipping ? t.setup.sources.skipping : t.setup.sources.skip}
+        </button>
+      ) : null}
     </section>
   );
 }

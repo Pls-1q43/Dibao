@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -230,7 +230,7 @@ import {
   RetentionCleanupJobService,
   RetentionCleanupScheduler
 } from "./retention-cleanup-job-service.js";
-import { SettingsService, SettingsServiceError } from "./settings-service.js";
+import { SettingsService, SettingsServiceError, supportedSettingsLocales, type SettingsLocale } from "./settings-service.js";
 import {
   attachServerTelemetryErrorHandler,
   configureServerTelemetry
@@ -253,6 +253,7 @@ type HealthResponse = {
 type SetupStatusResponse = {
   setupCompleted: boolean;
   hasFeeds: boolean;
+  sourcesCompleted?: boolean;
   hasEmbeddingProvider: boolean;
   firstRefreshStatus: "idle" | "running" | "succeeded" | "failed";
   coreDatabaseMigration?: CoreDatabaseMigrationStatus;
@@ -282,6 +283,7 @@ type AuthCredentialBody = {
   username?: unknown;
   password?: unknown;
   telemetryEnabled?: unknown;
+  locale?: unknown;
 };
 
 type ChangePasswordBody = {
@@ -522,6 +524,7 @@ const WAL_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
 const WAL_MAINTENANCE_MIN_BYTES = 16 * 1024 * 1024;
 
 type BuildServerOptions = {
+  desktopRuntimeToken?: string;
   db?: DibaoDatabase;
   databasePath?: string;
   migrate?: boolean;
@@ -593,6 +596,17 @@ export function buildServer(options: BuildServerOptions = {}) {
   const app = Fastify({
     logger: options.logger ?? true
   });
+  const desktopRuntimeToken = options.desktopRuntimeToken ?? process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+  if (desktopRuntimeToken) {
+    app.addHook("onRequest", async (request, reply) => {
+      const supplied = request.headers["x-dibao-desktop-token"];
+      const expected = Buffer.from(desktopRuntimeToken);
+      const actual = Buffer.from(typeof supplied === "string" ? supplied : "");
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+        return sendApiError(reply, 403, "DESKTOP_RUNTIME_REQUIRED", "Desktop runtime access required");
+      }
+    });
+  }
   const backgroundJobs = options.backgroundJobs ?? false;
   const recordForegroundActivityEnabled = options.recordForegroundActivity ?? !backgroundJobs;
   const foregroundActivityWriteThrottleMs =
@@ -1593,7 +1607,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   }
 
   function startBackgroundServices(): void {
-    if (!backgroundJobs) {
+    if (!backgroundJobs || upgradePipelineClosing) {
       return;
     }
     if (backgroundStartupTimer || backgroundServicesStarted) {
@@ -1615,7 +1629,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   }
 
   function startBackgroundServicesNow(): void {
-    if (backgroundServicesStarted) {
+    if (backgroundServicesStarted || upgradePipelineClosing) {
       return;
     }
     backgroundServicesStarted = true;
@@ -1724,6 +1738,7 @@ export function buildServer(options: BuildServerOptions = {}) {
         return;
       }
     }
+    if (upgradePipelineClosing) return;
     if (!upgradePluginsReconciled) {
       pluginService.reconcileOfficialPlugins();
       upgradePluginsReconciled = true;
@@ -1783,17 +1798,33 @@ export function buildServer(options: BuildServerOptions = {}) {
     });
   }
 
+  app.addHook("preClose", async () => {
+    for (const subscriber of recommendationInventorySubscribers.values()) subscriber.close();
+  });
+
   app.addHook("onClose", async () => {
     upgradePipelineClosing = true;
     if (upgradePipelineTimer) clearInterval(upgradePipelineTimer);
-    await derivedDataUpgradeService.stop();
-    coreDatabaseMigrationService.stop();
+    if (maintenanceTickTimer) clearInterval(maintenanceTickTimer);
+    if (maintenanceInitialTickTimer) clearTimeout(maintenanceInitialTickTimer);
+    if (walMaintenanceTimer) clearInterval(walMaintenanceTimer);
+    if (backgroundStartupTimer) clearTimeout(backgroundStartupTimer);
+    maintenanceTickTimer = null;
+    maintenanceInitialTickTimer = null;
+    walMaintenanceTimer = null;
+    backgroundStartupTimer = null;
+    stopJobWakeWatcher?.();
+    stopJobWakeWatcher = null;
     recommendationMaintenanceScheduler.stop();
     profileDecayScheduler.stop();
     jobHistoryCleanupScheduler.stop();
     retentionCleanupScheduler.stop();
     feedRefreshScheduler.stop();
     jobRunner.stop();
+    await derivedDataUpgradeService.stop();
+    if (desktopRuntimeToken) await coreDatabaseMigrationService.stopAndWait();
+    else coreDatabaseMigrationService.stop();
+    if (desktopRuntimeToken) await jobRunner.waitForIdle();
     for (const subscriber of recommendationInventorySubscribers.values()) {
       subscriber.close();
     }
@@ -1802,28 +1833,9 @@ export function buildServer(options: BuildServerOptions = {}) {
       clearInterval(recommendationInventoryHeartbeatTimer);
       recommendationInventoryHeartbeatTimer = null;
     }
-    if (stopJobWakeWatcher) {
-      stopJobWakeWatcher();
-      stopJobWakeWatcher = null;
-    }
     passiveExposureBuffer.dispose();
-    pluginService.dispose();
-    if (maintenanceTickTimer) {
-      clearInterval(maintenanceTickTimer);
-      maintenanceTickTimer = null;
-    }
-    if (maintenanceInitialTickTimer) {
-      clearTimeout(maintenanceInitialTickTimer);
-      maintenanceInitialTickTimer = null;
-    }
-    if (walMaintenanceTimer) {
-      clearInterval(walMaintenanceTimer);
-      walMaintenanceTimer = null;
-    }
-    if (backgroundStartupTimer) {
-      clearTimeout(backgroundStartupTimer);
-      backgroundStartupTimer = null;
-    }
+    if (desktopRuntimeToken) await pluginService.disposeAndWait();
+    else pluginService.dispose();
   });
 
   if (closeDatabaseOnClose) {
@@ -1845,11 +1857,10 @@ export function buildServer(options: BuildServerOptions = {}) {
     try {
       const session = await authService.setup(parsed.username, parsed.password, requestMeta(request));
       settingsService.markInstallationCompleted();
-      if (parsed.telemetryEnabled !== undefined) {
+      if (parsed.telemetryEnabled !== undefined || parsed.locale !== undefined) {
         const result = settingsService.updateSettings({
-          telemetry: {
-            enabled: parsed.telemetryEnabled
-          }
+          ...(parsed.telemetryEnabled !== undefined ? { telemetry: { enabled: parsed.telemetryEnabled } } : {}),
+          ...(parsed.locale !== undefined ? { ui: { locale: parsed.locale } } : {})
         });
         configureServerTelemetry({
           enabled: result.settings.telemetry.enabled
@@ -1955,7 +1966,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
   });
 
-  app.get("/api/setup/status", async () => {
+  function currentSetupStatus() {
     const coreMigrationStatus = coreDatabaseMigrationService.getStatus();
     if (coreMigrationStatus.blocking) {
       return {
@@ -1971,6 +1982,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     }
 
     const hasFeeds = feeds.list().length > 0;
+    const sourcesCompleted = hasFeeds || settings.getJson("setup.sources.completed") === true;
     return {
       data: getSetupStatus(
         credentials.hasCredential(),
@@ -1978,13 +1990,20 @@ export function buildServer(options: BuildServerOptions = {}) {
         embeddingProviderService.hasActiveProviderAndIndex(),
         coreMigrationStatus,
         derivedDataUpgradeService.getStatus(),
-        hasFeeds
+        sourcesCompleted
           ? pluginService.listSetupSteps().filter(
               (plugin) => settings.getJson(`setup.optionalPlugin.${plugin.id}`) === null
             )
-          : []
+          : [],
+        sourcesCompleted
       )
     };
+  }
+
+  app.get("/api/setup/status", async () => currentSetupStatus());
+  app.post("/api/setup/sources/skip", async () => {
+    settings.setJson("setup.sources.completed", true, options.now?.() ?? Date.now());
+    return currentSetupStatus();
   });
 
   app.post<{ Params: PluginParams; Body: OptionalPluginBody }>(
@@ -4257,7 +4276,8 @@ function getSetupStatus(
   hasEmbeddingProvider: boolean,
   coreDatabaseMigration: CoreDatabaseMigrationStatus,
   derivedDataUpgrade: DerivedDataUpgradeStatus | null,
-  optionalPluginSteps: unknown[] = []
+  optionalPluginSteps: unknown[] = [],
+  sourcesCompleted?: boolean
 ): SetupStatusResponse {
   const status: SetupStatusResponse = {
     setupCompleted,
@@ -4267,6 +4287,9 @@ function getSetupStatus(
   };
   if (optionalPluginSteps.length > 0) {
     status.optionalPluginSteps = optionalPluginSteps;
+  }
+  if (sourcesCompleted !== undefined) {
+    status.sourcesCompleted = sourcesCompleted;
   }
   if (coreDatabaseMigration.blocking || coreDatabaseMigration.state === "pending") {
     status.coreDatabaseMigration = coreDatabaseMigration;
@@ -6767,7 +6790,7 @@ function parseDiscoverFeedBody(body: DiscoverFeedBody | undefined):
 }
 
 function parseAuthCredentialBody(body: AuthCredentialBody | undefined):
-  | { ok: true; username: string; password: string; telemetryEnabled?: boolean }
+  | { ok: true; username: string; password: string; telemetryEnabled?: boolean; locale?: SettingsLocale }
   | { ok: false; message: string; details?: unknown } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, message: "request body must be an object" };
@@ -6803,11 +6826,16 @@ function parseAuthCredentialBody(body: AuthCredentialBody | undefined):
   const telemetryEnabled =
     typeof body.telemetryEnabled === "boolean" ? body.telemetryEnabled : undefined;
 
+  if (Object.hasOwn(body, "locale") && !(supportedSettingsLocales as readonly unknown[]).includes(body.locale)) {
+    return { ok: false, message: "locale must be zh-CN, en-US, or ja-JP", details: { field: "locale" } };
+  }
+
   return {
     ok: true,
     username: body.username,
     password: body.password,
-    telemetryEnabled
+    telemetryEnabled,
+    locale: body.locale as SettingsLocale | undefined
   };
 }
 

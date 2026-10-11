@@ -23,6 +23,7 @@ import {
 } from "@dibao/db";
 import { signPluginPackage } from "@dibao/plugin-sdk";
 import { parseOpml } from "@dibao/rss";
+import { dibaoVersion } from "@dibao/shared";
 import { buildServer as buildRealServer, getHealth } from "./app.js";
 import type { HostnameResolver } from "./controlled-fetch.js";
 import type { FeedFetcher } from "./feed-refresh-service.js";
@@ -79,7 +80,7 @@ describe("server API vertical slice", () => {
           database: "ok",
           fts: "ok",
           vectorStore: "ok",
-          version: "0.4.0"
+          version: dibaoVersion
         }
       });
     } finally {
@@ -523,7 +524,8 @@ describe("server API vertical slice", () => {
           export async function activate(ctx) {
             ctx.api.get("/locale", async () => ({
               startupLocale: ctx.locale,
-              currentLocale: await ctx.i18n.getLocale()
+              currentLocale: await ctx.i18n.getLocale(),
+              hasDesktopCapability: Boolean(process.env.DIBAO_DESKTOP_RUNTIME_TOKEN)
             }));
           }
         `
@@ -549,7 +551,14 @@ describe("server API vertical slice", () => {
         publisher: "Example"
       });
 
-      expect((await app.inject({ method: "POST", url: "/api/plugins/com.example.localized/enable" })).statusCode).toBe(200);
+      const previousToken = process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+      process.env.DIBAO_DESKTOP_RUNTIME_TOKEN = "desktop-private-test-capability";
+      try {
+        expect((await app.inject({ method: "POST", url: "/api/plugins/com.example.localized/enable" })).statusCode).toBe(200);
+      } finally {
+        if (previousToken === undefined) delete process.env.DIBAO_DESKTOP_RUNTIME_TOKEN;
+        else process.env.DIBAO_DESKTOP_RUNTIME_TOKEN = previousToken;
+      }
       const contributions = await app.inject({ method: "GET", url: "/api/plugins/contributions" });
       expect(contributions.statusCode, contributions.body).toBe(200);
       const localized = contributions.json().data.find((plugin: { id: string }) => plugin.id === "com.example.localized");
@@ -569,7 +578,8 @@ describe("server API vertical slice", () => {
       expect(locale.statusCode, locale.body).toBe(200);
       expect(locale.json().data).toEqual({
         startupLocale: "en-US",
-        currentLocale: "ja-JP"
+        currentLocale: "ja-JP",
+        hasDesktopCapability: false
       });
     } finally {
       await app.close();
@@ -2241,6 +2251,7 @@ describe("server API vertical slice", () => {
         data: {
           setupCompleted: true,
           hasFeeds: false,
+          sourcesCompleted: false,
           hasEmbeddingProvider: false,
           firstRefreshStatus: "idle"
         }
@@ -2383,6 +2394,7 @@ describe("server API vertical slice", () => {
         data: {
           setupCompleted: true,
           hasFeeds: true,
+          sourcesCompleted: true,
           hasEmbeddingProvider: false,
           firstRefreshStatus: "idle",
           optionalPluginSteps: [
@@ -2401,6 +2413,36 @@ describe("server API vertical slice", () => {
           ]
         }
       });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it.each([
+    ["zh-CN", "每日简报"], ["en-US", "Daily Brief"], ["ja-JP", "デイリーブリーフ"]
+  ])("saves %s at account creation and persists skipping feeds without hiding the plugin prompt", async (locale, title) => {
+    const db = createEmptyDatabase();
+    const app = buildRealServer({ db, logger: false, cookieSecure: false });
+    try {
+      expect((await app.inject({ method: "POST", url: "/api/setup/sources/skip" })).statusCode).toBe(401);
+      const invalid = await postJson(app, "/api/auth/setup", { username: "Test", password: "test-password", locale: "invalid" });
+      expect(invalid.statusCode).toBe(400);
+      const setup = await postJson(app, "/api/auth/setup", { username: "Test", password: "test-password", locale, telemetryEnabled: false });
+      expect(setup.statusCode, setup.body).toBe(200);
+      const cookie = cookieHeaderFromSetCookie(setup.headers["set-cookie"]);
+      const settings = await app.inject({ method: "GET", url: "/api/settings", headers: { cookie } });
+      expect(settings.json().data.ui.locale).toBe(locale);
+      expect(settings.json().data.telemetry.enabled).toBe(false);
+      const skipped = await injectJsonWithCookie(app, "POST", "/api/setup/sources/skip", cookie, {});
+      expect(skipped.statusCode, skipped.body).toBe(200);
+      expect(skipped.json().data).toMatchObject({ hasFeeds: false, sourcesCompleted: true, optionalPluginSteps: [expect.objectContaining({ contributions: expect.objectContaining({ setupSteps: [expect.objectContaining({ title })] }) })] });
+      expect(new SqliteAppSettingsRepository(db).getJson("setup.sources.completed")).toBe(true);
+      const decision = await injectJsonWithCookie(app, "POST", "/api/setup/optional-plugins/app.dibao.daily-brief", cookie, { enabled: false });
+      expect(decision.statusCode, decision.body).toBe(200);
+      const resumed = await app.inject({ method: "GET", url: "/api/setup/status", headers: { cookie } });
+      expect(resumed.json().data).toMatchObject({ hasFeeds: false, sourcesCompleted: true });
+      expect(resumed.json().data.optionalPluginSteps).toBeUndefined();
     } finally {
       await app.close();
       db.close();
@@ -5772,7 +5814,7 @@ describe("server API vertical slice", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toMatchObject({
         data: {
-          currentVersion: "0.4.0",
+          currentVersion: dibaoVersion,
           latestVersion: "v0.2.0",
           releaseUrl: "https://github.com/Pls-1q43/Dibao/releases/tag/v0.2.0",
           updateAvailable: false,

@@ -51,7 +51,7 @@ FROM --platform=$TARGETPLATFORM node:22-bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.licenses="BUSL-1.1" \
   com.dibao.license.change-license="Apache-2.0" \
-  com.dibao.license.change-date="2030-09-07"
+  com.dibao.license.change-date="2030-10-11"
 
 ENV NODE_ENV=production \
   DIBAO_HOST=0.0.0.0 \
@@ -64,7 +64,10 @@ WORKDIR /app
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn* \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg \
   && mkdir -p /data \
   && chown -R node:node /data /app
 

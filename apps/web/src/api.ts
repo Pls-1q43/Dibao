@@ -388,6 +388,7 @@ export type AuthSession = {
 export type SetupStatus = {
   setupCompleted: boolean;
   hasFeeds: boolean;
+  sourcesCompleted?: boolean;
   hasEmbeddingProvider: boolean;
   firstRefreshStatus: "idle" | "running" | "succeeded" | "failed";
   coreDatabaseMigration?: DerivedDataUpgradeStatus;
@@ -1442,12 +1443,10 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
     async setupAuth(
       username: string,
       password: string,
-      telemetryEnabled?: boolean
+      telemetryEnabled?: boolean,
+      locale?: SettingsLocale
     ): Promise<AuthOkResponse> {
-      const body =
-        telemetryEnabled === undefined
-          ? { username, password }
-          : { username, password, telemetryEnabled };
+      const body = { username, password, telemetryEnabled, locale };
 
       return (
         await request<AuthOkResponse>("/api/auth/setup", {
@@ -1494,6 +1493,10 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
 
     async getSetupStatus(signal?: AbortSignal): Promise<SetupStatus> {
       return (await request<SetupStatus>("/api/setup/status", { signal })).data;
+    },
+
+    async skipSetupSources(): Promise<SetupStatus> {
+      return (await request<SetupStatus>("/api/setup/sources/skip", { method: "POST" })).data;
     },
 
     async selectOptionalPlugin(
@@ -1546,8 +1549,8 @@ export function createDibaoApi(fetcher: ApiFetch = fetch) {
       ).data;
     },
 
-    async getSettings(): Promise<AppSettings> {
-      return (await request<AppSettings>("/api/settings")).data;
+    async getSettings(signal?: AbortSignal): Promise<AppSettings> {
+      return (await request<AppSettings>("/api/settings", { signal })).data;
     },
 
     async getLatestRelease(): Promise<LatestReleaseStatus> {

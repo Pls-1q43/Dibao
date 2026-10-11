@@ -4,6 +4,8 @@ import { dibaoVersion } from "@dibao/shared";
 import { dibaoApi, userMessageForError, type AppSettings, type CreateEmbeddingProviderInput, type EmbeddingIndex, type EmbeddingProvider, type LatestReleaseStatus, type PluginListItem, type UpdateEmbeddingProviderInput, type UpdateSettingsInput } from "../api.js";
 import { useI18n, type Dictionary } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
+import { desktopBridge, isDesktopRuntime } from "../desktop.js";
+import { DesktopSettings } from "./DesktopSettings.js";
 import { NumberSettingField, RangeSettingField } from "../ui/FormFields.js";
 import { ActionIcon } from "../reader/ReaderPanels.js";
 import type { OfflineCacheSummary } from "../offline/offlineReading.js";
@@ -211,10 +213,25 @@ export function SettingsWorkspace(props: {
   const [latestReleaseError, setLatestReleaseError] = useState<string | null>(null);
   const [isLoadingLatestRelease, setIsLoadingLatestRelease] = useState(false);
   const [isCheckingLatestRelease, setIsCheckingLatestRelease] = useState(false);
+  const [displayVersion, setDisplayVersion] = useState(dibaoVersion);
   const [pluginSettingsPlugins, setPluginSettingsPlugins] = useState<PluginListItem[]>([]);
   const [pluginSettingsError, setPluginSettingsError] = useState<string | null>(null);
   const savedSettingsRef = useRef(props.settings);
   const hasUnsavedSettingsDraftRef = useRef(false);
+
+  useEffect(() => {
+    void desktopBridge()?.getRuntime().then(info => setDisplayVersion(info.version));
+  }, []);
+
+  useEffect(() => {
+    const selected = props.embeddingProviders.find(provider => provider.id === providerDraft.providerId) ?? null;
+    const pending = hasUnsavedSettingsDraftRef.current ||
+      JSON.stringify(providerDraft) !== JSON.stringify(draftForEmbeddingProvider(selected)) ||
+      Object.values(passwordDraft).some(value => value.length > 0);
+    void desktopBridge()?.setHasUnsavedChanges(pending);
+  }, [draft, providerDraft, passwordDraft, props.embeddingProviders]);
+
+  useEffect(() => () => { void desktopBridge()?.setHasUnsavedChanges(false); }, []);
 
   useEffect(() => {
     if (!hasUnsavedSettingsDraftRef.current) {
@@ -338,6 +355,7 @@ export function SettingsWorkspace(props: {
     let cancelled = false;
 
     async function loadLatestRelease() {
+      if (isDesktopRuntime()) return;
       setIsLoadingLatestRelease(true);
       setLatestReleaseError(null);
 
@@ -413,6 +431,7 @@ export function SettingsWorkspace(props: {
     await props.onSaveSettings(parsed.input);
     savedSettingsRef.current = parsed.settings;
     hasUnsavedSettingsDraftRef.current = false;
+    setDraft(draftForSettings(parsed.settings));
   }
 
   async function handleProviderSubmit() {
@@ -642,7 +661,7 @@ export function SettingsWorkspace(props: {
         <section
           aria-labelledby="settings-offline-reading-title"
           className={classNames(styles.settingsSection, "settings-card")}
-          hidden={activeTab !== "basic"}
+          hidden={activeTab !== "basic" || isDesktopRuntime()}
         >
           <div>
             <h3 id="settings-offline-reading-title">{t.offlineReading.settings.title}</h3>
@@ -1560,12 +1579,12 @@ export function SettingsWorkspace(props: {
           <dl className={styles.aboutList}>
             <div>
               <dt>{t.settings.sections.about.version}</dt>
-              <dd>{t.common.version(dibaoVersion)}</dd>
+              <dd>{t.common.version(displayVersion)}</dd>
             </div>
             <div>
               <dt>{t.settings.sections.about.latestVersion}</dt>
               <dd>
-                <div className={styles.latestReleaseStatus}>
+                {isDesktopRuntime() ? <DesktopSettings /> : <div className={styles.latestReleaseStatus}>
                   <span>
                     {latestReleaseText(
                       latestRelease,
@@ -1596,7 +1615,7 @@ export function SettingsWorkspace(props: {
                         )
                       : t.settings.sections.about.latestNeverChecked}
                   </small>
-                </div>
+                </div>}
               </dd>
             </div>
             <div>

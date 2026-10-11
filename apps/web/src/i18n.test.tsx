@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dibaoVersion } from "@dibao/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -30,14 +31,16 @@ import {
 } from "./articleListState.js";
 import { defaultAppSettings, type ArticleDetail, type ArticleListItem, type EmbeddingProvider } from "./api.js";
 import { FeedManagementWorkspace } from "./FeedManagementPanel.js";
-import { PwaStatusBanner } from "./setup/SetupPanels.js";
+import { PwaStatusBanner, SetupOptionalPluginsPanel } from "./setup/SetupPanels.js";
 import {
   DibaoI18nProvider,
   browserPreferredLocale,
   createI18n,
   defaultLocale,
   dictionaries,
-  supportedLocales
+  supportedLocales,
+  storedPreferredLocale,
+  LOCALE_STORAGE_KEY
 } from "./i18n.js";
 
 describe("web i18n", () => {
@@ -117,6 +120,26 @@ describe("web i18n", () => {
         firstRefreshStatus: "idle"
       })
     ).toEqual({ type: "reader" });
+    expect(stageForSetupStatus({ setupCompleted: true, hasFeeds: false, sourcesCompleted: true, hasEmbeddingProvider: false, firstRefreshStatus: "idle" })).toEqual({ type: "reader" });
+  });
+
+  it("keeps a chosen language across reloads and tolerates unavailable storage", () => {
+    vi.stubGlobal("window", { localStorage: { getItem: (key: string) => key === LOCALE_STORAGE_KEY ? "ja-JP" : null } });
+    expect(storedPreferredLocale()).toBe("ja-JP");
+    vi.stubGlobal("navigator", { languages: ["en-US"] });
+    vi.stubGlobal("window", { localStorage: { getItem: () => { throw new Error("disabled"); } } });
+    expect(storedPreferredLocale()).toBe("en-US");
+  });
+
+  it.each(supportedLocales)("localizes the welcome and optional plugin controls in %s", locale => {
+    const welcome = renderToStaticMarkup(<DibaoI18nProvider locale={locale}><SetupWelcomePanel onStart={() => undefined} /></DibaoI18nProvider>);
+    expect(welcome).toContain(dictionaries[locale].setup.welcome.languageLabel);
+    expect(welcome).toContain('id="setup-language"');
+    const plugin = { id: "test", name: "Test", contributions: { setupSteps: [] } } as unknown as import("./api.js").PluginListItem;
+    const html = renderToStaticMarkup(<DibaoI18nProvider locale={locale}><SetupOptionalPluginsPanel busyPluginId={null} onDecision={() => undefined} plugins={[plugin]} /></DibaoI18nProvider>);
+    expect(html).toContain(dictionaries[locale].setup.plugins.kicker);
+    expect(html).toContain(dictionaries[locale].setup.plugins.enable);
+    expect(html).toContain(dictionaries[locale].setup.plugins.skip);
   });
 
   it("asks before entering offline mode", () => {
@@ -351,10 +374,12 @@ describe("web i18n", () => {
           onAddFeed={() => undefined}
           onImportOpml={() => undefined}
           onUpdateFeedUrl={() => undefined}
+          onSkip={() => undefined}
           opmlSummary={null}
         />
       </DibaoI18nProvider>
     );
+    expect(sourcesHtml).toContain("稍后添加");
     const providerHtml = renderToStaticMarkup(
       <DibaoI18nProvider>
         <SetupProviderPanel
@@ -1381,7 +1406,7 @@ describe("web i18n", () => {
     expect(html).toContain("保留天数");
     expect(html).toContain("retention.retentionDays");
     expect(html).toContain("关于");
-    expect(html).toContain("v0.4.0");
+    expect(html).toContain(`v${dibaoVersion}`);
     expect(html).toContain("评论尸");
     expect(html).toContain("https://x.com/JeffreyCalm");
     expect(html).toContain("https://1q43.blog");

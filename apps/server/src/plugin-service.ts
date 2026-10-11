@@ -510,6 +510,11 @@ export class PluginService {
     }
   }
 
+  async disposeAndWait(): Promise<void> {
+    this.dispose();
+    await Promise.all([...this.disposingRuntimes.values()]);
+  }
+
   async checkUpdate(pluginId: string): Promise<PluginListItem> {
     const install = this.requireInstall(pluginId);
     if (!install.updateUrl) {
@@ -1198,7 +1203,7 @@ export class PluginService {
         runtime.disposed = true;
         const error = new PluginServiceError(503, "PLUGIN_RUNTIME_UNAVAILABLE", "Plugin host stopped");
         rejectPendingPluginCalls(pending, error);
-        if (child && !child.killed) {
+        if (child && child.exitCode === null && child.signalCode === null) {
           await terminatePluginChild(child);
         }
       }
@@ -1218,9 +1223,12 @@ export class PluginService {
       entryPath,
       locale: this.currentLocale()
     }), "utf8").toString("base64url");
+    const pluginEnvironment = { ...process.env };
+    delete pluginEnvironment.DIBAO_DESKTOP_RUNTIME_TOKEN;
+    delete pluginEnvironment.DIBAO_DESKTOP_OWNER_DIR;
     child = spawn(host.command, host.args, {
       env: {
-        ...process.env,
+        ...pluginEnvironment,
         DIBAO_PLUGIN_HOST_CONFIG: hostConfig
       },
       stdio: ["ignore", "ignore", "pipe", "ipc"]
@@ -3875,7 +3883,7 @@ function isTerminalDeliveryStatus(status: PluginDeliveryStatus): boolean {
 }
 
 async function terminatePluginChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+  if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
 
@@ -3890,10 +3898,9 @@ async function terminatePluginChild(child: ChildProcess): Promise<void> {
       resolve();
     };
     const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null && !child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
-      finish();
     }, PLUGIN_RUNTIME_STOP_GRACE_MS);
     child.once("exit", finish);
     child.kill();

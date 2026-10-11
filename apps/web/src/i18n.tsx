@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 export const defaultLocale = "zh-CN";
 export const supportedLocales = ["zh-CN", "en-US", "ja-JP"] as const;
@@ -154,15 +154,26 @@ export const zhCN = {
     welcome: {
       title: "欢迎使用邸报",
       body: "一个自托管的个人 RSS 推荐阅读器。先完成几个必要步骤，再进入阅读界面。",
-      start: "开始设置"
+      start: "开始设置",
+      languageLabel: "界面语言"
     },
     sources: {
       title: "添加订阅源",
-      body: "导入 OPML 文件，或手动添加一个 RSS / Atom 源。至少需要一个订阅源才能继续。",
+      body: "导入 OPML 文件，或手动添加 RSS / Atom 源，也可以稍后在订阅源页面添加。",
+      skip: "稍后添加",
+      skipping: "正在继续",
       importOpml: "导入 OPML 文件",
       addFeed: "添加订阅源",
       noFeedsAfterImport: "导入完成，但没有创建新的订阅源。请检查 OPML 文件或手动添加 RSS / Atom 地址。",
       noFeedsAfterAdd: "订阅源尚未创建成功，请重试。"
+    },
+    plugins: {
+      kicker: "官方插件",
+      title: "可选插件",
+      body: "可以现在启用，也可以稍后在设置中管理。",
+      enable: "启用",
+      skip: "暂不启用",
+      processing: "处理中"
     },
     provider: {
       title: "推荐能力",
@@ -1635,15 +1646,26 @@ export const enUS = {
     welcome: {
       title: "Welcome to Dibao",
       body: "A self-hosted RSS reader with a private For You feed. Finish the required setup before opening the reader.",
-      start: "Start setup"
+      start: "Start setup",
+      languageLabel: "Interface language"
     },
     sources: {
       title: "Add feeds",
-      body: "Import an OPML file or manually add an RSS / Atom feed. At least one feed is required to continue.",
+      body: "Import an OPML file or add RSS / Atom feeds. You can also add them later on the Feeds page.",
+      skip: "Add later",
+      skipping: "Continuing",
       importOpml: "Import OPML file",
       addFeed: "Add feed",
       noFeedsAfterImport: "Import finished, but no feeds were created. Check the OPML file or add an RSS / Atom URL manually.",
       noFeedsAfterAdd: "The feed was not created. Please try again."
+    },
+    plugins: {
+      kicker: "Official plugin",
+      title: "Optional plugins",
+      body: "Enable it now or manage it later in Settings.",
+      enable: "Enable",
+      skip: "Not now",
+      processing: "Processing"
     },
     provider: {
       title: "Personalization",
@@ -3106,15 +3128,26 @@ export const jaJP = {
     welcome: {
       title: "邸報へようこそ",
       body: "セルフホストできる個人用 RSS おすすめリーダーです。必要な設定を済ませてから、リーダーを開きます。",
-      start: "設定を始める"
+      start: "設定を始める",
+      languageLabel: "表示言語"
     },
     sources: {
       title: "フィードを追加",
-      body: "OPML ファイルをインポートするか、RSS / Atom フィードを手動で追加します。続行するには少なくとも 1 つのフィードが必要です。",
+      body: "OPML ファイルをインポートするか、RSS / Atom フィードを追加します。あとでフィード画面から追加することもできます。",
+      skip: "あとで追加",
+      skipping: "続行中",
       importOpml: "OPML ファイルをインポート",
       addFeed: "フィードを追加",
       noFeedsAfterImport: "インポートは完了しましたが、新しいフィードは作成されませんでした。OPML ファイルを確認するか、RSS / Atom URL を手動で追加してください。",
       noFeedsAfterAdd: "フィードを作成できませんでした。もう一度お試しください。"
+    },
+    plugins: {
+      kicker: "公式プラグイン",
+      title: "任意のプラグイン",
+      body: "今すぐ有効にするか、あとで設定から管理できます。",
+      enable: "有効にする",
+      skip: "今は有効にしない",
+      processing: "処理中"
     },
     provider: {
       title: "おすすめ機能",
@@ -4450,16 +4483,31 @@ export type DibaoI18nProviderProps = {
 
 const defaultI18n = createI18n(defaultLocale);
 const I18nContext = createContext<I18nValue>(defaultI18n);
+export const LOCALE_STORAGE_KEY = "dibao.ui.locale";
+
+export function storedPreferredLocale(): Locale {
+  try {
+    const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if ((supportedLocales as readonly unknown[]).includes(saved)) return saved as Locale;
+  } catch {
+    // Storage may be disabled; language selection still works for this session.
+  }
+  return browserPreferredLocale();
+}
 
 export function DibaoI18nProvider(props: DibaoI18nProviderProps) {
-  const [locale, setLocale] = useState<Locale>(() => props.locale ?? browserPreferredLocale());
+  const [locale, updateLocale] = useState<Locale>(() => props.locale ?? storedPreferredLocale());
+  const setLocale = useCallback((next: Locale) => {
+    updateLocale(next);
+    try { window.localStorage.setItem(LOCALE_STORAGE_KEY, next); } catch { /* Session-only fallback. */ }
+  }, []);
   const value = useMemo(() => createI18n(locale, {}, setLocale), [locale]);
 
   useEffect(() => {
     if (props.locale !== undefined) {
       setLocale(props.locale);
     }
-  }, [props.locale]);
+  }, [props.locale, setLocale]);
 
   useEffect(() => {
     if (typeof document === "undefined") {

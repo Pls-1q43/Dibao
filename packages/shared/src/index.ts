@@ -1,4 +1,4 @@
-export const dibaoVersion = "0.4.0";
+export const dibaoVersion = "0.4.1";
 
 export type DibaoSentryConfig = {
   dsn: string;
@@ -154,6 +154,8 @@ export type ArticleState = {
   openedAt: number | null;
   ignoredAt: number | null;
 };
+
+export * from "./desktop.js";
 
 export type RankReasonImpact = "positive" | "negative" | "neutral";
 

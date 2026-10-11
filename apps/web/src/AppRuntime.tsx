@@ -1,6 +1,7 @@
 import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent, RefObject } from "react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dibaoVersion } from "@dibao/shared";
+import { isDesktopRuntime, isLocalServiceOffline } from "./desktop.js";
 import {
   ApiRequestError,
   defaultAppSettings,
@@ -75,7 +76,6 @@ import {
   hasPluginBridgeCapability
 } from "./pluginBridge.js";
 import {
-  browserPreferredLocale,
   useI18n,
   type Dictionary,
   type Locale,
@@ -395,6 +395,7 @@ export function App() {
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [setupSourceError, setSetupSourceError] = useState<string | null>(null);
+  const [isSkippingSetupSources, setIsSkippingSetupSources] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [derivedDataUpgrade, setDerivedDataUpgrade] =
     useState<DerivedDataUpgradeStatus | null>(null);
@@ -530,7 +531,7 @@ export function App() {
   );
   const [notice, setNotice] = useState<Notice | null>(null);
   const [isOffline, setIsOffline] = useState(
-    () => typeof navigator !== "undefined" && navigator.onLine === false
+    () => isLocalServiceOffline()
   );
   const [offlineScope, setOfflineScope] = useState<string | null>(null);
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfileRecord | null>(null);
@@ -583,7 +584,7 @@ export function App() {
   const appPageRef = useRef<AppPage>(appPage);
   const appStageRef = useRef<AppStage>(appStage);
   const hasExplicitUrlPageIntent = useRef(initialRoute.hasExplicitPage);
-  const offlineReadingEnabled = offlineProfile?.deviceSettings.enabled === true;
+  const offlineReadingEnabled = !isDesktopRuntime() && offlineProfile?.deviceSettings.enabled === true;
 
   const selectedFeed = useMemo(
     () =>
@@ -882,7 +883,6 @@ export function App() {
     setDeletingProviderId(null);
     setRebuildingIndexId(null);
     setEmbeddingError(null);
-    setLocale(browserPreferredLocale());
     setOpmlSummary(null);
     setNextArticleCursor(null);
     setPendingArticleAction(null);
@@ -925,7 +925,7 @@ export function App() {
       offlineTargetRefreshTimer.current = null;
     }
     articleRequestVersion.current += 1;
-  }, [setLocale]);
+  }, []);
 
   const invalidateOfflineSession = useCallback(() => {
     authSessionInvalidated.current = true;
@@ -998,6 +998,7 @@ export function App() {
     reason: OfflineModePromptReason
   ): Promise<boolean> => {
     if (
+      isDesktopRuntime() ||
       manualOfflineMode.current ||
       isUsingOfflineData ||
       dismissedOfflinePromptReason.current === reason
@@ -1032,7 +1033,7 @@ export function App() {
     ) {
       return false;
     }
-    if (navigator.onLine === false) {
+    if (isLocalServiceOffline()) {
       setIsOffline(true);
       await offerOfflineMode("network-offline");
       return false;
@@ -1106,7 +1107,7 @@ export function App() {
       if (authSessionInvalidated.current || manualOfflineMode.current || offlineReauthenticationScope.current) return;
       try {
         const bootstrap = await readOfflineBootstrap();
-        if (bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
+        if (!isDesktopRuntime() && bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
           manualOfflineMode.current = true;
           if (await applyOfflineBootstrap(bootstrap, "offline", { coldStart: true })) return;
           manualOfflineMode.current = false;
@@ -1213,13 +1214,14 @@ export function App() {
     }
 
     function handleOffline() {
+      if (isDesktopRuntime()) return;
       setIsOffline(true);
       void offerOfflineMode("network-offline");
     }
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    const browserOffline = navigator.onLine === false;
+    const browserOffline = isLocalServiceOffline();
     setIsOffline(browserOffline);
     if (browserOffline) {
       void offerOfflineMode("network-offline");
@@ -1258,6 +1260,11 @@ export function App() {
           const status = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) =>
             dibaoApi.getSetupStatus(signal)
           );
+          if (status.setupCompleted && !status.coreDatabaseMigration?.blocking && !status.derivedDataUpgrade?.blocking) {
+            const settings = await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, signal => dibaoApi.getSettings(signal));
+            if (cancelled || manualOfflineMode.current) return;
+            applySettings(settings);
+          }
           if (!cancelled && !manualOfflineMode.current) {
             markServerAvailable();
             setDerivedDataUpgrade(status.coreDatabaseMigration ?? status.derivedDataUpgrade ?? null);
@@ -1292,6 +1299,7 @@ export function App() {
   }, [
     appStage.type,
     authGateRetryToken,
+    applySettings,
     markServerAvailable,
     offerOfflineModeForError,
     resetReaderState,
@@ -1638,7 +1646,7 @@ export function App() {
   }, [offlineScope, t.errors.api]);
 
   const reconnectToServer = useCallback(async (): Promise<boolean> => {
-    if (!offlineScope || navigator.onLine === false) return false;
+    if (!offlineScope || isLocalServiceOffline()) return false;
     const sessionVersion = authSessionVersion.current;
     setOfflineConnectionMode("reconnecting");
     setOfflineCacheError(null);
@@ -1712,7 +1720,7 @@ export function App() {
   }, [invalidateOfflineSession, markServerAvailable, offlineScope, resetReaderState, t.errors.api]);
 
   const retryOfflineSync = useCallback(async () => {
-    if (!offlineScope || navigator.onLine === false || reconnectInFlight.current) return;
+    if (!offlineScope || isLocalServiceOffline() || reconnectInFlight.current) return;
     const sessionVersion = authSessionVersion.current;
     reconnectInFlight.current = true;
     setIsExitingOfflineMode(true);
@@ -1738,6 +1746,7 @@ export function App() {
   useEffect(() => {
     if (
       appStage.type !== "reader" ||
+      isDesktopRuntime() ||
       isUsingOfflineData ||
       !offlineReadingEnabled ||
       !offlineScope ||
@@ -2649,7 +2658,7 @@ export function App() {
         throw new ApiRequestError(401, "AUTH_REQUIRED", "Authentication required");
       }
       if (mode === "setup") {
-        await dibaoApi.setupAuth(username, password, telemetryEnabled);
+        await dibaoApi.setupAuth(username, password, telemetryEnabled, locale);
       } else {
         await dibaoApi.login(username, password);
       }
@@ -2841,11 +2850,25 @@ export function App() {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       await dibaoApi.selectOptionalPlugin(pluginId, { enabled, timezone });
       setPluginContributions(await dibaoApi.listPluginContributions());
-      setAppStage({ type: "setup-provider" });
+      const nextStage = stageForSetupStatus(await dibaoApi.getSetupStatus());
+      setAppStage(nextStage.type === "reader" ? { type: "setup-provider" } : nextStage);
     } catch (error) {
       setAuthError(userMessageForError(error, t.errors.api));
     } finally {
       setOptionalPluginDecisionId(null);
+    }
+  }
+
+  async function handleSkipSetupSources() {
+    setIsSkippingSetupSources(true);
+    setSetupSourceError(null);
+    try {
+      const nextStage = stageForSetupStatus(await dibaoApi.skipSetupSources());
+      setAppStage(nextStage.type === "reader" ? { type: "setup-provider" } : nextStage);
+    } catch (error) {
+      setSetupSourceError(userMessageForError(error, t.errors.api));
+    } finally {
+      setIsSkippingSetupSources(false);
     }
   }
 
@@ -3129,7 +3152,7 @@ export function App() {
       deviceSettings: { ...current.deviceSettings, recommendedTarget }
     } : current);
     setOfflineSummary(summary);
-    if (offlineReadingEnabled && !isUsingOfflineData && navigator.onLine !== false) {
+    if (offlineReadingEnabled && !isUsingOfflineData && !isLocalServiceOffline()) {
       if (offlineTargetRefreshTimer.current !== null) {
         window.clearTimeout(offlineTargetRefreshTimer.current);
       }
@@ -4127,6 +4150,7 @@ export function App() {
       applyArticleState(articleId, result.state);
     } catch (error) {
       if (!isUsingOfflineData) await offerOfflineModeForError(error);
+      if (options.requireSuccess) throw error;
       // Automatic reading telemetry should never interrupt the reader surface.
     }
   }
@@ -4554,6 +4578,8 @@ export function App() {
           onAddCandidate={handleSetupAddDiscoveredFeed}
           onAddFeed={handleSetupAddFeed}
           onImportOpml={handleSetupImportOpml}
+          isSkipping={isSkippingSetupSources}
+          onSkip={handleSkipSetupSources}
           onUpdateFeedUrl={setFeedUrl}
           opmlSummary={opmlSummary}
         />

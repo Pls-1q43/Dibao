@@ -87,6 +87,7 @@ export class CoreDatabaseMigrationService {
   private status: CoreDatabaseMigrationStatus | null = null;
   private running: Promise<CoreDatabaseMigrationStatus> | null = null;
   private activeChild: ChildProcess | null = null;
+  private readonly shutdownAbort = new AbortController();
 
   constructor(private readonly options: CoreDatabaseMigrationServiceOptions) {
     this.migrations = options.migrations ?? loadDefaultMigrations();
@@ -136,7 +137,7 @@ export class CoreDatabaseMigrationService {
 
   startIfRequired(): Promise<CoreDatabaseMigrationStatus> {
     const status = this.getStatus();
-    if (!status.blocking || status.state === "failed") {
+    if (this.shutdownAbort.signal.aborted || !status.blocking || status.state === "failed") {
       return Promise.resolve(status);
     }
     if (this.running) {
@@ -158,15 +159,22 @@ export class CoreDatabaseMigrationService {
   }
 
   stop(): void {
+    this.shutdownAbort.abort();
     if (this.activeChild && this.activeChild.exitCode === null && !this.activeChild.killed) {
       this.activeChild.kill("SIGTERM");
     }
   }
 
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    await this.running?.catch(() => undefined);
+  }
+
   private async runMigration(initial: CoreDatabaseMigrationStatus): Promise<CoreDatabaseMigrationStatus> {
     if (this.deferMs > 0) {
-      await delay(this.deferMs);
+      await delay(this.deferMs, this.shutdownAbort.signal);
     }
+    if (this.shutdownAbort.signal.aborted) return initial;
 
     const work = this.detectUpgradeWork();
     const startedAt = this.now();
@@ -516,10 +524,13 @@ function progressFor(current: number, total: number): CoreDatabaseMigrationStatu
   };
 }
 
-function delay(ms: number): Promise<void> {
+function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
+    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
+    const timer = setTimeout(finish, ms);
     timer.unref?.();
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
   });
 }
 

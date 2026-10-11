@@ -1,0 +1,84 @@
+name: Build and verify desktop applications
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+  workflow_dispatch:
+  push:
+    branches: ["0.4"]
+    paths:
+      - "apps/desktop/**"
+      - "scripts/desktop/**"
+      - "apps/server/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "package*.json"
+      - ".github/workflows/build-desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+          - os: macos-latest
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.3"
+          cache: npm
+      - name: Verify native runner
+        run: node -e 'if(process.arch!==process.env.EXPECTED_ARCH)throw Error("Runner architecture mismatch")'
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+      - run: npm ci
+      - name: Configure private telemetry
+        env:
+          DIBAO_SENTRY_CONFIG_JSON: ${{ secrets.DIBAO_SENTRY_CONFIG_JSON }}
+        run: node --input-type=module -e 'import {mkdirSync,writeFileSync} from "node:fs"; const config=JSON.parse(process.env.DIBAO_SENTRY_CONFIG_JSON||"{}"); if(!config.dsn||!config.org||!config.project)throw Error("Private telemetry build configuration is missing"); mkdirSync(".tmp",{recursive:true});writeFileSync(".tmp/desktop-sentry.json",JSON.stringify(config),{mode:0o600});'
+      - run: npm run build:desktop
+        env:
+          DIBAO_SENTRY_CONFIG: .tmp/desktop-sentry.json
+      - run: npm run typecheck
+      - run: npm run test -w @dibao/desktop
+      - run: npm exec -w @dibao/server -- vitest run src/desktop-access.test.ts
+      - run: node scripts/desktop/package.mjs
+      - name: Packaged application smoke test
+        run: node scripts/desktop/ci-smoke.mjs
+      - name: Installed application upgrade test
+        run: node scripts/desktop/upgrade-smoke.mjs
+      - name: Upload installers and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dibao-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            dist/desktop/*.exe
+            dist/desktop/*.dmg
+            dist/desktop/*.zip
+            dist/desktop/*.yml
+            dist/desktop/*.blockmap
+            test-results/desktop-*/**
