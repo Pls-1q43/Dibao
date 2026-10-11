@@ -16,9 +16,10 @@ export class DesktopUpdateController {
     this.state = { status: "idle", currentVersion: version, manualInstall };
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
-    updater.allowDowngrade = false;
     updater.allowPrerelease = version.includes("-");
     updater.channel = version.includes("-") ? "beta" : "latest";
+    // Setting electron-updater's channel enables downgrades unless reset afterwards.
+    updater.allowDowngrade = false;
     updater.on("checking-for-update", () => this.patch({ status: "checking", error: undefined }));
     updater.on("update-not-available", () => this.patch({ status: "current", latestVersion: undefined, progress: undefined }));
     updater.on("update-available", info => this.patch({ status: "available", latestVersion: info.version }));

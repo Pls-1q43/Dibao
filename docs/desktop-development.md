@@ -6,7 +6,13 @@
 
 Electron and Node native dependencies are separate. `scripts/desktop/prepare-resources.mjs` installs production workspace dependencies, materializes workspace links, copies shipped migrations and official plugins, and verifies the bundled Node 22 archive. It probes `better-sqlite3` and `sqlite-vec` using that Node executable. Do not rebuild these modules for Electron's ABI. Each target builds on a native runner.
 
+No SQL migrations are added by the desktop shell. Every shipped migration remains in the payload, including cross-version upgrade support.
+
 Only the HTTP process listens, on `127.0.0.1:0`. The worker has no listening socket. Both use the persistent data directory and stop through IPC; parent disconnect also stops them. Desktop shutdown waits for background writes, migration ownership and plugin subprocess exits. A close hides the window, while Quit stops the services. The desktop renderer does not register a PWA service worker or switch to its cache subset.
+
+Before stopping services, the shell awaits the preload's narrowly scoped save-state callbacks. The reader flushes throttled progress and waits for pending writes; a failed flush blocks update installation or exit for retry. Dirty settings/provider/password drafts also block an update. Queued core migrations are cancelled on shutdown instead of starting a new writer after Quit.
+
+Each local Node process records its own lifetime ownership before opening the database. After a forced desktop exit, the next startup waits for orphaned services to finish; it cannot back up or migrate while an old writer is still alive. A service whose parent disconnected before startup exits without opening data.
 
 ## Data lifecycle
 

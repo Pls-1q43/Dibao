@@ -13,16 +13,19 @@ const require = createRequire(import.meta.url);
 const data = process.env.DIBAO_DESKTOP_SMOKE_DATA ?? await mkdtemp(join(tmpdir(), "dibao-desktop-smoke-"));
 const output = join(repoRoot, "test-results", `desktop-${process.platform}-${process.arch}`);
 await mkdir(join(data, "data"), { recursive: true }); await mkdir(output, { recursive: true });
+const articleHtml = "<p>Persisted local article body.</p>" + Array.from({ length: 150 }, (_, i) => `<p>Local reading paragraph ${i}. This content remains available without an internet connection.</p>`).join("");
 const rss = createServer((_request, response) => {
   response.writeHead(200, { "content-type": "application/rss+xml" });
-  response.end('<rss version="2.0"><channel><title>Desktop test</title><link>https://example.com</link><description>Test</description><item><guid>desktop-offline</guid><title>Desktop offline article</title><link>https://example.com/desktop-offline</link><description>Persisted local article body.</description></item></channel></rss>');
+  response.end('<rss version="2.0"><channel><title>Desktop test</title><link>https://example.com</link><description>Test</description></channel></rss>');
 });
 await new Promise(resolve => rss.listen(0, "127.0.0.1", resolve));
 const feedUrl = `http://127.0.0.1:${rss.address().port}/feed.xml`;
 const db = openDatabase(join(data, "data", "dibao.sqlite"), { migrate: true });
 const now = Date.now();
 new SqliteFeedRepository(db).upsert({ id: "desktop-smoke-feed", title: "Desktop test", feedUrl, now });
-new SqliteArticleRepository(db).upsert({ id: "desktop-smoke-article", feedId: "desktop-smoke-feed", title: "Desktop offline article", url: "https://example.com/desktop-offline", contentText: "Persisted local article body.", contentHtml: "<p>Persisted local article body.</p>", discoveredAt: now, publishedAt: now, dedupeKey: "desktop-smoke", now });
+const articles = new SqliteArticleRepository(db);
+articles.upsert({ id: "desktop-smoke-article", feedId: "desktop-smoke-feed", title: "Desktop offline article", url: "https://example.com/desktop-offline", discoveredAt: now, publishedAt: now, dedupeKey: "desktop-smoke", now });
+articles.upsertContent({ articleId: "desktop-smoke-article", contentText: articleHtml.replace(/<[^>]+>/g, "\n"), contentHtml: articleHtml, extractionStatus: "feed_only", extractedAt: now, now });
 const settings = new SqliteAppSettingsRepository(db);
 for (const id of ["app.dibao.daily-brief", "app.dibao.webhook"]) settings.setJson(`setup.optionalPlugin.${id}`, "skipped", now);
 settings.setJson("telemetry.settings", { enabled: false }, now);
@@ -104,6 +107,19 @@ try {
   assert((await api(page, "/api/auth/session")).payload.data.authenticated, "Repeated launch broke the original instance");
   await electron.evaluate(({ powerMonitor }) => powerMonitor.emit("resume"));
   assert((await api(page, "/api/articles?view=latest&limit=1")).status === 200, "Resume interrupted local reading");
+  for (const role of ["http", "worker"]) {
+    const owner = JSON.parse(await readFile(join(data, "runtime", `${role}.owner`), "utf8"));
+    assert(Number.isSafeInteger(owner.pid), "Local writer ownership is missing");
+  }
+  await page.goto("https://dibao.localhost/?view=latest&article=desktop-smoke-article");
+  const reader = page.getByTestId("reader-scroll-container");
+  await reader.waitFor();
+  await page.getByText("Local reading paragraph 149. This content remains available without an internet connection.", { exact: true }).waitFor();
+  await reader.evaluate(container => { container.scrollTop = container.scrollHeight * 0.3; container.dispatchEvent(new Event("scroll")); });
+  await reader.evaluate(container => { container.scrollTop = container.scrollHeight * 0.8; container.dispatchEvent(new Event("scroll")); });
+  await page.evaluate(() => window.dibaoDesktop.prepareToQuit());
+  const progress = await api(page, "/api/articles/desktop-smoke-article");
+  assert(progress.payload.data.state.readingProgress >= 0.75, "Pending reading progress was not flushed before exit");
   await electron.close(); electron = null;
   const state = JSON.parse(await readFile(join(data, "desktop-state.json"), "utf8"));
   assert(state.pending === null, "Successful article loading did not finish the upgrade marker");
@@ -119,8 +135,16 @@ try {
     await protection.restore(prepared.pending.backupId);
   }
   assert(errors.length === 0, `Renderer errors: ${errors.join("; ")}`);
-  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["account", "cookies", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume"] }, null, 2));
+  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["account", "cookies", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume", "pending-progress-flush", "writer-ownership"] }, null, 2));
   console.log(JSON.stringify({ passed: true, data, output }));
+} catch (error) {
+  if (electron) {
+    for (const page of electron.windows()) {
+      await page.screenshot({ path: join(output, "failure.png") }).catch(() => undefined);
+      console.error((await page.locator("body").innerText().catch(() => "")).slice(-5000));
+    }
+  }
+  throw error;
 } finally {
   if (electron) await electron.close().catch(() => undefined);
   await new Promise(resolve => rss.close(resolve));

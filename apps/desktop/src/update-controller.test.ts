@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppUpdater } from "electron-updater";
 import { DesktopUpdateController } from "./update-controller.js";
 
-function fixture(manual = false) {
+function fixture(manual = false, version = "0.4.1-beta.1") {
   const emitter = Object.assign(new EventEmitter(), {
     checkForUpdates: vi.fn(async () => undefined), downloadUpdate: vi.fn(async () => []), quitAndInstall: vi.fn(),
     autoDownload: true, autoInstallOnAppQuit: true, allowDowngrade: true, allowPrerelease: false, channel: "latest"
@@ -12,10 +12,21 @@ function fixture(manual = false) {
   const stop = vi.fn(async () => undefined);
   const confirm = vi.fn(async () => true);
   const open = vi.fn(async () => undefined);
-  const controller = new DesktopUpdateController(emitter as unknown as AppUpdater, "0.4.1-beta.1", manual, vi.fn(), gate, stop, confirm, open);
+  let channel = "latest";
+  Object.defineProperty(emitter, "channel", { get: () => channel, set: value => { channel = value; emitter.allowDowngrade = true; } });
+  const controller = new DesktopUpdateController(emitter as unknown as AppUpdater, version, manual, vi.fn(), gate, stop, confirm, open);
   return { emitter, gate, stop, confirm, open, controller };
 }
 describe("desktop update policy", () => {
+  it("keeps stable users out of prereleases and blocks downloads when backup space is insufficient", async () => {
+    const stable = fixture(false, "0.4.1");
+    expect(stable.emitter.allowPrerelease).toBe(false); expect(stable.emitter.channel).toBe("latest");
+    expect(stable.emitter.allowDowngrade).toBe(false);
+    stable.emitter.emit("update-available", { version: "0.4.2" });
+    stable.gate.mockRejectedValueOnce(new Error("not enough space"));
+    await expect(stable.controller.download()).rejects.toThrow("not enough space");
+    expect(stable.emitter.downloadUpdate).not.toHaveBeenCalled(); expect(stable.stop).not.toHaveBeenCalled();
+  });
   it("requires confirmation and graceful stop before installation", async () => {
     const f = fixture();
     expect(f.emitter.autoDownload).toBe(false); expect(f.emitter.autoInstallOnAppQuit).toBe(false);

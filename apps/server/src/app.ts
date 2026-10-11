@@ -1736,6 +1736,7 @@ export function buildServer(options: BuildServerOptions = {}) {
         return;
       }
     }
+    if (upgradePipelineClosing) return;
     if (!upgradePluginsReconciled) {
       pluginService.reconcileOfficialPlugins();
       upgradePluginsReconciled = true;

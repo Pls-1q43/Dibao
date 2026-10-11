@@ -56,6 +56,7 @@ export class DesktopRuntime {
         DIBAO_PLUGIN_DATA_DIR: join(this.dataRoot, "plugins"),
         DIBAO_OFFICIAL_PLUGINS_DIR: join(this.resourceRoot, "plugins", "official"),
         DIBAO_DESKTOP_RUNTIME_TOKEN: this.token,
+        DIBAO_DESKTOP_OWNER_DIR: join(this.dataRoot, "..", "runtime"),
         DIBAO_ALLOWED_ORIGINS: DESKTOP_ORIGIN,
         DIBAO_COOKIE_SECURE: "true",
         ...roleEnv
@@ -77,7 +78,7 @@ export class DesktopRuntime {
     this.stopping = true;
     // Close the worker before HTTP so no background writer survives shutdown.
     for (const child of [...this.children].reverse()) {
-      if (child.exitCode !== null || child.signalCode !== null) continue;
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) continue;
       const exited = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("The local service is still saving data. Try again when its task finishes.")), 60_000);
         child.once("exit", code => {

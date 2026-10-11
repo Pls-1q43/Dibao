@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, cp, mkdir, open, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, open, readFile, readdir, rename, rm, stat, statfs } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import semver from "semver";
 import { desktopPaths } from "./paths.js";
@@ -120,6 +120,8 @@ export class DesktopDataProtection {
         await mkdir(resolve(destination, ".."), { recursive: true, mode: 0o700 });
         await cp(source, destination, { errorOnExist: true, force: false });
         await chmod(destination, 0o600);
+        const saved = await open(destination, "r+");
+        try { await saved.sync(); } finally { await saved.close(); }
         const sourceHash = await digest(source);
         if (sourceHash !== await digest(destination)) throw new Error("Data changed during backup");
         manifest.files.push({ path, size: (await stat(destination)).size, sha256: sourceHash });

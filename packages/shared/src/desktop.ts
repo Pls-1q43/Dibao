@@ -26,5 +26,7 @@ export type DesktopBridge = {
   recoverBackup(): Promise<boolean>;
   setAutoLaunch(enabled: boolean): Promise<void>;
   setHasUnsavedChanges(pending: boolean): Promise<void>;
+  prepareToQuit(): Promise<void>;
+  onPrepareToQuit(listener: () => void | Promise<void>): () => void;
   onUpdateState(listener: (state: DesktopUpdateState) => void): () => void;
 };

@@ -5,6 +5,9 @@ import {
   WorkerCoreMigrationWaitTimeoutError
 } from "./core-migration-wait.js";
 import { DEFAULT_FOREGROUND_QUIET_WINDOW_MS } from "./foreground-activity.js";
+import { claimDesktopProcessOwnership } from "./desktop-process-ownership.js";
+
+claimDesktopProcessOwnership("worker");
 
 const migrationWaitAbort = new AbortController();
 const abortMigrationWait = () => migrationWaitAbort.abort();
@@ -90,6 +93,7 @@ const keepAlive = setInterval(() => undefined, 60_000);
 try {
   await server.ready();
   workerReady = true;
+  if (migrationWaitAbort.signal.aborted) { await closeAndExit(0); }
   process.send?.({ type: "dibao-worker-ready" });
   server.log.info(
     {

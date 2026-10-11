@@ -4131,6 +4131,7 @@ export function App() {
       applyArticleState(articleId, result.state);
     } catch (error) {
       if (!isUsingOfflineData) await offerOfflineModeForError(error);
+      if (options.requireSuccess) throw error;
       // Automatic reading telemetry should never interrupt the reader surface.
     }
   }

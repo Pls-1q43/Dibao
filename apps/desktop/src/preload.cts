@@ -1,5 +1,6 @@
 import type { DesktopBridge, DesktopUpdateState } from "@dibao/shared";
 const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
+const saveState = new Set<() => void | Promise<void>>();
 
 const bridge: DesktopBridge = {
   getRuntime: () => ipcRenderer.invoke("dibao:runtime"),
@@ -11,6 +12,8 @@ const bridge: DesktopBridge = {
   recoverBackup: () => ipcRenderer.invoke("dibao:recover"),
   setAutoLaunch: enabled => ipcRenderer.invoke("dibao:auto-launch", enabled),
   setHasUnsavedChanges: pending => ipcRenderer.invoke("dibao:pending-changes", pending),
+  prepareToQuit: async () => { await Promise.all([...saveState].map(save => Promise.resolve().then(save))); },
+  onPrepareToQuit: listener => { saveState.add(listener); return () => { saveState.delete(listener); }; },
   onUpdateState: listener => {
     const receive = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) => listener(state);
     ipcRenderer.on("dibao:update-state", receive);

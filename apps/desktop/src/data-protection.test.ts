@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cp, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
@@ -25,6 +25,13 @@ async function fixture() {
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 describe("desktop data upgrades", () => {
+  it("blocks backup failures before changing the data version", async () => {
+    const { root, protection } = await fixture();
+    await protection.prepare("0.4.1-beta.1"); await protection.complete("0.4.1-beta.1");
+    await symlink(join(root, "data"), join(root, "data", "unexpected-link"), process.platform === "win32" ? "junction" : "dir");
+    await expect(protection.prepare("0.4.1-beta.2")).rejects.toThrow("symbolic link");
+    expect((await protection.readState())?.highestVersion).toBe("0.4.1-beta.1");
+  });
   it("resumes an unfinished fresh installation without requiring a nonexistent backup", async () => {
     const root = await mkdtemp(join(tmpdir(), "dibao-desktop-fresh-")); roots.push(root);
     const protection = new DesktopDataProtection(root);

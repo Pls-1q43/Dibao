@@ -127,7 +127,10 @@ try {
       assert(await page.evaluate(async () => (await fetch("/api/articles?view=latest&limit=1")).ok), "Failed download stopped local reading");
     }
     const processHandle = electron.process();
-    const exit = new Promise(resolve => processHandle.once("exit", resolve));
+    const exit = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Updater did not exit for installation")), 90_000);
+      processHandle.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
     await page.evaluate(() => window.dibaoDesktop.installUpdate()).catch(() => undefined);
     await exit; electron = null;
     await until(async () => {
@@ -144,13 +147,25 @@ try {
 
   assert(await page.evaluate(() => window.dibaoDesktop.getRuntime().then(runtime => runtime.version)) === nextVersion, "Replacement application version mismatch");
   assert(await page.evaluate(() => localStorage.getItem("desktop-upgrade-pending-action")) === "preserve-client-operation", "Upgrade lost client state");
+  if (process.platform === "darwin") {
+    await electron.evaluate(async ({ session }) => {
+      await session.fromPartition("persist:dibao").cookies.flushStore();
+      await session.fromPartition("persist:dibao").flushStorageData();
+    });
+    const child = electron.process();
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.kill("SIGKILL");
+    await exited; electron = null;
+    page = await launch();
+    assert(await page.evaluate(() => localStorage.getItem("desktop-upgrade-pending-action")) === "preserve-client-operation", "Forced exit lost persisted client state");
+  }
   await electron.close(); electron = null;
   assert(JSON.stringify(snapshot()) === before, "Upgrade changed article, vector or settings data");
   assert(createHash("sha256").update(await readFile(secretPath)).digest("hex") === secretBefore, "Upgrade replaced plugin encryption key");
   const backups = await readdir(join(data, "backups"));
   assert(backups.length > 0, "Installer update skipped pre-upgrade backups");
   await writeFile(join(output, "upgrade.json"), JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, installation, data,
-    checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "data-regression"] }, null, 2));
+    checks: process.platform === "win32" ? ["nsis-install", "download-interruption", "checksum-failure", "electron-updater-install", "force-exit-recovery", "data-regression"] : ["application-copy", "manual-replacement", "force-exit-recovery", "data-regression"] }, null, 2));
   console.log(JSON.stringify({ passed: true, from: originalVersion, to: nextVersion, output }));
 } finally {
   if (electron) await electron.close().catch(() => undefined);

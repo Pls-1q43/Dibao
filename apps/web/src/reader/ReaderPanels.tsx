@@ -4,6 +4,7 @@ import type { ArticleDetail, ArticleListItem, ArticleSearchSort, ArticleSearchSt
 import { useI18n, type Dictionary, type NavigationItemKey } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { articleInteractionStatusForState } from "../articleListState.js";
+import { desktopBridge } from "../desktop.js";
 import type { OfflineCacheSummary } from "../offline/offlineReading.js";
 import { articleSortForView, canLoadRankExplanation, classNames, clusterDisplayName, confidenceBucket, countFeedsByFolder, explanationReasonText, formatCompactNumber, formatPercent, isRelatedSearchForm, pageForNavigationItem, plainTextSummary, readerStyleFor, recommendationStatusMetrics, safeArticleUrl, sanitizeArticleHtml, shouldLetBrowserHandleLinkClick, shouldLoadRankExplanation, sortExplanationForView, supportsQuickFilters, supportsUnreadOnly, urlForAppPage, urlForArticle, urlForSearchPage, clampNumber, type ArticleActionIntent, type ArticleActionTarget, type AppPage, type FeedDiagnosticsByFeedId, type PendingArticleAction, type ReadProgressMetadata, type ReadProgressPostOptions, type SearchFormState, type SourceSelection } from "../app/shared.js";
 
@@ -3340,6 +3341,7 @@ type ReadProgressSession = {
   sentThresholds: Set<ReadProgressThreshold>;
   startedAt: number;
   throttleTimer: number | null;
+  pendingWrites: Set<Promise<void>>;
 };
 
 function useReaderReadProgress(props: {
@@ -3349,7 +3351,7 @@ function useReaderReadProgress(props: {
     progress: number,
     metadata: ReadProgressMetadata,
     options?: ReadProgressPostOptions
-  ) => void;
+  ) => void | Promise<void>;
   scrollContainerRef: RefObject<HTMLElement | null>;
 }) {
   const onReadProgressRef = useRef(props.onReadProgress);
@@ -3376,7 +3378,8 @@ function useReaderReadProgress(props: {
       pendingProgress: null,
       sentThresholds: sentThresholdsForProgress(article.state.readingProgress),
       startedAt: now,
-      throttleTimer: null
+      throttleTimer: null,
+      pendingWrites: new Set()
     };
 
     scrollContainer.scrollTop = 0;
@@ -3412,8 +3415,16 @@ function useReaderReadProgress(props: {
     window.addEventListener("blur", handleFocusChange);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", handlePageHide);
+    const stopPreparing = desktopBridge()?.onPrepareToQuit(async () => {
+      updateReadProgressActiveDuration(session);
+      await flushReadProgress(session, false, (id, progress, metadata) =>
+        onReadProgressRef.current(id, progress, metadata, { requireSuccess: true }));
+      await Promise.all([...session.pendingWrites]);
+      clearReadProgressTimer(session);
+    });
 
     return () => {
+      stopPreparing?.();
       scrollContainer.removeEventListener("scroll", handleScroll);
       window.removeEventListener("focus", handleFocusChange);
       window.removeEventListener("blur", handleFocusChange);
@@ -3519,15 +3530,15 @@ function flushReadProgress(
     progress: number,
     metadata: ReadProgressMetadata,
     options?: ReadProgressPostOptions
-  ) => void
-): void {
+  ) => void | Promise<void>
+): void | Promise<void> {
   const progress =
     session.pendingProgress ??
     session.highestReached ??
     thresholdForProgress(session.sentThresholds.size > 0 ? Math.max(...session.sentThresholds) : 0);
 
   if (progress && !session.sentThresholds.has(progress)) {
-    sendReadProgress(session, progress, keepalive, onReadProgress);
+    return sendReadProgress(session, progress, keepalive, onReadProgress);
   }
 }
 
@@ -3540,16 +3551,26 @@ function sendReadProgress(
     progress: number,
     metadata: ReadProgressMetadata,
     options?: ReadProgressPostOptions
-  ) => void
-): void {
+  ) => void | Promise<void>
+): void | Promise<void> {
   const now = Date.now();
   updateReadProgressActiveDuration(session, now);
   session.lastSentAt = now;
   session.pendingProgress = null;
   markSentThresholds(session, progress);
-  onReadProgress(session.articleId, progress, readProgressMetadata(session, now), {
+  const result = onReadProgress(session.articleId, progress, readProgressMetadata(session, now), {
     keepalive
   });
+  if (result) {
+    const saved = result.catch(error => {
+      session.pendingProgress = maxThreshold(session.pendingProgress, progress);
+      for (const threshold of session.sentThresholds) { if (threshold >= progress) session.sentThresholds.delete(threshold); }
+      throw error;
+    });
+    session.pendingWrites.add(saved);
+    void saved.finally(() => session.pendingWrites.delete(saved)).catch(() => undefined);
+    return saved;
+  }
 }
 
 function markSentThresholds(session: ReadProgressSession, progress: ReadProgressThreshold): void {

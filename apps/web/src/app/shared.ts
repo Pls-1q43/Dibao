@@ -125,6 +125,7 @@ export type ReadProgressMetadata = {
 
 export type ReadProgressPostOptions = {
   keepalive?: boolean;
+  requireSuccess?: boolean;
 };
 
 export function stageForAuthSession(session: AuthSession): AppStage {

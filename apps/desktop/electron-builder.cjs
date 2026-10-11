@@ -14,7 +14,7 @@ module.exports = {
   ],
   artifactName: "Dibao-${version}-${os}-${arch}.${ext}",
   publish: [{ provider: "github", owner: "Pls-1q43", repo: "Dibao", releaseType: prerelease ? "prerelease" : "release", channel: prerelease ? "beta" : "latest" }],
-  win: { target: ["nsis"], icon: "../web/public/favicon.ico", signAndEditExecutable: false },
+  win: { target: ["nsis"], icon: "../web/public/logo-1024.png", signExecutable: false },
   nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false, runAfterFinish: true },
   mac: { target: ["dmg", "zip"], icon: "../web/public/logo-1024.png", category: "public.app-category.news", identity: null },
   dmg: { sign: false },

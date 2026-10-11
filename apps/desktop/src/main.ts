@@ -9,6 +9,7 @@ import { desktopDataRoot } from "./paths.js";
 import { DesktopRuntime } from "./runtime.js";
 import { DesktopUpdateController } from "./update-controller.js";
 import { desktopCookieHeader, storeDesktopCookies } from "./cookie-bridge.js";
+import { waitForPreviousDesktopWriters } from "./process-ownership.js";
 
 const root = desktopDataRoot();
 const protection = new DesktopDataProtection(root);
@@ -78,6 +79,7 @@ async function acquireDataLock() {
 
 async function boot(retry = false) {
   if (!lockOwned) await acquireDataLock();
+  await waitForPreviousDesktopWriters(root);
   await protection.initialize();
   await protection.restoreRequested();
   await protection.prepare(version, retry);
@@ -238,6 +240,16 @@ handle("dibao:pending-changes", pending => {
 
 async function stopServices() {
   if (stopped) return;
+  for (const opened of BrowserWindow.getAllWindows()) {
+    if (new URL(opened.webContents.getURL() || "about:blank").origin !== DESKTOP_ORIGIN) continue;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        opened.webContents.executeJavaScript("window.dibaoDesktop?.prepareToQuit()"),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Pending reader changes could not be saved. Try again before quitting.")), 20_000); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
   serviceStopping = true;
   try { await runtime?.stop(); }
   catch (error) { serviceStopping = false; throw error; }
