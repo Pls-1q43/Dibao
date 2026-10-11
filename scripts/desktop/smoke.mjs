@@ -129,7 +129,15 @@ try {
   const reader = page.getByTestId("reader-scroll-container");
   await reader.waitFor();
   await page.getByText("Local reading paragraph 149. This content remains available without an internet connection.", { exact: true }).waitFor();
-  await reader.evaluate(container => { container.scrollTop = container.scrollHeight * 0.3; container.dispatchEvent(new Event("scroll")); });
+  // DOM content can appear before React installs the reader's passive scroll listener.
+  await page.waitForFunction(async () => {
+    const container = document.querySelector('[data-testid="reader-scroll-container"]');
+    if (!container) return false;
+    container.scrollTop = container.scrollHeight * 0.3;
+    container.dispatchEvent(new Event("scroll"));
+    const response = await fetch("/api/articles/desktop-smoke-article");
+    return (await response.json()).data.state.readingProgress >= 0.25;
+  }, undefined, { timeout: 30_000, polling: 100 });
   await reader.evaluate(container => { container.scrollTop = container.scrollHeight * 0.8; container.dispatchEvent(new Event("scroll")); });
   await page.evaluate(() => window.dibaoDesktop.prepareToQuit());
   const progress = await api(page, "/api/articles/desktop-smoke-article");
