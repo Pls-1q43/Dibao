@@ -12,6 +12,7 @@ The release/v0.4.1 line preserves the prior desktop work and freezes Desktop, HT
 - Damaged backup manifests previously prevented listing healthy restore points. Each corrupt snapshot is now isolated and left untouched.
 - Recovery now rejects empty/missing-database manifests, duplicate paths, traversal, absolute/drive paths, invalid hashes, symlinked files and manifest/journal version mismatch. Staged files are verified before either live directory is moved, including crash-resume cases.
 - Empty or incomplete newly created snapshots cannot be published as valid backups. Failures preserve the data version and current live data.
+- First-run Chromium bootstrap preferences are not mistaken for an existing database. Previously successful data with a missing, empty or symlinked database blocks startup/upgrade and requires recovery instead of creating an empty replacement.
 - A smoke test used an asynchronous browser predicate without awaiting it. It now polls the actual saved reading progress, so pending-write acceptance is no longer vacuous.
 - Formal asset assembly now verifies every installer, checksum, native source identity and upgrade result before Docker promotion. Both Mac architectures are merged into updater metadata rather than overwriting each other. Three-language notes are required before building a formal version. Partial uploads remain drafts.
 
@@ -36,7 +37,7 @@ The release/v0.4.1 line preserves the prior desktop work and freezes Desktop, HT
 Completed on macOS Apple Silicon on 2026-10-11:
 
 - Full source build and typecheck.
-- 651 workspace tests and 18 release-gate tests.
+- 651 initial workspace tests and 18 release-gate tests; desktop coverage subsequently increased from 51 to 54 cases for bootstrap and missing-database protection.
 - Historical upgrade fixtures: fresh, v0.1.0, v0.1.1, v0.1.2, v0.1.3, v0.2.0, v0.2.1, v0.3.0, v0.3.1 and v0.4.0; no pending migrations, foreign-key errors or changed embeddings.
 - 28 browser/mobile E2E cases, including real offline/cold refresh, session revocation, recommendation scrolling, actions and desktop-control absence.
 - Packaged native application: three-language first run, optional RSS setup, plugin stylesheet, login restart, private HTTP, offline reading, SSE, untrusted IPC, tray, singleton, resume and progress flush.

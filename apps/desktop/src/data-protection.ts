@@ -121,13 +121,21 @@ export class DesktopDataProtection {
     await this.initialize();
     const old = await this.readState();
     if (old && semver.lt(version, old.highestVersion)) throw new Error("This data was opened by a newer version. Restore its pre-upgrade backup before downgrading.");
+    if (old?.successfulVersion) {
+      const database = await lstat(join(this.paths.data, "dibao.sqlite")).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (!database?.isFile() || database.isSymbolicLink() || database.size === 0) throw new Error("The existing database is missing or invalid. Restore a backup before opening your data.");
+    }
     if (old?.pending) {
       if (old.pending.backupId === null && old.successfulVersion === null && old.pending.version === version) return old;
       if (!retry || old.pending.version !== version) throw new Error("The previous upgrade did not finish. Retry or restore a backup.");
       return old;
     }
     if (old?.successfulVersion === version) return old;
-    const hasData = (await entries(this.paths.data)).length > 0 || (await entries(this.paths.profile)).length > 0;
+    // Chromium may initialize profile preferences before the first database exists.
+    const hasData = (await entries(this.paths.data)).length > 0;
     const backup = hasData ? await this.backup(old?.successfulVersion ?? version, "upgrade") : null;
     const state: DesktopDataState = {
       format: 1,

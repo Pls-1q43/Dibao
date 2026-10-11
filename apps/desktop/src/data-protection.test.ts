@@ -38,6 +38,26 @@ describe("desktop data upgrades", () => {
     await protection.prepare("0.4.1-beta.1");
     expect((await protection.prepare("0.4.1-beta.1")).pending?.backupId).toBeNull();
   });
+  it("does not mistake bootstrap browser preferences for an existing database", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dibao-desktop-bootstrap-")); roots.push(root);
+    const protection = new DesktopDataProtection(root);
+    await mkdir(protection.paths.profile, { recursive: true });
+    await writeFile(join(protection.paths.profile, "Preferences"), "bootstrap-preferences");
+    expect((await protection.prepare("0.4.1")).pending?.backupId).toBeNull();
+    expect(await protection.listBackups()).toEqual([]);
+    expect(await readFile(join(protection.paths.profile, "Preferences"), "utf8")).toBe("bootstrap-preferences");
+  });
+  it.each(["missing", "empty"])("blocks a %s existing database instead of silently recreating it", async kind => {
+    const { root, protection } = await fixture();
+    await protection.prepare("0.4.1"); await protection.complete("0.4.1");
+    const before = await protection.readState();
+    if (kind === "missing") await rm(join(root, "data", "dibao.sqlite"));
+    else await writeFile(join(root, "data", "dibao.sqlite"), "");
+    await expect(protection.prepare("0.4.1")).rejects.toThrow("existing database");
+    await expect(protection.prepare("0.4.2")).rejects.toThrow("existing database");
+    expect(await protection.readState()).toEqual(before);
+    expect(await readFile(join(root, "data", "plugins", "secrets", "plugin-secret.key"), "utf8")).toBe("persistent-key");
+  });
   it("retains three successful upgrade backups without deleting recovery snapshots", async () => {
     const { protection } = await fixture();
     await protection.backup("0.4.0", "recovery");
