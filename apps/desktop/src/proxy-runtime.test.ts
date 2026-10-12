@@ -20,7 +20,12 @@ afterEach(async () => {
 
 async function listen(server: Server | HttpServer): Promise<number> {
   const sockets = new Set<Socket>();
-  server.on("connection", socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
+  server.on("connection", socket => {
+    sockets.add(socket);
+    // Rejected proxy/TLS connections can reset the fixture socket on Windows.
+    socket.on("error", () => undefined);
+    socket.once("close", () => sockets.delete(socket));
+  });
   await new Promise<void>((accept, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => accept()); });
   cleanups.push(async () => { for (const socket of sockets) socket.destroy(); await new Promise<void>(accept => server.close(() => accept())); });
   return (server.address() as { port: number }).port;
