@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent } from "undici";
+import { desktopControlledProxyTransport, isDesktopNetworkingActive } from "./desktop-proxy.js";
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 export const DEFAULT_FEED_FETCH_MAX_BYTES = 5 * 1024 * 1024;
@@ -20,7 +21,7 @@ export type ControlledFetcher = (
   init?: RequestInit
 ) => Promise<ControlledFetchResponse>;
 
-export type HostnameResolver = (hostname: string) => Promise<string[]>;
+export type HostnameResolver = (hostname: string, signal?: AbortSignal) => Promise<string[]>;
 
 export type FetchPrivacyWarning = {
   url: string;
@@ -66,9 +67,8 @@ export async function controlledFetchText(
   );
   const maxBytes = normalizePositiveInteger(options.maxBytes, DEFAULT_FEED_FETCH_MAX_BYTES);
   const maxRedirects = normalizeNonNegativeInteger(options.maxRedirects, 10);
-  const privacyPolicy = privacyPolicyForOptions(options);
-
   const controller = new AbortController();
+  const privacyPolicy = privacyPolicyForOptions(options, controller.signal);
   let timedOut = false;
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let currentUrl = url;
@@ -247,6 +247,7 @@ type FetchPrivacyPolicy = {
   allowPrivateNetwork: boolean;
   allowCidrs: ParsedCidr[];
   resolveHostname: HostnameResolver;
+  signal?: AbortSignal;
 };
 
 type AllowedFetchTarget = {
@@ -280,7 +281,7 @@ async function resolveAllowedFetchTarget(
     const warning = { url: privacyWarningUrl(url), hostname, reason: hostnameReason };
     onWarning?.(warning);
     if (!policy.allowPrivateNetwork && !directIpAllowed) {
-      const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname);
+      const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname, policy.signal);
       if (addresses.length === 0 || !addresses.every((address) => isAllowedPrivateIp(address, policy))) {
         throw privateTargetError(warning);
       }
@@ -289,7 +290,7 @@ async function resolveAllowedFetchTarget(
     if (isIP(hostname) !== 0) {
       return { hostname, addresses: [hostname] };
     }
-    const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname);
+    const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname, policy.signal);
     if (addresses.length === 0) {
       throw fetchTargetResolutionError(hostname);
     }
@@ -300,7 +301,7 @@ async function resolveAllowedFetchTarget(
     return { hostname, addresses: [hostname] };
   }
 
-  const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname);
+  const addresses = await resolveHostnameAddresses(hostname, policy.resolveHostname, policy.signal);
   if (addresses.length === 0) {
     throw fetchTargetResolutionError(hostname);
   }
@@ -353,6 +354,12 @@ async function fetchControlledTarget(
   if (!address) {
     throw fetchTargetResolutionError(target.hostname);
   }
+  const proxy = await desktopControlledProxyTransport(url, target);
+  if (proxy) {
+    try {
+      return { response: await fetch(url, { ...init, dispatcher: proxy.dispatcher } as RequestInit), close: proxy.close };
+    } catch (error) { await proxy.close().catch(() => undefined); throw error; }
+  }
   const agent = new Agent({
     connect: {
       lookup: (_hostname, options, callback) => {
@@ -382,10 +389,11 @@ async function fetchControlledTarget(
 
 async function resolveHostnameAddresses(
   hostname: string,
-  resolver: HostnameResolver
+  resolver: HostnameResolver,
+  signal?: AbortSignal
 ): Promise<string[]> {
   try {
-    return await resolver(hostname);
+    return await resolver(hostname, signal);
   } catch {
     return [];
   }
@@ -537,18 +545,56 @@ function readPositiveIntegerEnv(name: string): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function privacyPolicyForOptions(options: ControlledFetchTextOptions): FetchPrivacyPolicy {
+function privacyPolicyForOptions(options: ControlledFetchTextOptions, signal?: AbortSignal): FetchPrivacyPolicy {
   return {
     allowPrivateNetwork:
       options.allowPrivateNetwork ?? readBooleanEnv("DIBAO_FETCH_ALLOW_PRIVATE") ?? false,
     allowCidrs: parseCidrs(options.allowCidrs ?? readCsvEnv("DIBAO_FETCH_ALLOW_CIDRS")),
-    resolveHostname: options.resolveHostname ?? resolveDnsHostname
+    resolveHostname: options.resolveHostname ?? resolveDnsHostname,
+    signal
   };
 }
 
-async function resolveDnsHostname(hostname: string): Promise<string[]> {
+async function resolveDnsHostname(hostname: string, signal?: AbortSignal): Promise<string[]> {
   const results = await lookup(hostname, { all: true, verbatim: true });
-  return results.map((result) => result.address);
+  return resolveDesktopFakeIpAddresses(hostname, results.map((result) => result.address), signal);
+}
+
+const desktopDnsCache = new Map<string, { addresses: string[]; expiresAt: number }>();
+
+export async function resolveDesktopFakeIpAddresses(hostname: string, addresses: string[], signal?: AbortSignal): Promise<string[]> {
+  // Never allow benchmark/Fake-IP ranges through the privacy policy. Resolve
+  // real addresses first, then retain the same public-IP checks and DNS pinning.
+  if (!isDesktopNetworkingActive() || isIP(hostname) || privateTargetReason(hostname) ||
+      !hostname.includes(".") || !/^[a-z0-9.-]{1,253}$/iu.test(hostname) || addresses.length === 0 ||
+      !addresses.every(address => isIP(address) === 4 && /^198\.(?:18|19)\./u.test(address))) return addresses;
+  const cached = desktopDnsCache.get(hostname);
+  if (cached && cached.expiresAt > Date.now()) return [...cached.addresses];
+  const url = new URL("https://cloudflare-dns.com/dns-query");
+  url.searchParams.set("name", hostname);
+  url.searchParams.set("type", "A");
+  const attempt = await fetchControlledTarget(url.toString(), {
+    headers: { accept: "application/dns-json" }, redirect: "error",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000)
+  }, { hostname: "cloudflare-dns.com", addresses: ["1.1.1.1"] }, undefined);
+  try {
+    if (!attempt.response.ok) throw new Error("Desktop DNS lookup failed");
+    const payload: unknown = JSON.parse(await readResponseBody(attempt.response, 32 * 1024));
+    if (!payload || typeof payload !== "object") throw new Error("Invalid desktop DNS response");
+    const result = payload as { Status?: unknown; Question?: { name?: unknown; type?: unknown }[]; Answer?: { type?: unknown; data?: unknown; TTL?: unknown }[] };
+    if (result.Status !== 0 || !Array.isArray(result.Question) ||
+        result.Question.length !== 1 || result.Question[0].type !== 1 ||
+        result.Question[0].name !== `${hostname.replace(/\.$/u, "")}.` ||
+        !Array.isArray(result.Answer) || result.Answer.length > 32) throw new Error("Invalid desktop DNS response");
+    const answers = result.Answer.filter(answer => answer.type === 1);
+    if (answers.length === 0 || answers.some(answer => typeof answer.data !== "string" || isIP(answer.data) !== 4)) throw new Error("Invalid desktop DNS addresses");
+    const real = [...new Set(answers.map(answer => answer.data as string))];
+    if (real.some(address => privateTargetReason(address))) throw new Error("Desktop DNS returned a non-public address");
+    const ttl = Math.min(60, ...answers.map(answer => typeof answer.TTL === "number" && Number.isFinite(answer.TTL) ? Math.max(0, answer.TTL) : 0));
+    desktopDnsCache.set(hostname, { addresses: real, expiresAt: Date.now() + ttl * 1000 });
+    if (desktopDnsCache.size > 128) desktopDnsCache.delete(desktopDnsCache.keys().next().value!);
+    return real;
+  } finally { await attempt.close(); }
 }
 
 function readBooleanEnv(name: string): boolean | undefined {

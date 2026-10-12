@@ -6,6 +6,7 @@ import {
   MAX_OFFLINE_RECOMMENDED_TARGET,
   MIN_OFFLINE_RECOMMENDED_TARGET,
   isOfflineFallbackError,
+  isOfflineStorageSupported,
   isOfflineModeActive,
   isOfflineScopeRevokedInStorage,
   hasPendingServerLogoutInStorage,
@@ -18,6 +19,15 @@ import {
 } from "./offlineReading.js";
 
 describe("offline reading helpers", () => {
+  it("treats a blocked IndexedDB getter as unavailable storage", () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, get() { throw new Error("Storage access denied"); } });
+    try { expect(isOfflineStorageSupported()).toBe(false); }
+    finally {
+      if (original) Object.defineProperty(globalThis, "indexedDB", original);
+      else Reflect.deleteProperty(globalThis, "indexedDB");
+    }
+  });
   it.each([
     [Number.NaN, DEFAULT_OFFLINE_RECOMMENDED_TARGET],
     [1, MIN_OFFLINE_RECOMMENDED_TARGET],

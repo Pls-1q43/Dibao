@@ -1,4 +1,4 @@
-export const dibaoVersion = "0.4.1";
+export const dibaoVersion = "0.4.2";
 
 export type DibaoSentryConfig = {
   dsn: string;
@@ -156,6 +156,7 @@ export type ArticleState = {
 };
 
 export * from "./desktop.js";
+export * from "./desktop-proxy.js";
 
 export type RankReasonImpact = "positive" | "negative" | "neutral";
 

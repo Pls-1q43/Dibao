@@ -6,8 +6,10 @@ import {
 } from "./core-migration-wait.js";
 import { DEFAULT_FOREGROUND_QUIET_WINDOW_MS } from "./foreground-activity.js";
 import { claimDesktopProcessOwnership } from "./desktop-process-ownership.js";
+import { initializeDesktopProxy } from "./desktop-proxy.js";
 
 claimDesktopProcessOwnership("worker");
+initializeDesktopProxy();
 
 const migrationWaitAbort = new AbortController();
 const abortMigrationWait = () => migrationWaitAbort.abort();

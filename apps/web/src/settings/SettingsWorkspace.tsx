@@ -6,6 +6,7 @@ import { useI18n, type Dictionary } from "../i18n.js";
 import styles from "../design-system/AppShell/AppShell.module.css";
 import { desktopBridge, isDesktopRuntime } from "../desktop.js";
 import { DesktopSettings } from "./DesktopSettings.js";
+import { DesktopNetworkSettings } from "./DesktopNetworkSettings.js";
 import { NumberSettingField, RangeSettingField } from "../ui/FormFields.js";
 import { ActionIcon } from "../reader/ReaderPanels.js";
 import type { OfflineCacheSummary } from "../offline/offlineReading.js";
@@ -214,6 +215,7 @@ export function SettingsWorkspace(props: {
   const [isLoadingLatestRelease, setIsLoadingLatestRelease] = useState(false);
   const [isCheckingLatestRelease, setIsCheckingLatestRelease] = useState(false);
   const [displayVersion, setDisplayVersion] = useState(dibaoVersion);
+  const [desktopProxyDirty, setDesktopProxyDirty] = useState(false);
   const [pluginSettingsPlugins, setPluginSettingsPlugins] = useState<PluginListItem[]>([]);
   const [pluginSettingsError, setPluginSettingsError] = useState<string | null>(null);
   const savedSettingsRef = useRef(props.settings);
@@ -225,11 +227,11 @@ export function SettingsWorkspace(props: {
 
   useEffect(() => {
     const selected = props.embeddingProviders.find(provider => provider.id === providerDraft.providerId) ?? null;
-    const pending = hasUnsavedSettingsDraftRef.current ||
+    const pending = desktopProxyDirty || hasUnsavedSettingsDraftRef.current ||
       JSON.stringify(providerDraft) !== JSON.stringify(draftForEmbeddingProvider(selected)) ||
       Object.values(passwordDraft).some(value => value.length > 0);
     void desktopBridge()?.setHasUnsavedChanges(pending);
-  }, [draft, providerDraft, passwordDraft, props.embeddingProviders]);
+  }, [draft, providerDraft, passwordDraft, props.embeddingProviders, desktopProxyDirty]);
 
   useEffect(() => () => { void desktopBridge()?.setHasUnsavedChanges(false); }, []);
 
@@ -657,6 +659,8 @@ export function SettingsWorkspace(props: {
             </select>
           </label>
         </section>
+
+        {isDesktopRuntime() ? <DesktopNetworkSettings hidden={activeTab !== "basic"} onDirtyChange={setDesktopProxyDirty} /> : null}
 
         <section
           aria-labelledby="settings-offline-reading-title"

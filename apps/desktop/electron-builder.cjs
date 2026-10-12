@@ -1,4 +1,5 @@
 const prerelease = require("./package.json").version.includes("-");
+const entitlements = require("node:path").join(__dirname, "entitlements.mac.plist");
 module.exports = {
   appId: "com.dibao.desktop",
   productName: "Dibao",
@@ -16,7 +17,12 @@ module.exports = {
   publish: [{ provider: "github", owner: "Pls-1q43", repo: "Dibao", releaseType: prerelease ? "prerelease" : "release", channel: prerelease ? "beta" : "latest" }],
   win: { target: ["nsis"], icon: "../web/public/logo-1024.png", signExecutable: false },
   nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false, runAfterFinish: true },
-  mac: { target: ["dmg", "zip"], icon: "../web/public/logo-1024.png", category: "public.app-category.news", identity: null },
+  mac: {
+    target: ["dmg", "zip"], icon: "../web/public/logo-1024.png", category: "public.app-category.news",
+    identity: "-", hardenedRuntime: true,
+    entitlements, entitlementsInherit: entitlements,
+    strictVerify: true
+  },
   dmg: { sign: false },
   linux: { target: ["dir"], category: "News" }
 };

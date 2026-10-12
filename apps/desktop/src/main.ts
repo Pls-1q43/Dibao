@@ -16,6 +16,7 @@ import { DesktopBackupController } from "./backup-controller.js";
 import { backupDialogOptions } from "./backup-dialog.js";
 import { backupError, backupErrorCode } from "./backup-errors.js";
 import { foregroundRelaunchArgs, isBackgroundStartup, loginItemOptions, migrateLegacyLoginItem, setDesktopAutoLaunch } from "./startup.js";
+import { DesktopProxyController } from "./proxy-controller.js";
 
 const root = desktopDataRoot();
 const protection = new DesktopDataProtection(root);
@@ -40,6 +41,7 @@ let lockOwned = false;
 let hasUnsavedChanges = false;
 let serviceStopping = false;
 let browserSession: Electron.Session | null = null;
+let proxyController: DesktopProxyController | null = null;
 let backgroundStartup = false;
 let windowReady = false;
 let windowRequested = false;
@@ -48,7 +50,7 @@ const channel = version.includes("-") ? "beta" : "latest";
 const here = dirname(fileURLToPath(import.meta.url));
 const resourceRoot = process.env.DIBAO_DESKTOP_RESOURCES ?? (app.isPackaged ? join(process.resourcesPath, "dibao") : resolve(here, "../../.."));
 const backups = new DesktopBackupController(protection, version, async () => {
-  if (!lockOwned || quitting || failureOpen || ["downloading", "installing"].includes(updates?.state.status ?? "")) throw backupError("busy");
+  if (!lockOwned || quitting || failureOpen || proxyController?.busy || ["downloading", "installing"].includes(updates?.state.status ?? "")) throw backupError("busy");
   if (hasUnsavedChanges) throw backupError("unsaved");
   if (!upgradeReady || !articlesReady || (await protection.readState())?.pending) throw backupError("upgrade");
 }, async (action, locale, backup) => {
@@ -68,7 +70,7 @@ app.on("window-all-closed", () => undefined);
 app.on("before-quit", event => {
   if (stopped) return;
   event.preventDefault();
-  if (backups.busy) return;
+  if (backups.busy || proxyController?.busy) return;
   if (quitting) return;
   quitting = true;
   void (async () => {
@@ -119,10 +121,20 @@ async function boot() {
   articlesReady = false;
   completionStarted = false;
   serviceStopping = false;
-  runtime = new DesktopRuntime(resourceRoot, protection.paths.data, join(protection.paths.logs, "server.log"), message => void showFailure(new Error(message)));
-  await runtime.start();
   browserSession = session.fromPartition("persist:dibao");
   const activeSession = browserSession;
+  proxyController = new DesktopProxyController(join(protection.paths.data, "desktop-proxy.json"),
+    [...new Set([activeSession, electronUpdater.autoUpdater.netSession])],
+    settings => {
+      if (!runtime) throw new Error("Local service is unavailable");
+      return runtime.setProxySettings(settings);
+    }, () => {
+      if (quitting || stopped || serviceStopping || failureOpen || backups.busy || ["downloading", "installing"].includes(updates?.state.status ?? "")) throw new Error("DIBAO_PROXY_BUSY");
+    }, message => void showFailure(new Error(message)));
+  await proxyController.initialize();
+  runtime = new DesktopRuntime(resourceRoot, protection.paths.data, join(protection.paths.logs, "server.log"), message => void showFailure(new Error(message)), undefined,
+    proxyController.current, url => proxyController!.resolveProxy(url));
+  await runtime.start();
   if (!activeSession.protocol.isProtocolHandled("https")) {
     activeSession.protocol.handle("https", async request => {
       const url = new URL(request.url);
@@ -149,6 +161,10 @@ async function boot() {
         signal: request.signal
       });
       if (access === "trusted") await storeDesktopCookies(response.headers, activeSession.cookies);
+      // The bridge commits cookies before returning; do not apply them again
+      // in Chromium after a subsequent logout/login request has already started.
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.delete("set-cookie");
       // Read only bounded status responses; SSE and article bodies remain streamed.
       if (["/api/system/upgrade/status", "/api/setup/status"].includes(url.pathname) && response.ok) {
         const status = await response.clone().json() as { data: { blocking?: boolean; state?: string; coreDatabaseMigration?: { blocking: boolean }; derivedDataUpgrade?: { blocking: boolean } } };
@@ -163,7 +179,7 @@ async function boot() {
         void completeIfReady();
       }
       if (url.pathname === "/api/articles" && response.ok) { articlesReady = true; void completeIfReady(); }
-      return new Response(response.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
     });
   }
   createWindow(browserSession);
@@ -244,7 +260,7 @@ function configureUpdates() {
   updates = new DesktopUpdateController(autoUpdater, version, process.platform === "darwin" && process.env.DIBAO_DESKTOP_SIGNED !== "true", state => {
     window?.webContents.send("dibao:update-state", state);
   }, async () => {
-    if (backups.busy || quitting || failureOpen) throw new Error("Finish the backup or recovery operation before updating");
+    if (backups.busy || proxyController?.busy || quitting || failureOpen) throw new Error("Finish the backup, proxy settings or recovery operation before updating");
     if (hasUnsavedChanges) throw new Error("Save your changes before updating");
     if (!upgradeReady || !articlesReady || (await protection.readState())?.pending) throw new Error("Finish the database upgrade and open the article list before updating");
     await protection.checkBackupSpace(256 * 1024 * 1024);
@@ -269,6 +285,18 @@ function handle(channel: string, handler: (...args: unknown[]) => unknown) {
 }
 
 handle("dibao:runtime", (): DesktopRuntimeInfo => ({ platform: process.platform, version, channel, autoLaunch: app.getLoginItemSettings(loginItemOptions(process.platform, process.execPath)).openAtLogin }));
+handle("dibao:proxy-settings", () => {
+  if (!proxyController) throw new Error("DIBAO_PROXY_BUSY");
+  return proxyController.current;
+});
+handle("dibao:proxy-save", settings => {
+  if (!proxyController) throw new Error("DIBAO_PROXY_BUSY");
+  return proxyController.save(settings);
+});
+handle("dibao:proxy-test", () => {
+  if (!runtime || quitting || serviceStopping || failureOpen || backups.busy || proxyController?.busy) throw new Error("DIBAO_PROXY_BUSY");
+  return runtime.testProxyConnection();
+});
 handle("dibao:update-state", () => updates?.state);
 handle("dibao:update-check", () => updates?.check());
 handle("dibao:update-download", () => updates?.download());
