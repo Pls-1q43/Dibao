@@ -68,6 +68,27 @@ try {
   assert((await api(page, "/api/auth/session")).payload.data.authenticated, "Desktop cookie was not persisted");
   await page.reload();
   await page.getByText("Desktop offline article", { exact: true }).first().waitFor({ timeout: 90_000 });
+  await page.evaluate(() => {
+    localStorage.setItem("dibao:offline-reading:revoked-scope:v1:https://dibao.localhost::DesktopTest", "1");
+  });
+  // Desktop authentication cannot depend on a PWA IndexedDB cache being usable.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "indexedDB", { configurable: true, get() { throw new Error("Unavailable offline cache"); } });
+  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.getByRole("button", { name: "退出", exact: true }).click();
+    await page.locator("#auth-username").waitFor();
+    assert(!(await api(page, "/api/auth/session")).payload.data.authenticated, "Logout did not invalidate the local session");
+    assert((await api(page, "/api/articles?view=latest&limit=1")).status === 401, "Logout left articles accessible");
+    await page.reload();
+    await page.locator("#auth-username").fill("DesktopTest");
+    await page.locator("#auth-password").fill("Desktop-test-password-2026");
+    await page.locator('form button[type="submit"]').click();
+    await page.getByText("Desktop offline article", { exact: true }).first().waitFor({ timeout: 30_000 });
+    assert((await api(page, "/api/auth/session")).payload.data.authenticated, "Correct credentials did not restore the local session");
+    await page.reload();
+    await page.getByText("Desktop offline article", { exact: true }).first().waitFor({ timeout: 30_000 });
+  }
   const online = await api(page, "/api/articles?view=latest&limit=10");
   assert(online.status === 200, "Article list did not load");
   await page.getByText("Desktop offline article", { exact: true }).first().click();
@@ -83,6 +104,24 @@ try {
   await page.screenshot({ path: join(output, "reader.png"), fullPage: true });
   await network.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await page.goto("https://dibao.localhost/?page=settings");
+  await page.locator("#desktop-proxy-mode:not([disabled])").waitFor();
+  assert(await page.locator("#desktop-proxy-mode").inputValue() === "system", "Desktop default did not follow system proxy");
+  await page.locator("#desktop-proxy-mode").selectOption("manual");
+  await page.locator("#desktop-proxy-server").fill("http://user:secret@127.0.0.1:7890");
+  await page.getByRole("button", { name: "保存代理设置", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "不包含账号、密码或路径" }).waitFor();
+  await page.locator("#desktop-proxy-server").fill("http://127.0.0.1:9");
+  await page.getByRole("button", { name: "保存代理设置", exact: true }).click();
+  await page.getByText("代理设置已生效", { exact: true }).waitFor();
+  assert((await api(page, "/api/articles?view=latest&limit=1")).status === 200, "A failed proxy blocked local reading");
+  await page.getByRole("button", { name: "测试连接", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "连接失败" }).waitFor({ timeout: 30_000 });
+  const proxyFile = JSON.parse(await readFile(join(data, "data", "desktop-proxy.json"), "utf8"));
+  assert(proxyFile.settings.server === "http://127.0.0.1:9", "Proxy setting was not persisted");
+  await page.screenshot({ path: join(output, "proxy-settings.png"), fullPage: true });
+  await page.locator("#desktop-proxy-mode").selectOption("system");
+  await page.getByRole("button", { name: "保存代理设置", exact: true }).click();
+  await expect(page.getByRole("button", { name: "保存代理设置", exact: true })).toBeDisabled();
   await page.getByText("打开数据目录", { exact: true }).waitFor({ timeout: 30_000 });
   await page.waitForFunction(() => {
     const about = document.querySelector(".about-settings-card");
@@ -105,7 +144,7 @@ try {
     const evil = new BrowserWindow({ show: false, webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false } });
     try {
       await evil.loadURL("data:text/html,<h1>Untrusted page</h1>");
-      return await evil.webContents.executeJavaScript("window.dibaoDesktop ? window.dibaoDesktop.getRuntime().then(() => false, () => true) : true");
+      return await evil.webContents.executeJavaScript("window.dibaoDesktop ? Promise.all([window.dibaoDesktop.getRuntime(), window.dibaoDesktop.getProxySettings(), window.dibaoDesktop.setProxySettings({mode:'direct',server:'http://127.0.0.1:7890',bypassLocal:true}), window.dibaoDesktop.testProxyConnection()].map(p => p.then(() => false, () => true))).then(results => results.every(Boolean)) : true");
     } finally { evil.destroy(); }
   }), "An untrusted page accessed desktop permissions");
   assert(await page.evaluate(() => typeof window.require === "undefined" && typeof window.process === "undefined"), "Node privileges leaked to the renderer");
@@ -158,7 +197,7 @@ try {
     await protection.restore(prepared.pending.backupId);
   }
   assert(errors.length === 0, `Renderer errors: ${errors.join("; ")}`);
-  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["private-loopback", "account", "cookies", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume", "pending-progress-flush", "writer-ownership"] }, null, 2));
+  await writeFile(join(output, "result.json"), JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, data, checks: ["private-loopback", "account", "cookies", "logout-login-cycles", "logout-auth-denial", "legacy-revocation-marker", "unavailable-pwa-storage", "article-body", "chromium-offline", "reload", "no-service-worker", "sse", "restart", "backup-restore", "untrusted-ipc", "sandbox", "tray", "singleton", "resume", "pending-progress-flush", "writer-ownership", "proxy-settings", "proxy-url-validation", "proxy-persistence", "proxy-test-failure", "proxy-local-reading", "untrusted-proxy-ipc"] }, null, 2));
   console.log(JSON.stringify({ passed: true, data, output }));
 } catch (error) {
   if (electron) {

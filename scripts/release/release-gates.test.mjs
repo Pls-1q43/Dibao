@@ -114,7 +114,7 @@ test("published platform selection is pinned to digest and rejects missing/dupli
   assert.throws(() => platformImages({ ...manifest, digest: "wrong" }, image));
 });
 
-for (const tag of ["v0.4.0", "v0.3.1", "v0.1.0", "v0.1.3"]) {
+for (const tag of ["v0.4.1", "v0.4.0", "v0.3.1", "v0.1.0", "v0.1.3"]) {
   test(`image fixture runs on actual ${tag} migrations and completes full derived upgrade without embedding changes`, async () => {
     const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
     const paths = git("ls-tree", "-r", "--name-only", tag, "packages/db/migrations").trim().split("\n");

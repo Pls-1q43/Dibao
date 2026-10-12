@@ -1,8 +1,10 @@
 import { buildServer } from "./app.js";
 import { DEFAULT_FOREGROUND_QUIET_WINDOW_MS } from "./foreground-activity.js";
 import { claimDesktopProcessOwnership } from "./desktop-process-ownership.js";
+import { initializeDesktopProxy } from "./desktop-proxy.js";
 
 claimDesktopProcessOwnership("http");
+initializeDesktopProxy();
 let stopRequested = false;
 if (process.send && process.env.DIBAO_DESKTOP_RUNTIME_TOKEN) {
   process.on("message", message => {

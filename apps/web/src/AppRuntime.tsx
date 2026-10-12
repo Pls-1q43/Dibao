@@ -1106,7 +1106,7 @@ export function App() {
     async function loadAuthSession() {
       if (authSessionInvalidated.current || manualOfflineMode.current || offlineReauthenticationScope.current) return;
       try {
-        const bootstrap = await readOfflineBootstrap();
+        const bootstrap = isDesktopRuntime() ? null : await readOfflineBootstrap();
         if (!isDesktopRuntime() && bootstrap?.snapshot && isOfflineModeActive(bootstrap.profile.scopeKey)) {
           manualOfflineMode.current = true;
           if (await applyOfflineBootstrap(bootstrap, "offline", { coldStart: true })) return;
@@ -1133,7 +1133,7 @@ export function App() {
             dibaoApi.getAuthSession(signal)
           );
           if (cancelled || sessionVersion !== authSessionVersion.current) return;
-          if (session.authenticated && session.username &&
+          if (!isDesktopRuntime() && session.authenticated && session.username &&
               await isOfflineScopeRevoked(offlineScopeKey(session.username))) {
             if (!cancelled && sessionVersion === authSessionVersion.current) invalidateOfflineSession();
             return;
@@ -1144,7 +1144,7 @@ export function App() {
             markServerAvailable();
             const nextStage = stageForAuthSession(session);
             setAuthUsername(session.authenticated ? session.username : null);
-            if (session.authenticated && session.username) {
+            if (!isDesktopRuntime() && session.authenticated && session.username) {
               try {
                 const profile = await rememberAuthenticatedOfflineSession(session.username);
                 const summary = await getOfflineCacheSummary(profile.scopeKey);
@@ -1162,7 +1162,7 @@ export function App() {
               }
             }
             if (cancelled || sessionVersion !== authSessionVersion.current) return;
-            if (session.username && await isOfflineScopeRevoked(offlineScopeKey(session.username))) {
+            if (!isDesktopRuntime() && session.username && await isOfflineScopeRevoked(offlineScopeKey(session.username))) {
               if (!cancelled && sessionVersion === authSessionVersion.current) invalidateOfflineSession();
               return;
             }
@@ -2677,18 +2677,20 @@ export function App() {
         return;
       }
       try {
-        const profile = await rememberAuthenticatedOfflineSession(username.trim(), true, isCurrentSession);
-        const connectedAt = Date.now();
-        await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
-        if (!isCurrentSession()) return;
-        setOfflineScope(profile.scopeKey);
-        setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
-        setLastConnectedAt(connectedAt);
+        if (!isDesktopRuntime()) {
+          const profile = await rememberAuthenticatedOfflineSession(username.trim(), true, isCurrentSession);
+          const connectedAt = Date.now();
+          await updateOfflineProfile(profile.scopeKey, { lastConnectedAt: connectedAt });
+          if (!isCurrentSession()) return;
+          setOfflineScope(profile.scopeKey);
+          setOfflineProfile({ ...profile, lastConnectedAt: connectedAt });
+          setLastConnectedAt(connectedAt);
+        }
       } catch {
         // Local offline storage must not turn successful online authentication into a failure.
       }
       if (!isCurrentSession()) return;
-      if (await isOfflineScopeRevoked(offlineScopeKey(username.trim()))) {
+      if (!isDesktopRuntime() && await isOfflineScopeRevoked(offlineScopeKey(username.trim()))) {
         if (isCurrentSession()) invalidateOfflineSession();
         return;
       }
@@ -2716,6 +2718,12 @@ export function App() {
     }
 
     try {
+      if (isDesktopRuntime()) {
+        await withRequestTimeout(AUTH_GATE_REQUEST_TIMEOUT_MS, (signal) => dibaoApi.logout(signal));
+        await clearPendingServerLogout();
+        invalidateOfflineSession();
+        return;
+      }
       let localOfflineDataRevoked = offlineScope === null;
       if (offlineScope) {
         try {

@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.4.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.2.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.2-2f6f5e" /></a>
 </p>
 
 ---
@@ -39,7 +39,7 @@ Quick links:
 - [Backup And Upgrade](#backup-and-upgrade)
 - [License](#license)
 - [FAQ](#faq)
-- [Release notes](./docs/release-notes-v0.4.1.md#english)
+- [Release notes](./docs/release-notes-v0.4.2.md#english)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [Chinese home page](./README.md)
 
@@ -83,7 +83,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.4.1
+    image: ghcr.io/pls-1q43/dibao:v0.4.2
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -163,7 +163,7 @@ docker compose stop
 tar czf "dibao-data-backup-$(date +%Y%m%d-%H%M%S).tgz" -C data .
 ```
 
-Set the Compose image to `ghcr.io/pls-1q43/dibao:v0.4.1`, then upgrade:
+Set the Compose image to `ghcr.io/pls-1q43/dibao:v0.4.2`, then upgrade:
 
 ```bash
 docker compose pull
@@ -171,9 +171,9 @@ docker compose up -d
 docker compose ps
 ```
 
-There are no new SQL migrations or mandatory derived-data updates from v0.4.0 to v0.4.1. Older versions automatically apply `027_recommendation_sessions.sql` and any earlier pending migrations. When needed, a blocking recommendation-data upgrade screen appears; normal features resume after completion. Existing vectors are reused without embedding recomputation.
+There are no new SQL migrations or mandatory derived-data updates from v0.4.1 to v0.4.2. Older versions automatically apply `027_recommendation_sessions.sql` and any earlier pending migrations. When needed, a blocking recommendation-data upgrade screen appears; normal features resume after completion. Existing vectors are reused without embedding recomputation.
 
-Check `/api/system/health` for `data.ok: true` and `data.version: "0.4.1"`. While signed in, also check `/api/system/upgrade/status`: an existing-data upgrade must reach `data.id: "recommendation-contract"`, `data.state: "completed"`, and `data.blocking: false`. A fresh empty database may report `not_required` without blocking. HTTP 200 or a healthy container alone does not prove upgrade completion.
+Check `/api/system/health` for `data.ok: true` and `data.version: "0.4.2"`. While signed in, also check `/api/system/upgrade/status`: an existing-data upgrade must reach `data.id: "recommendation-contract"`, `data.state: "completed"`, and `data.blocking: false`. A fresh empty database may report `not_required` without blocking. HTTP 200 or a healthy container alone does not prove upgrade completion.
 
 To roll back, stop the new container, restore the complete pre-upgrade `/data` backup into a clean directory or new volume, and start the previous image. Do not run an older image against the migrated database or overlay a backup onto newer WAL files. See the [v0.4.1 installation and rollback notes](./docs/release-notes-v0.4.1.md#docker-installation-backup-and-rollback).
 

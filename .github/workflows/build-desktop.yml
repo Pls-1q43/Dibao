@@ -61,14 +61,24 @@ jobs:
       - run: npm run build:desktop
         env:
           DIBAO_SENTRY_CONFIG: .tmp/desktop-sentry.json
+          DIBAO_SENTRY_UPLOAD_SOURCEMAPS: "1"
       - run: npm run typecheck
       - run: npm run test -w @dibao/desktop
-      - run: npm exec -w @dibao/server -- vitest run src/desktop-access.test.ts
+      - run: npm exec -w @dibao/server -- vitest run src/desktop-access.test.ts src/desktop-proxy.test.ts src/desktop-dns.test.ts src/controlled-fetch.test.ts
+      - run: npm exec -w @dibao/shared -- vitest run src/desktop-proxy.test.ts
+      - run: node scripts/desktop/proxy-session-smoke.mjs
       - run: node scripts/desktop/package.mjs
       - name: Packaged application smoke test
         run: node scripts/desktop/ci-smoke.mjs
+      - name: Verify actual macOS DMG and ZIP signatures
+        if: runner.os == 'macOS'
+        run: node scripts/desktop/verify-macos.mjs
       - name: Installed application upgrade test
         run: node scripts/desktop/upgrade-smoke.mjs
+      - name: Upgrade from the previous published installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/desktop/previous-release-smoke.mjs
       - name: Upload installers and evidence
         if: always()
         uses: actions/upload-artifact@v4

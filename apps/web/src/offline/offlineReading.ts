@@ -851,7 +851,8 @@ export async function requestPersistentOfflineStorage(): Promise<boolean | null>
 }
 
 export function isOfflineStorageSupported(): boolean {
-  return typeof indexedDB !== "undefined";
+  try { return typeof indexedDB !== "undefined"; }
+  catch { return false; }
 }
 
 export function normalizeRecommendedTarget(value: number): number {

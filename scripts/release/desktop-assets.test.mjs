@@ -18,6 +18,9 @@ async function fixture() {
     await mkdir(assets, { recursive: true });
     await mkdir(evidence, { recursive: true });
     await writeFile(join(evidence, "build.json"), JSON.stringify({ ...identity, platform: target.platform, arch: target.arch }));
+    await writeFile(join(evidence, "previous-release.json"), JSON.stringify({ passed: true, from: "0.4.0", to: identity.version }));
+    if (target.platform === "darwin") await writeFile(join(evidence, "signature.json"), JSON.stringify({ version: identity.version, arch: target.arch,
+      passed: true, appSignatureValid: true, bundledNodeSignatureValid: true, nativeModulesSignatureValid: true, dmgCopyVerified: true, zipVerified: true, tamperedResourceRejected: true }));
     for (const name of ["result.json", "upgrade.json", "backup/result.json", "startup/result.json"]) {
       await mkdir(join(evidence, name, ".."), { recursive: true });
       await writeFile(join(evidence, name), JSON.stringify({ passed: true, from: identity.version }));
@@ -48,7 +51,7 @@ test("all native installers share one identity and both Mac architectures surviv
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-for (const scenario of ["missing-target", "foreign-revision", "failed-upgrade", "corrupt-installer"]) {
+for (const scenario of ["missing-target", "foreign-revision", "failed-upgrade", "corrupt-installer", "invalid-signature", "missing-signature"]) {
   test(`release staging rejects ${scenario}`, async () => {
     const f = await fixture();
     try {
@@ -59,6 +62,8 @@ for (const scenario of ["missing-target", "foreign-revision", "failed-upgrade", 
       if (scenario === "foreign-revision") await writeFile(join(evidence, "build.json"), JSON.stringify({ ...identity, revision: "b".repeat(40), platform: "darwin", arch: "arm64" }));
       if (scenario === "failed-upgrade") await writeFile(join(evidence, "upgrade.json"), JSON.stringify({ passed: false, from: identity.version }));
       if (scenario === "corrupt-installer") await writeFile(join(base, "dist", "desktop", `Dibao-${identity.version}-mac-arm64.dmg`), "corrupted");
+      if (scenario === "invalid-signature") await writeFile(join(evidence, "signature.json"), JSON.stringify({ version: identity.version, arch: "arm64", passed: false }));
+      if (scenario === "missing-signature") await rm(join(evidence, "signature.json"));
       await assert.rejects(collectDesktopAssets(f.input, f.output, identity));
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });

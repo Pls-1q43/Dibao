@@ -34,6 +34,19 @@ export async function collectDesktopAssets(input, output, { version, revision })
       assert.equal(report.passed, true, `${target.suffix}: ${path} did not pass`);
       if (path === "upgrade.json") assert.equal(report.from, version, "Wrong upgrade baseline");
     }
+    const previous = JSON.parse(await readFile(join(evidence, "previous-release.json"), "utf8"));
+    assert.equal(previous.passed, true, "Previous published installer upgrade did not pass");
+    assert.equal(previous.to, version, "Previous installer test did not target this release");
+    assert.match(previous.from, /^\d+\.\d+\.\d+$/);
+    assert.notEqual(previous.from, version, "Previous installer test used the current release as its baseline");
+    if (target.platform === "darwin") {
+      const signature = JSON.parse(await readFile(join(evidence, "signature.json"), "utf8"));
+      assert.equal(signature.version, version, "Wrong signature verification version");
+      assert.equal(signature.arch, target.arch, "Wrong signature verification architecture");
+      for (const check of ["passed", "appSignatureValid", "bundledNodeSignatureValid", "nativeModulesSignatureValid", "dmgCopyVerified", "zipVerified", "tamperedResourceRejected"]) {
+        assert.equal(signature[check], true, `macOS signature check failed: ${check}`);
+      }
+    }
     const assets = join(root, "dist", "desktop");
     const update = yaml.load(await readFile(join(assets, target.metadata), "utf8"));
     assert.equal(update.version, version, "Updater metadata version mismatch");

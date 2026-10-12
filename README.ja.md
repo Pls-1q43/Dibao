@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.4.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.2.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.2-2f6f5e" /></a>
 </p>
 
 ---
@@ -41,7 +41,7 @@ Dibao は、**セルフホスト RSS リーダー、AI RSS reader、個人向け
 - [バックアップとアップグレード](#バックアップとアップグレード)
 - [ライセンス](#ライセンス)
 - [FAQ](#faq)
-- [リリースノート](./docs/release-notes-v0.4.1.md#日本語)
+- [リリースノート](./docs/release-notes-v0.4.2.md#日本語)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 - [中文主页](./README.md)
 - [English README](./README.en.md)
@@ -86,7 +86,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.4.1
+    image: ghcr.io/pls-1q43/dibao:v0.4.2
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -194,9 +194,9 @@ docker compose up -d
 docker compose ps
 ```
 
-v0.4.0 → v0.4.1 に新規 SQL 移行や強制派生データ更新はありません。以前のバージョンは `027_recommendation_sessions.sql` と未適用の歴史的移行を自動実行します。必要な場合は推薦データの更新画面が開き、完了まで通常機能を一時停止します。既存のベクトルを再利用し、埋め込みの再計算は行いません。
+v0.4.1 → v0.4.2 に新規 SQL 移行や強制派生データ更新はありません。以前のバージョンは `027_recommendation_sessions.sql` と未適用の歴史的移行を自動実行します。必要な場合は推薦データの更新画面が開き、完了まで通常機能を一時停止します。既存のベクトルを再利用し、埋め込みの再計算は行いません。
 
-更新後は `/api/system/health` の `data.ok: true`、`data.version: "0.4.1"` を確認します。さらにログイン後に `/api/system/upgrade/status` を確認し、既存データの更新が `data.id: "recommendation-contract"`、`data.state: "completed"`、`data.blocking: false` になったことを確かめてください。新規の空データベースでは `not_required` かつ非ブロックでも正常です。HTTP 200 やコンテナの healthy 表示だけでは更新完了を判断できません。
+更新後は `/api/system/health` の `data.ok: true`、`data.version: "0.4.2"` を確認します。さらにログイン後に `/api/system/upgrade/status` を確認し、既存データの更新が `data.id: "recommendation-contract"`、`data.state: "completed"`、`data.blocking: false` になったことを確かめてください。新規の空データベースでは `not_required` かつ非ブロックでも正常です。HTTP 200 やコンテナの healthy 表示だけでは更新完了を判断できません。
 
 ロールバックでは新しいコンテナを停止し、空のディレクトリまたは新しい volume に更新前の完全な `/data` バックアップを復元してから旧イメージを起動します。移行済みデータベースを旧バージョンで開いたり、新しい WAL ファイルが残る場所にバックアップを上書きしたりしないでください。[v0.4.1 の導入・ロールバック説明](./docs/release-notes-v0.4.1.md#日本語)もご確認ください。
 

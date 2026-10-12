@@ -4,6 +4,9 @@ const saveState = new Set<() => void | Promise<void>>();
 
 const bridge: DesktopBridge = {
   getRuntime: () => ipcRenderer.invoke("dibao:runtime"),
+  getProxySettings: () => ipcRenderer.invoke("dibao:proxy-settings"),
+  setProxySettings: settings => ipcRenderer.invoke("dibao:proxy-save", settings),
+  testProxyConnection: () => ipcRenderer.invoke("dibao:proxy-test"),
   getUpdateState: () => ipcRenderer.invoke("dibao:update-state"),
   checkForUpdates: () => ipcRenderer.invoke("dibao:update-check"),
   downloadUpdate: () => ipcRenderer.invoke("dibao:update-download"),

@@ -7,7 +7,7 @@ import {
   SqliteVecVectorStore, type Migration
 } from "../../packages/db/src/index.js";
 
-const tags = ["v0.1.0", "v0.1.1", "v0.1.2", "v0.1.3", "v0.2.0", "v0.2.1", "v0.3.0", "v0.3.1", "v0.4.0"];
+const tags = ["v0.1.0", "v0.1.1", "v0.1.2", "v0.1.3", "v0.2.0", "v0.2.1", "v0.3.0", "v0.3.1", "v0.4.0", "v0.4.1"];
 const current = loadDefaultMigrations();
 const git = (args: string[]) => execFileSync("git", args, { encoding: "utf8" });
 

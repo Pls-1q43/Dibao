@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/Pls-1q43/Dibao"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-Pls--1q43%2FDibao-111827?logo=github" /></a>
   <a href="./compose.yaml"><img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-ready-2563eb?logo=docker&logoColor=white" /></a>
-  <a href="./docs/release-notes-v0.4.1.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.1-2f6f5e" /></a>
+  <a href="./docs/release-notes-v0.4.2.md"><img alt="Release notes" src="https://img.shields.io/badge/release_notes-v0.4.2-2f6f5e" /></a>
 </p>
 
 ---
@@ -43,7 +43,7 @@
 - [备份与升级](#备份与升级)
 - [许可证](#许可证)
 - [常见问题](#常见问题)
-- [发布说明](./docs/release-notes-v0.4.1.md#简体中文)
+- [发布说明](./docs/release-notes-v0.4.2.md#简体中文)
 - [Roadmap](https://github.com/users/Pls-1q43/projects/1)
 
 ### 它解决什么问题
@@ -89,7 +89,7 @@ name: dibao
 
 services:
   dibao:
-    image: ghcr.io/pls-1q43/dibao:v0.4.1
+    image: ghcr.io/pls-1q43/dibao:v0.4.2
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -203,9 +203,9 @@ docker compose up -d
 docker compose ps
 ```
 
-v0.4.0 → v0.4.1 无新增 SQL 迁移或强制派生数据更新。更旧版本仍自动执行 `027_recommendation_sessions.sql` 及其他未应用的历史迁移，并在需要时进入阻塞式推荐数据升级页面。期间普通功能暂停，升级完成后恢复；复用已有向量，不重新计算 Embeddings。
+v0.4.1 → v0.4.2 无新增 SQL 迁移或强制派生数据更新。更旧版本仍自动执行 `027_recommendation_sessions.sql` 及其他未应用的历史迁移，并在需要时进入阻塞式推荐数据升级页面。期间普通功能暂停，升级完成后恢复；复用已有向量，不重新计算 Embeddings。
 
-升级后检查 `/api/system/health` 的 `data.ok: true`、`data.version: "0.4.1"`，还须在登录后检查 `/api/system/upgrade/status`：现有数据的派生升级应为 `data.id: "recommendation-contract"`、`data.state: "completed"`、`data.blocking: false`。全新空库可为 `not_required` 且不阻塞。HTTP 200 或容器 healthy 不代表升级完成。
+升级后检查 `/api/system/health` 的 `data.ok: true`、`data.version: "0.4.2"`，还须在登录后检查 `/api/system/upgrade/status`：现有数据的派生升级应为 `data.id: "recommendation-contract"`、`data.state: "completed"`、`data.blocking: false`。全新空库可为 `not_required` 且不阻塞。HTTP 200 或容器 healthy 不代表升级完成。
 
 回滚前停止新容器，在干净目录或新 volume 恢复升级前的完整 `/data` 备份，再启动旧镜像。不要让旧版本直接读取已迁移的数据库，也不要把备份覆盖到留有新 WAL 文件的目录。详见 [v0.4.1 安装与回滚说明](./docs/release-notes-v0.4.1.md#简体中文)。
 

@@ -16,6 +16,17 @@ export type DesktopRuntimeInfo = {
   autoLaunch: boolean;
 };
 
+export type DesktopProxySettings = {
+  mode: "system" | "direct" | "manual";
+  server: string;
+  bypassLocal: boolean;
+};
+
+export type DesktopProxyTestResult = {
+  ok: boolean;
+  elapsedMs: number;
+};
+
 export type DesktopBackupError = "busy" | "unsaved" | "upgrade" | "missing" | "space" | "invalid" | "permission" | "failed";
 export type DesktopBackupInfo = {
   id: string;
@@ -38,6 +49,9 @@ export type DesktopBackupState = {
 
 export type DesktopBridge = {
   getRuntime(): Promise<DesktopRuntimeInfo>;
+  getProxySettings(): Promise<DesktopProxySettings>;
+  setProxySettings(settings: DesktopProxySettings): Promise<DesktopProxySettings>;
+  testProxyConnection(): Promise<DesktopProxyTestResult>;
   getUpdateState(): Promise<DesktopUpdateState>;
   checkForUpdates(): Promise<void>;
   downloadUpdate(): Promise<void>;
